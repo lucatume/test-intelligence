@@ -103,3 +103,11 @@ describe('parseProjectRelativePath — rule 6: never throws', () => {
     expect(r.kind).toBe('err');
   });
 });
+
+describe('parseProjectRelativePath — empty input', () => {
+  it('rejects an empty string', () => {
+    const r = parseProjectRelativePath('', '/tmp');
+    expect(r.kind).toBe('err');
+    if (r.kind === 'err') expect(r.error.reason).toBe('empty');
+  });
+});

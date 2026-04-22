@@ -48,8 +48,9 @@ export async function writeShard(args: WriteShardArgs): Promise<Result<void, TiE
   } catch (e) {
     try { await fs.unlink(tempFile); } catch { /* ignore */ }
     return err<TiError>({
-      kind: 'ConfigError',
+      kind: 'StorageWriteError',
       message: `Failed to write shard ${shardFilename}: ${e instanceof Error ? e.message : String(e)}`,
+      path: finalFile,
     });
   }
 }
@@ -68,8 +69,9 @@ export async function writeIndex(tiDir: string, index: Index): Promise<Result<vo
   } catch (e) {
     try { await fs.unlink(tempFile); } catch { /* ignore */ }
     return err<TiError>({
-      kind: 'ConfigError',
+      kind: 'StorageWriteError',
       message: `Failed to write index: ${e instanceof Error ? e.message : String(e)}`,
+      path: finalFile,
     });
   }
 }

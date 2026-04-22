@@ -53,6 +53,11 @@ describe('parseTestId — malformed', () => {
       error: { reason: 'path-invalid' },
     });
   });
+
+  it('rejects framework prefix containing slashes (treated as malformed, not unknown)', () => {
+    const r = parseTestId('src/CartTest.php::foo', '/tmp');
+    expect(r).toMatchObject({ kind: 'err', error: { reason: 'malformed' } });
+  });
 });
 
 describe('formatTestId — round-trip with parseTestId', () => {

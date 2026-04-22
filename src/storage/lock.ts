@@ -81,8 +81,9 @@ export async function acquireLock(args: AcquireLockArgs): Promise<Result<void, T
     const code = (e as NodeJS.ErrnoException).code;
     if (code !== 'EEXIST') {
       return err<TiError>({
-        kind: 'ConfigError',
+        kind: 'StorageWriteError',
         message: `Failed to acquire lock at ${lockFile}: ${e instanceof Error ? e.message : String(e)}`,
+        path: lockFile,
       });
     }
   }
@@ -94,8 +95,9 @@ export async function acquireLock(args: AcquireLockArgs): Promise<Result<void, T
       return ok(undefined);
     } catch (e) {
       return err<TiError>({
-        kind: 'ConfigError',
+        kind: 'StorageWriteError',
         message: `Failed to reclaim corrupt lock: ${e instanceof Error ? e.message : String(e)}`,
+        path: lockFile,
       });
     }
   }
@@ -122,8 +124,9 @@ export async function acquireLock(args: AcquireLockArgs): Promise<Result<void, T
     return ok(undefined);
   } catch (e) {
     return err<TiError>({
-      kind: 'ConfigError',
+      kind: 'StorageWriteError',
       message: `Failed to reclaim stale lock: ${e instanceof Error ? e.message : String(e)}`,
+      path: lockFile,
     });
   }
 }

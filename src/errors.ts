@@ -6,6 +6,7 @@ export type TiError =
   | { readonly kind: 'CliError';              readonly message: string }
   | { readonly kind: 'ConfigError';           readonly message: string; readonly path?: string }
   | { readonly kind: 'SchemaOutOfRangeError'; readonly message: string; readonly onDisk: number; readonly supported: { min: number; max: number } }
+  | { readonly kind: 'StorageWriteError';     readonly message: string; readonly path?: string }
   | { readonly kind: 'MapNotFoundError';      readonly message: string }
   | { readonly kind: 'ShardCorruptError';     readonly message: string; readonly shardPath: string }
   | { readonly kind: 'UnknownInputError';     readonly message: string; readonly inputs: readonly string[] }
@@ -24,6 +25,7 @@ export function exitCodeFor(err: TiError, ctx: ExitContext): 0 | 1 | 2 {
     case 'CliError':
     case 'ConfigError':
     case 'SchemaOutOfRangeError':
+    case 'StorageWriteError':
     case 'MapNotFoundError':
     case 'LockHeldError':
     case 'LockHostMismatchError':

@@ -38,6 +38,13 @@ describe('readShard', () => {
     const r = await readShard(shardPath);
     expect(r.kind).toBe('err');
   });
+
+  it('returns ShardCorruptError when the shard file does not exist', async () => {
+    const root = tmp();
+    const r = await readShard(path.join(root, 'nope.json'));
+    expect(r.kind).toBe('err');
+    if (r.kind === 'err') expect(r.error.kind).toBe('ShardCorruptError');
+  });
 });
 
 describe('readIndex', () => {
@@ -58,5 +65,14 @@ describe('readIndex', () => {
     const r = await readIndex(path.join(tmp(), '.test-intelligence'));
     expect(r.kind).toBe('err');
     if (r.kind === 'err') expect(r.error.kind).toBe('MapNotFoundError');
+  });
+
+  it('returns ShardCorruptError on malformed JSON in index.json', async () => {
+    const root = tmp();
+    await fs.mkdir(path.join(root, '.test-intelligence'), { recursive: true });
+    await fs.writeFile(path.join(root, '.test-intelligence', 'index.json'), 'not json');
+    const r = await readIndex(path.join(root, '.test-intelligence'));
+    expect(r.kind).toBe('err');
+    if (r.kind === 'err') expect(r.error.kind).toBe('ShardCorruptError');
   });
 });

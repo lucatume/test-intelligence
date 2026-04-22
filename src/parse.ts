@@ -228,5 +228,3 @@ export function literal<const L extends string>(value: L): Schema<L> {
 // Extract the output type of a Schema.
 export type Infer<S> = S extends Schema<infer T> ? T : never;
 
-// Internal export kept for potential use by consumers needing path-qualified parsing.
-export const _internal = { nest };

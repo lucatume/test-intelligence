@@ -13,6 +13,7 @@ describe('exitCodeFor', () => {
     ['CliError', 1],
     ['ConfigError', 1],
     ['SchemaOutOfRangeError', 1],
+    ['StorageWriteError', 1],
     ['MapNotFoundError', 1],
     ['LockHeldError', 1],
     ['LockHostMismatchError', 1],
@@ -31,6 +32,19 @@ describe('exitCodeFor', () => {
     const err: TiError = { kind: 'UnknownInputError', message: 'unknown', inputs: ['x'] };
     expect(exitCodeFor(err, { strict: false })).toBe(0);
     expect(exitCodeFor(err, { strict: true })).toBe(2);
+  });
+
+  it('AdapterError: exit 1 when no adapter succeeded, exit 0 otherwise', () => {
+    const err: TiError = { kind: 'AdapterError', message: 'phpunit failed', framework: 'phpunit' };
+    expect(exitCodeFor(err, { strict: false, anyAdapterSucceeded: false })).toBe(1);
+    expect(exitCodeFor(err, { strict: false, anyAdapterSucceeded: true })).toBe(0);
+    expect(exitCodeFor(err, { strict: false })).toBe(0); // undefined → not "false" → exit 0
+  });
+
+  it('CoverageParseError: exit 1 when no adapter succeeded, exit 0 otherwise', () => {
+    const err: TiError = { kind: 'CoverageParseError', message: 'malformed coverage', framework: 'jest' };
+    expect(exitCodeFor(err, { strict: false, anyAdapterSucceeded: false })).toBe(1);
+    expect(exitCodeFor(err, { strict: false, anyAdapterSucceeded: true })).toBe(0);
   });
 });
 
