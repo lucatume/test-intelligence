@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
-import { acquireLock, releaseLock } from '../../src/storage/lock.js';
+import { acquireLock, releaseLock, registerLockCleanupOnExit } from '../../src/storage/lock.js';
 import type { LockPayload } from '../../src/storage/lock.js';
 import { fixedClock } from '../../src/clock.js';
 import { useTmpDir } from '../helpers/tmpDir.js';
@@ -82,5 +82,24 @@ describe('releaseLock', () => {
     const tiDir = path.join(tmp(), '.test-intelligence');
     await fs.mkdir(tiDir, { recursive: true });
     await expect(releaseLock(tiDir)).resolves.toBeUndefined();
+  });
+});
+
+describe('registerLockCleanupOnExit', () => {
+  it('registers handlers for SIGINT, SIGTERM, and exit', () => {
+    const priorSigint = process.listenerCount('SIGINT');
+    const priorSigterm = process.listenerCount('SIGTERM');
+    const priorExit = process.listenerCount('exit');
+    const unregister = registerLockCleanupOnExit('/nonexistent/tmp-dir');
+    try {
+      expect(process.listenerCount('SIGINT')).toBe(priorSigint + 1);
+      expect(process.listenerCount('SIGTERM')).toBe(priorSigterm + 1);
+      expect(process.listenerCount('exit')).toBe(priorExit + 1);
+    } finally {
+      unregister();
+    }
+    expect(process.listenerCount('SIGINT')).toBe(priorSigint);
+    expect(process.listenerCount('SIGTERM')).toBe(priorSigterm);
+    expect(process.listenerCount('exit')).toBe(priorExit);
   });
 });

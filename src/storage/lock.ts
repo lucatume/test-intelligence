@@ -135,3 +135,35 @@ export async function releaseLock(tiDir: string): Promise<void> {
     // Ignore — nothing to release.
   }
 }
+
+// Returns a function that unregisters all handlers. Callers use this when
+// they want to detach cleanup (e.g., after releaseLock has already run).
+export function registerLockCleanupOnExit(tiDir: string): () => void {
+  const lockFile = lockPath(tiDir);
+  const cleanup = (): void => {
+    try {
+      fsSync.unlinkSync(lockFile);
+    } catch {
+      // Ignore — nothing to clean up.
+    }
+  };
+  const onSigint = (): void => {
+    cleanup();
+    process.exit(130);
+  };
+  const onSigterm = (): void => {
+    cleanup();
+    process.exit(143);
+  };
+  const onExit = (): void => {
+    cleanup();
+  };
+  process.on('SIGINT', onSigint);
+  process.on('SIGTERM', onSigterm);
+  process.on('exit', onExit);
+  return () => {
+    process.removeListener('SIGINT', onSigint);
+    process.removeListener('SIGTERM', onSigterm);
+    process.removeListener('exit', onExit);
+  };
+}
