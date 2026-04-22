@@ -201,5 +201,18 @@ export function object<S extends ObjectShape>(shape: S): Schema<ShapeOutput<S>> 
   };
 }
 
+export function literal<const L extends string>(value: L): Schema<L> {
+  return {
+    parse(input) {
+      if (input === value) return ok(value);
+      const render = typeof input === 'string' ? `"${input}"` : String(input);
+      return err([{ path: [], message: `expected "${value}", got ${render}` }]);
+    },
+  };
+}
+
+// Extract the output type of a Schema.
+export type Infer<S> = S extends Schema<infer T> ? T : never;
+
 // Internal export kept for potential use by consumers needing path-qualified parsing.
 export const _internal = { nest };

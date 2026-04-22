@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as P from '../src/parse.js';
+import type { Infer } from '../src/parse.js';
 
 describe('parse.string', () => {
   it('accepts a string', () => {
@@ -226,5 +227,35 @@ describe('parse.refine', () => {
       kind: 'err',
       error: [{ path: [], message: 'expected number, got string' }],
     });
+  });
+});
+
+describe('parse.literal', () => {
+  it('accepts the literal string', () => {
+    const s = P.literal('yes');
+    expect(s.parse('yes')).toEqual({ kind: 'ok', value: 'yes' });
+  });
+
+  it('rejects anything else', () => {
+    const s = P.literal('yes');
+    expect(s.parse('no')).toEqual({
+      kind: 'err',
+      error: [{ path: [], message: 'expected "yes", got "no"' }],
+    });
+  });
+});
+
+describe('Infer<> type', () => {
+  it('infers an object schema output type', () => {
+    const schema = P.object({
+      name: P.string,
+      count: P.number,
+      active: P.optional(P.boolean),
+      mode: P.withDefault(P.enumOf(['fast', 'slow'] as const), 'fast'),
+    });
+    type S = Infer<typeof schema>;
+    const v: S = { name: 'x', count: 1, active: true, mode: 'fast' };
+    expect(v).toBeTruthy();
+    expect(schema).toBeDefined(); // Use schema to satisfy eslint
   });
 });
