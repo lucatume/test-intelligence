@@ -138,3 +138,93 @@ describe('parse.enumOf', () => {
     });
   });
 });
+
+describe('parse.object', () => {
+  it('accepts an object matching the shape', () => {
+    const s = P.object({ n: P.number, s: P.string });
+    expect(s.parse({ n: 1, s: 'x' })).toEqual({ kind: 'ok', value: { n: 1, s: 'x' } });
+  });
+
+  it('rejects missing required fields', () => {
+    const s = P.object({ n: P.number });
+    expect(s.parse({})).toEqual({
+      kind: 'err',
+      error: [{ path: ['n'], message: 'missing required field' }],
+    });
+  });
+
+  it('accumulates field errors', () => {
+    const s = P.object({ n: P.number, s: P.string });
+    const r = s.parse({ n: 'bad', s: 42 });
+    expect(r).toEqual({
+      kind: 'err',
+      error: [
+        { path: ['n'], message: 'expected number, got string' },
+        { path: ['s'], message: 'expected string, got number' },
+      ],
+    });
+  });
+
+  it('rejects non-object input', () => {
+    const s = P.object({ n: P.number });
+    expect(s.parse('nope')).toEqual({
+      kind: 'err',
+      error: [{ path: [], message: 'expected object, got string' }],
+    });
+  });
+});
+
+describe('parse.optional', () => {
+  it('accepts undefined', () => {
+    const s = P.object({ n: P.optional(P.number) });
+    expect(s.parse({})).toEqual({ kind: 'ok', value: {} });
+  });
+
+  it('accepts a valid value', () => {
+    const s = P.object({ n: P.optional(P.number) });
+    expect(s.parse({ n: 5 })).toEqual({ kind: 'ok', value: { n: 5 } });
+  });
+
+  it('rejects an invalid non-undefined value', () => {
+    const s = P.object({ n: P.optional(P.number) });
+    expect(s.parse({ n: 'nope' })).toEqual({
+      kind: 'err',
+      error: [{ path: ['n'], message: 'expected number, got string' }],
+    });
+  });
+});
+
+describe('parse.withDefault', () => {
+  it('fills in the default when absent', () => {
+    const s = P.object({ n: P.withDefault(P.number, 10) });
+    expect(s.parse({})).toEqual({ kind: 'ok', value: { n: 10 } });
+  });
+
+  it('uses the provided value when present', () => {
+    const s = P.object({ n: P.withDefault(P.number, 10) });
+    expect(s.parse({ n: 5 })).toEqual({ kind: 'ok', value: { n: 5 } });
+  });
+});
+
+describe('parse.refine', () => {
+  it('passes when the predicate returns ok', () => {
+    const s = P.refine(P.number, (n) => n >= 0 ? null : 'must be non-negative');
+    expect(s.parse(5)).toEqual({ kind: 'ok', value: 5 });
+  });
+
+  it('fails with the given message when predicate fails', () => {
+    const s = P.refine(P.number, (n) => n >= 0 ? null : 'must be non-negative');
+    expect(s.parse(-1)).toEqual({
+      kind: 'err',
+      error: [{ path: [], message: 'must be non-negative' }],
+    });
+  });
+
+  it('propagates upstream parse errors', () => {
+    const s = P.refine(P.number, () => null);
+    expect(s.parse('nope')).toEqual({
+      kind: 'err',
+      error: [{ path: [], message: 'expected number, got string' }],
+    });
+  });
+});

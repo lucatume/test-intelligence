@@ -117,5 +117,89 @@ export function enumOf<const T extends readonly string[]>(values: T): Schema<T[n
   };
 }
 
+// Marker type for optional schemas so object() can distinguish them.
+type OptionalSchema<T> = Schema<T | undefined> & { readonly __optional: true };
+type DefaultedSchema<T> = Schema<T> & { readonly __defaulted: true };
+
+export function optional<T>(s: Schema<T>): OptionalSchema<T> {
+  return {
+    parse(input) {
+      if (input === undefined) return ok(undefined);
+      return s.parse(input);
+    },
+    __optional: true,
+  };
+}
+
+export function withDefault<T>(s: Schema<T>, defaultValue: T): DefaultedSchema<T> {
+  return {
+    parse(input) {
+      if (input === undefined) return ok(defaultValue);
+      return s.parse(input);
+    },
+    __defaulted: true,
+  };
+}
+
+export function refine<T>(
+  upstream: Schema<T>,
+  check: (v: T) => string | null,
+): Schema<T> {
+  return {
+    parse(input) {
+      const r = upstream.parse(input);
+      if (r.kind === 'err') return r;
+      const msg = check(r.value);
+      if (msg === null) return r;
+      return err([{ path: [], message: msg }]);
+    },
+  };
+}
+
+type ObjectShape = Record<string, Schema<unknown>>;
+
+// Output type helper: gives each field its T, with optional-schema fields widened to T | undefined.
+type ShapeOutput<S extends ObjectShape> = {
+  [K in keyof S]: S[K] extends OptionalSchema<infer T> ? T | undefined
+    : S[K] extends DefaultedSchema<infer T> ? T
+    : S[K] extends Schema<infer T> ? T
+    : never;
+};
+
+export function object<S extends ObjectShape>(shape: S): Schema<ShapeOutput<S>> {
+  const keys = Object.keys(shape);
+  return {
+    parse(input) {
+      if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+        return err([{ path: [], message: `expected object, got ${typeName(input)}` }]);
+      }
+      const obj = input as Record<string, unknown>;
+      const out: Record<string, unknown> = {};
+      const errors: ValidationError[] = [];
+      for (const k of keys) {
+        // k is always a key of shape since we built keys from Object.keys(shape)
+        // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+        const fieldSchema = shape[k]!;
+        const value = obj[k];
+        const isOptional = '__optional' in fieldSchema;
+        const hasDefault = '__defaulted' in fieldSchema;
+        if (value === undefined && !isOptional && !hasDefault) {
+          errors.push({ path: [k], message: 'missing required field' });
+          continue;
+        }
+        const r = nest(fieldSchema, value, k);
+        if (r.kind === 'err') {
+          errors.push(...r.error);
+          continue;
+        }
+        if (r.value !== undefined || !isOptional) {
+          out[k] = r.value;
+        }
+      }
+      return errors.length ? err(errors) : ok(out as ShapeOutput<S>);
+    },
+  };
+}
+
 // Internal export kept for potential use by consumers needing path-qualified parsing.
 export const _internal = { nest };
