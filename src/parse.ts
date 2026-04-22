@@ -166,8 +166,14 @@ type ShapeOutput<S extends ObjectShape> = {
     : never;
 };
 
-export function object<S extends ObjectShape>(shape: S): Schema<ShapeOutput<S>> {
+export interface ObjectOptions {
+  /** When true, reject input objects that contain keys not declared in the shape. */
+  readonly strict?: boolean;
+}
+
+export function object<S extends ObjectShape>(shape: S, options?: ObjectOptions): Schema<ShapeOutput<S>> {
   const keys = Object.keys(shape);
+  const strict = options?.strict ?? false;
   return {
     parse(input) {
       if (input === null || typeof input !== 'object' || Array.isArray(input)) {
@@ -176,6 +182,14 @@ export function object<S extends ObjectShape>(shape: S): Schema<ShapeOutput<S>> 
       const obj = input as Record<string, unknown>;
       const out: Record<string, unknown> = {};
       const errors: ValidationError[] = [];
+      if (strict) {
+        for (const k of Object.keys(obj)) {
+          if (!Object.prototype.hasOwnProperty.call(shape, k)) {
+            errors.push({ path: [k], message: 'unknown field' });
+          }
+        }
+        if (errors.length) return err(errors);
+      }
       for (const k of keys) {
         // k is always a key of shape since we built keys from Object.keys(shape)
         // eslint-disable-next-line @typescript-eslint/no-non-null-assertion

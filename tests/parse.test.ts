@@ -173,6 +173,20 @@ describe('parse.object', () => {
       error: [{ path: [], message: 'expected object, got string' }],
     });
   });
+
+  it('silently ignores unknown keys by default', () => {
+    const s = P.object({ n: P.number });
+    expect(s.parse({ n: 1, extra: 'ignored' })).toEqual({ kind: 'ok', value: { n: 1 } });
+  });
+
+  it('rejects unknown keys when strict: true', () => {
+    const s = P.object({ n: P.number }, { strict: true });
+    const r = s.parse({ n: 1, extra: 'bad' });
+    expect(r.kind).toBe('err');
+    if (r.kind === 'err') {
+      expect(r.error.some((e) => e.path.includes('extra') && e.message === 'unknown field')).toBe(true);
+    }
+  });
 });
 
 describe('parse.optional', () => {
