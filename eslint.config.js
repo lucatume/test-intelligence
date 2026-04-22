@@ -39,6 +39,7 @@ export default tseslint.config(
     },
     rules: {
       'import/no-cycle': ['error', { maxDepth: Infinity }],
+      'import/no-duplicates': 'error',
       'boundaries/element-types': ['error', {
         default: 'allow',
         rules: [

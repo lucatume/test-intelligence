@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ok, err } from '../src/result.js';
-import { map, mapErr, andThen, unwrapOr } from '../src/result.js';
-import { combineAll, combineWithAllErrors } from '../src/result.js';
+import { ok, err, map, mapErr, andThen, unwrapOr, combineAll, combineWithAllErrors } from '../src/result.js';
 
 describe('result constructors', () => {
   it('ok creates a success result', () => {
