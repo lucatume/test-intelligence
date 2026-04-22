@@ -66,5 +66,56 @@ export const boolean: Schema<boolean> = {
   },
 };
 
-// Internal export for use by other parsers in this file.
+export function array<T>(elem: Schema<T>): Schema<T[]> {
+  return {
+    parse(input) {
+      if (!Array.isArray(input)) {
+        return err([{ path: [], message: `expected array, got ${typeName(input)}` }]);
+      }
+      const values: T[] = [];
+      const errors: ValidationError[] = [];
+      for (let i = 0; i < input.length; i++) {
+        const r = nest(elem, input[i], i);
+        if (r.kind === 'ok') values.push(r.value);
+        else errors.push(...r.error);
+      }
+      return errors.length ? err(errors) : ok(values);
+    },
+  };
+}
+
+export function record<V>(value: Schema<V>): Schema<Record<string, V>> {
+  return {
+    parse(input) {
+      if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+        return err([{ path: [], message: `expected object, got ${typeName(input)}` }]);
+      }
+      const out: Record<string, V> = {};
+      const errors: ValidationError[] = [];
+      for (const [k, v] of Object.entries(input as Record<string, unknown>)) {
+        const r = nest(value, v, k);
+        if (r.kind === 'ok') out[k] = r.value;
+        else errors.push(...r.error);
+      }
+      return errors.length ? err(errors) : ok(out);
+    },
+  };
+}
+
+export function enumOf<const T extends readonly string[]>(values: T): Schema<T[number]> {
+  return {
+    parse(input) {
+      if (typeof input === 'string' && (values as readonly string[]).includes(input)) {
+        return ok(input as T[number]);
+      }
+      const render = typeof input === 'string' ? `"${input}"` : String(input);
+      return err([{
+        path: [],
+        message: `expected one of [${values.join(', ')}], got ${render}`,
+      }]);
+    },
+  };
+}
+
+// Internal export kept for potential use by consumers needing path-qualified parsing.
 export const _internal = { nest };

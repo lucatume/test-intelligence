@@ -57,3 +57,84 @@ describe('parse.boolean', () => {
     });
   });
 });
+
+describe('parse.array', () => {
+  it('accepts an array of valid elements', () => {
+    const s = P.array(P.number);
+    expect(s.parse([1, 2, 3])).toEqual({ kind: 'ok', value: [1, 2, 3] });
+  });
+
+  it('rejects a non-array', () => {
+    const s = P.array(P.number);
+    expect(s.parse('nope')).toEqual({
+      kind: 'err',
+      error: [{ path: [], message: 'expected array, got string' }],
+    });
+  });
+
+  it('accumulates per-element errors with index paths', () => {
+    const s = P.array(P.number);
+    const r = s.parse([1, 'two', 3, 'four']);
+    expect(r).toEqual({
+      kind: 'err',
+      error: [
+        { path: [1], message: 'expected number, got string' },
+        { path: [3], message: 'expected number, got string' },
+      ],
+    });
+  });
+});
+
+describe('parse.record', () => {
+  it('accepts an object with valid values', () => {
+    const s = P.record(P.number);
+    expect(s.parse({ a: 1, b: 2 })).toEqual({ kind: 'ok', value: { a: 1, b: 2 } });
+  });
+
+  it('rejects a non-object', () => {
+    const s = P.record(P.number);
+    expect(s.parse([1, 2])).toEqual({
+      kind: 'err',
+      error: [{ path: [], message: 'expected object, got array' }],
+    });
+  });
+
+  it('rejects null', () => {
+    const s = P.record(P.number);
+    expect(s.parse(null)).toEqual({
+      kind: 'err',
+      error: [{ path: [], message: 'expected object, got null' }],
+    });
+  });
+
+  it('accumulates per-key errors', () => {
+    const s = P.record(P.number);
+    expect(s.parse({ a: 1, b: 'two' })).toEqual({
+      kind: 'err',
+      error: [{ path: ['b'], message: 'expected number, got string' }],
+    });
+  });
+});
+
+describe('parse.enumOf', () => {
+  it('accepts a listed value', () => {
+    const s = P.enumOf(['phpunit', 'jest', 'playwright'] as const);
+    expect(s.parse('jest')).toEqual({ kind: 'ok', value: 'jest' });
+  });
+
+  it('rejects an unlisted value', () => {
+    const s = P.enumOf(['a', 'b'] as const);
+    expect(s.parse('c')).toEqual({
+      kind: 'err',
+      error: [{ path: [], message: 'expected one of [a, b], got "c"' }],
+    });
+  });
+
+  it('rejects a non-string value', () => {
+    const s = P.enumOf(['a', 'b'] as const);
+    expect(s.parse(42)).toEqual({
+      kind: 'err',
+      error: [{ path: [], message: 'expected one of [a, b], got 42' }],
+    });
+  });
+});
