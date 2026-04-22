@@ -243,6 +243,14 @@ describe('parse.literal', () => {
       error: [{ path: [], message: 'expected "yes", got "no"' }],
     });
   });
+
+  it('rejects non-string input with proper render', () => {
+    const s = P.literal('yes');
+    expect(s.parse(42)).toEqual({
+      kind: 'err',
+      error: [{ path: [], message: 'expected "yes", got 42' }],
+    });
+  });
 });
 
 describe('Infer<> type', () => {
