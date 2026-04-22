@@ -1,0 +1,137 @@
+import * as fs from 'node:fs/promises';
+import * as fsSync from 'node:fs';
+import * as path from 'node:path';
+import * as os from 'node:os';
+import { ok, err } from '../result.js';
+import type { Result } from '../result.js';
+import type { TiError } from '../errors.js';
+import type { Clock } from '../clock.js';
+
+export type LockPayload = {
+  readonly pid: number;
+  readonly hostname: string;
+  readonly command: string;
+  readonly startedAt: string;
+};
+
+export type AcquireLockArgs = {
+  readonly tiDir: string;
+  readonly command: string;
+  readonly clock: Clock;
+};
+
+function lockPath(tiDir: string): string {
+  return path.join(tiDir, '.lock');
+}
+
+function isPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === 'EPERM') return true;
+    return false;
+  }
+}
+
+async function readExistingLock(lockFile: string): Promise<LockPayload | null> {
+  try {
+    const raw = await fs.readFile(lockFile, 'utf8');
+    const payload = JSON.parse(raw) as LockPayload;
+    if (
+      typeof payload.pid === 'number' &&
+      typeof payload.hostname === 'string' &&
+      typeof payload.command === 'string' &&
+      typeof payload.startedAt === 'string'
+    ) {
+      return payload;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeLockAtomically(
+  lockFile: string,
+  payload: LockPayload,
+): Promise<void> {
+  const fh = await fs.open(lockFile, fsSync.constants.O_WRONLY | fsSync.constants.O_CREAT | fsSync.constants.O_EXCL, 0o644);
+  try {
+    await fh.writeFile(JSON.stringify(payload, null, 2));
+  } finally {
+    await fh.close();
+  }
+}
+
+export async function acquireLock(args: AcquireLockArgs): Promise<Result<void, TiError>> {
+  const { tiDir, command, clock } = args;
+  const lockFile = lockPath(tiDir);
+  const myPayload: LockPayload = {
+    pid: process.pid,
+    hostname: os.hostname(),
+    command,
+    startedAt: clock.now(),
+  };
+  try {
+    await writeLockAtomically(lockFile, myPayload);
+    return ok(undefined);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code !== 'EEXIST') {
+      return err<TiError>({
+        kind: 'ConfigError',
+        message: `Failed to acquire lock at ${lockFile}: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+  }
+  const existing = await readExistingLock(lockFile);
+  if (existing === null) {
+    await fs.unlink(lockFile);
+    try {
+      await writeLockAtomically(lockFile, myPayload);
+      return ok(undefined);
+    } catch (e) {
+      return err<TiError>({
+        kind: 'ConfigError',
+        message: `Failed to reclaim corrupt lock: ${e instanceof Error ? e.message : String(e)}`,
+      });
+    }
+  }
+  if (existing.hostname !== os.hostname()) {
+    return err<TiError>({
+      kind: 'LockHostMismatchError',
+      message: `Lock at ${lockFile} is held by host '${existing.hostname}' (pid ${String(existing.pid)}, command '${existing.command}', started ${existing.startedAt}). Local hostname is '${os.hostname()}'. Run 'ti unlock --force' to override.`,
+      holderHostname: existing.hostname,
+      localHostname: os.hostname(),
+    });
+  }
+  if (isPidAlive(existing.pid)) {
+    return err<TiError>({
+      kind: 'LockHeldError',
+      message: `Lock held by pid ${String(existing.pid)} (command '${existing.command}', started ${existing.startedAt}).`,
+      holderPid: existing.pid,
+      command: existing.command,
+      startedAt: existing.startedAt,
+    });
+  }
+  await fs.unlink(lockFile);
+  try {
+    await writeLockAtomically(lockFile, myPayload);
+    return ok(undefined);
+  } catch (e) {
+    return err<TiError>({
+      kind: 'ConfigError',
+      message: `Failed to reclaim stale lock: ${e instanceof Error ? e.message : String(e)}`,
+    });
+  }
+}
+
+export async function releaseLock(tiDir: string): Promise<void> {
+  try {
+    await fs.unlink(lockPath(tiDir));
+  } catch {
+    // Ignore — nothing to release.
+  }
+}
