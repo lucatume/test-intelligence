@@ -56,7 +56,12 @@ export default tseslint.config(
       // Ban the ambient time/random effects (spec §Testing strategy).
       'no-restricted-globals': ['error',
         { name: 'Date', message: 'Use Clock.now() from src/clock.ts — no ambient time.' },
-        { name: 'Math', message: 'Use Random from src/clock.ts — no ambient randomness.' },
+      ],
+      'no-restricted-syntax': ['error',
+        {
+          selector: "CallExpression[callee.object.name='Math'][callee.property.name='random']",
+          message: 'Use Random from src/clock.ts — no ambient randomness.',
+        },
       ],
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       '@typescript-eslint/consistent-type-imports': 'error',
