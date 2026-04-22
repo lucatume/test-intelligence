@@ -1,0 +1,12 @@
+src/
+tests/
+docs/
+*.config.ts
+*.config.js
+.github/
+.vscode/
+tsconfig.json
+tsconfig.build.json
+vitest.config.ts
+eslint.config.js
+coverage/
