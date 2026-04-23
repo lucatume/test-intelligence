@@ -226,6 +226,46 @@ function parseTests(
   });
 }
 
+function parseSources(
+  argv: readonly string[],
+  stdinIsTty: boolean,
+): Result<ParsedCommand, TiError> {
+  const scan = scanSubcommand(argv, {
+    fromFlag: '--from-tests',
+    named: ['--format', '--min-confidence'],
+    booleans: ['--strict'],
+  });
+  if (scan.kind === 'err') return scan;
+  const { positionals, named, booleans } = scan.value;
+
+  let format: OutputFormat = 'args';
+  const formatRaw = named['--format'];
+  if (formatRaw !== undefined) {
+    const r = parseFormat(formatRaw);
+    if (r.kind === 'err') return r;
+    format = r.value;
+  }
+
+  let minConfidence: number | undefined;
+  const minConfRaw = named['--min-confidence'];
+  if (minConfRaw !== undefined) {
+    const r = parseMinConfidence(minConfRaw);
+    if (r.kind === 'err') return r;
+    minConfidence = r.value;
+  }
+
+  const src = resolveInputSource(positionals, stdinIsTty, 'test ids or paths');
+  if (src.kind === 'err') return src;
+
+  return ok({
+    kind: 'sources',
+    fromTests: src.value,
+    format,
+    minConfidence,
+    strict: booleans.has('--strict'),
+  });
+}
+
 export function parseArgv(input: ParseArgvInput): Result<ParsedCommand, TiError> {
   const { argv, stdinIsTty } = input;
   if (argv.length === 0) return ok({ kind: 'help' });
@@ -236,6 +276,8 @@ export function parseArgv(input: ParseArgvInput): Result<ParsedCommand, TiError>
   switch (head) {
     case 'tests':
       return parseTests(rest, stdinIsTty);
+    case 'sources':
+      return parseSources(rest, stdinIsTty);
     default:
       return cliError(`unknown command '${String(head)}' — run 'ti --help' for usage`);
   }

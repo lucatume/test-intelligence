@@ -139,3 +139,46 @@ describe('parseArgv — ti tests --from-sources', () => {
     if (r.kind === 'err') expect(r.error.message).toMatch(/--turbo/);
   });
 });
+
+describe('parseArgv — ti sources --from-tests', () => {
+  it('accepts test ids and test file paths mixed', () => {
+    const r = parseArgv({
+      argv: ['sources', '--from-tests', 'tests/Shop/CartTest.php', 'phpunit:tests/api/UsersTest.php::testCreate'],
+      stdinIsTty: true,
+    });
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok' && r.value.kind === 'sources') {
+      expect(r.value.fromTests).toEqual({
+        kind: 'args',
+        values: ['tests/Shop/CartTest.php', 'phpunit:tests/api/UsersTest.php::testCreate'],
+      });
+      expect(r.value.format).toBe('args');
+    }
+  });
+
+  it('rejects --framework for sources (it has no effect here per spec)', () => {
+    const r = parseArgv({
+      argv: ['sources', '--from-tests', 'tests/x.ts', '--framework=jest'],
+      stdinIsTty: true,
+    });
+    expect(r.kind).toBe('err');
+    if (r.kind === 'err') expect(r.error.message).toMatch(/--framework/);
+  });
+
+  it('accepts --format=json', () => {
+    const r = parseArgv({
+      argv: ['sources', '--from-tests', 'tests/x.ts', '--format=json'],
+      stdinIsTty: true,
+    });
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok' && r.value.kind === 'sources') expect(r.value.format).toBe('json');
+  });
+
+  it('falls back to stdin when no positionals and stdin is not a TTY', () => {
+    const r = parseArgv({ argv: ['sources', '--from-tests'], stdinIsTty: false });
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok' && r.value.kind === 'sources') {
+      expect(r.value.fromTests).toEqual({ kind: 'stdin' });
+    }
+  });
+});
