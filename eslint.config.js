@@ -47,6 +47,7 @@ export default tseslint.config(
       'boundaries/element-types': ['error', {
         default: 'allow',
         rules: [
+          // Foundations: may not depend on higher layers
           { from: 'result',    disallow: ['parse', 'types', 'clock', 'paths', 'ids', 'errors', 'config', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
           { from: 'parse',     disallow: ['types', 'clock', 'paths', 'ids', 'errors', 'config', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
           { from: 'types',     disallow: ['clock', 'paths', 'ids', 'errors', 'config', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
@@ -56,9 +57,11 @@ export default tseslint.config(
           { from: 'errors',    disallow: ['config', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
           { from: 'config',    disallow: ['storage', 'query', 'emit', 'cli', 'cli-entry'] },
           { from: 'storage',   disallow: ['query', 'emit', 'cli', 'cli-entry'] },
+          // Plan B layers: each may not depend on layers above it
           { from: 'query',     disallow: ['emit', 'cli', 'cli-entry'] },
           { from: 'emit',      disallow: ['cli', 'cli-entry'] },
           { from: 'cli',       disallow: ['cli-entry'] },
+          // 'index' and 'cli-entry' have no outbound rules — they are the ceilings of their stacks.
         ],
       }],
       // Ban the ambient time/random effects (spec §Testing strategy).

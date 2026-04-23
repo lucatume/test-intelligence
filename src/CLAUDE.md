@@ -7,9 +7,9 @@ This subtree is the internal library. Assume root `CLAUDE.md` conventions (TDD, 
 Imports flow one way, left → right. Each layer may import only from layers to its left. Enforced by `eslint-plugin-boundaries` — the element types are declared in `eslint.config.js` under `settings.boundaries/elements` and the disallow rules under `rules.boundaries/element-types`.
 
 ```
-result → parse → types → clock → paths → ids → errors → config → storage → query → emit → cli → cli.ts
-                                                                                                   ↑
-                                                       index.ts (public barrel, unchanged in Plan B)
+result → parse → types → clock → paths → ids → errors → config → storage
+    → query → emit → cli → cli.ts          ↑
+                                   index.ts (public barrel)
 ```
 
 Cycles are additionally forbidden by `import/no-cycle`.
