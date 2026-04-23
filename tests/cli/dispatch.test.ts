@@ -284,5 +284,6 @@ describe('dispatch — ti explain', () => {
     });
     expect(code).toBe(1);
     expect(io.errbuf).toMatch(/unknown id/i);
+    expect(io.outbuf).toBe('');  // stdout stays clean on error
   });
 });

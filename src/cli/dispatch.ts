@@ -330,7 +330,6 @@ async function runExplain(
   const result = explainQuery({ target, allShards: all.shards, weights: map.weights });
   if (result.kind === 'unknown') {
     io.stderr.write(`ti: error: unknown id: ${result.target}\n`);
-    io.stdout.write(`${formatExplainHuman(result)}\n`);
     return 1;
   }
   io.stdout.write(`${formatExplainHuman(result)}\n`);
