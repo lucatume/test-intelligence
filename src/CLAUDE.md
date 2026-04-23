@@ -7,9 +7,9 @@ This subtree is the internal library. Assume root `CLAUDE.md` conventions (TDD, 
 Imports flow one way, left → right. Each layer may import only from layers to its left. Enforced by `eslint-plugin-boundaries` — the element types are declared in `eslint.config.js` under `settings.boundaries/elements` and the disallow rules under `rules.boundaries/element-types`.
 
 ```
-result → parse → types → clock → paths → ids → errors → config → storage
-                                                                     ↑
-                                               index.ts (public barrel)
+result → parse → types → clock → paths → ids → errors → config → storage → query → emit → cli → cli.ts
+                                                                                                   ↑
+                                                       index.ts (public barrel, unchanged in Plan B)
 ```
 
 Cycles are additionally forbidden by `import/no-cycle`.
@@ -26,6 +26,11 @@ Cycles are additionally forbidden by `import/no-cycle`.
 - `index.ts` — public barrel. Exports `defineConfig` and the config type aliases (`UserConfig`, `ValidatedConfig`) and **nothing else**. Interior modules are not part of the public API.
 - `config/` — see `config/CLAUDE.md`.
 - `storage/` — see `storage/CLAUDE.md`.
+- `cli.ts` — bin entrypoint; reads `process.argv`, `process.stdin`, `process.stdout`, `process.stderr`, calls `dispatch`, calls `process.exit(code)`. **The only file permitted to mutate `process`.**
+- `cli/` — argv parser, help/version text, dispatch orchestrator, IO seam. Adds kinds only as commands land.
+- `query/` — pure functions over synthesized `Shard[]` + `Index`. Confidence combination, staleness, deduplication and coarser-granularity collapse live here.
+- `emit/` — pure formatters. Framework-specific `--format=args` output and shared `--format=json` output.
+- `storage/schema.ts` — `SUPPORTED_SCHEMA` constants; `readSchemaVersion`, `writeSchemaVersion`, `checkSchemaRange`. The **only** module that knows the on-disk integer's encoding.
 
 ## Adding a new unit
 
