@@ -18,21 +18,17 @@ export function checkSchemaRange(onDisk: number): Result<number, TiError> {
     });
   }
   if (onDisk < SUPPORTED_SCHEMA.min) {
-    const min = String(SUPPORTED_SCHEMA.min);
-    const max = String(SUPPORTED_SCHEMA.max);
     return err<TiError>({
       kind: 'SchemaOutOfRangeError',
-      message: `schema-version ${String(onDisk)} is below supported range [${min}, ${max}]. Run 'ti migrate' to upgrade.`,
+      message: `schema-version ${String(onDisk)} is below supported range [${String(SUPPORTED_SCHEMA.min)}, ${String(SUPPORTED_SCHEMA.max)}]. Run 'ti migrate' to upgrade.`,
       onDisk,
       supported: { min: SUPPORTED_SCHEMA.min, max: SUPPORTED_SCHEMA.max },
     });
   }
   if (onDisk > SUPPORTED_SCHEMA.max) {
-    const min = String(SUPPORTED_SCHEMA.min);
-    const max = String(SUPPORTED_SCHEMA.max);
     return err<TiError>({
       kind: 'SchemaOutOfRangeError',
-      message: `schema-version ${String(onDisk)} is above supported range [${min}, ${max}]. Upgrade the 'ti' package.`,
+      message: `schema-version ${String(onDisk)} is above supported range [${String(SUPPORTED_SCHEMA.min)}, ${String(SUPPORTED_SCHEMA.max)}]. Upgrade the 'ti' package.`,
       onDisk,
       supported: { min: SUPPORTED_SCHEMA.min, max: SUPPORTED_SCHEMA.max },
     });
@@ -59,7 +55,7 @@ export async function readSchemaVersion(
     return err<TiError>({
       kind: 'SchemaOutOfRangeError',
       message: `schema-version file at ${file} is not a valid integer (got "${trimmed}")`,
-      onDisk: Number.isNaN(parsed) ? -1 : parsed,
+      onDisk: parsed,
       supported: { min: SUPPORTED_SCHEMA.min, max: SUPPORTED_SCHEMA.max },
     });
   }

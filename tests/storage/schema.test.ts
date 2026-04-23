@@ -9,10 +9,8 @@ import {
 import { useTmpDir } from '../helpers/tmpDir.js';
 
 describe('SUPPORTED_SCHEMA', () => {
-  it('declares integer min and max', () => {
-    expect(Number.isInteger(SUPPORTED_SCHEMA.min)).toBe(true);
-    expect(Number.isInteger(SUPPORTED_SCHEMA.max)).toBe(true);
-    expect(SUPPORTED_SCHEMA.min).toBeLessThanOrEqual(SUPPORTED_SCHEMA.max);
+  it('pins min and max to the current supported version', () => {
+    expect(SUPPORTED_SCHEMA).toStrictEqual({ min: 1, max: 1 });
   });
 });
 
@@ -25,19 +23,20 @@ describe('checkSchemaRange', () => {
   it('returns SchemaOutOfRangeError when below min', () => {
     const r = checkSchemaRange(SUPPORTED_SCHEMA.min - 1);
     expect(r.kind).toBe('err');
-    if (r.kind === 'err' && r.error.kind === 'SchemaOutOfRangeError') {
-      expect(r.error.onDisk).toBe(SUPPORTED_SCHEMA.min - 1);
-      expect(r.error.message).toMatch(/ti migrate/);
-    }
+    if (r.kind !== 'err') return;
+    expect(r.error.kind).toBe('SchemaOutOfRangeError');
+    if (r.error.kind !== 'SchemaOutOfRangeError') return;
+    expect(r.error.onDisk).toBe(SUPPORTED_SCHEMA.min - 1);
+    expect(r.error.message).toMatch(/ti migrate/);
   });
 
   it('returns SchemaOutOfRangeError when above max', () => {
     const r = checkSchemaRange(SUPPORTED_SCHEMA.max + 1);
     expect(r.kind).toBe('err');
-    if (r.kind === 'err') {
-      expect(r.error.kind).toBe('SchemaOutOfRangeError');
-      expect(r.error.message).toMatch(/upgrade/i);
-    }
+    if (r.kind !== 'err') return;
+    expect(r.error.kind).toBe('SchemaOutOfRangeError');
+    if (r.error.kind !== 'SchemaOutOfRangeError') return;
+    expect(r.error.message).toMatch(/upgrade/i);
   });
 });
 
@@ -68,5 +67,14 @@ describe('readSchemaVersion', () => {
     const r = await readSchemaVersion(tiDir);
     expect(r.kind).toBe('err');
     if (r.kind === 'err') expect(r.error.kind).toBe('SchemaOutOfRangeError');
+  });
+
+  it("returns ok for any integer content, even one outside SUPPORTED_SCHEMA (range-checking is checkSchemaRange's job)", async () => {
+    const tiDir = path.join(tmp(), '.test-intelligence');
+    await fs.mkdir(tiDir, { recursive: true });
+    await fs.writeFile(path.join(tiDir, 'schema-version'), '999');
+    const r = await readSchemaVersion(tiDir);
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok') expect(r.value).toBe(999);
   });
 });
