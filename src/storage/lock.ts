@@ -25,6 +25,9 @@ function lockPath(tiDir: string): string {
 }
 
 function isPidAlive(pid: number): boolean {
+  // PID 0 is not a valid lock-holder PID; process.kill(0, 0) sends to the
+  // current process group (always succeeds), so we must special-case it.
+  if (pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -137,6 +140,57 @@ export async function releaseLock(tiDir: string): Promise<void> {
   } catch {
     // Ignore — nothing to release.
   }
+}
+
+export type UnlockOutcome =
+  | { readonly kind: 'no-lock' }
+  | { readonly kind: 'released'; readonly previous: LockPayload | null };
+
+export async function unlockManaged(args: {
+  readonly tiDir: string;
+  readonly force: boolean;
+}): Promise<Result<UnlockOutcome, TiError>> {
+  const lockFile = lockPath(args.tiDir);
+  let existed: boolean;
+  try {
+    await fs.access(lockFile);
+    existed = true;
+  } catch {
+    existed = false;
+  }
+  if (!existed) {
+    return ok({ kind: 'no-lock' });
+  }
+  const payload = await readExistingLock(lockFile);
+  // Unparseable payload: treat as orphaned garbage — remove unconditionally.
+  if (payload === null) {
+    await fs.unlink(lockFile).catch(() => { /* ignore */ });
+    return ok({ kind: 'released', previous: null });
+  }
+  const localHostname = os.hostname();
+  if (payload.hostname !== localHostname) {
+    if (!args.force) {
+      return err<TiError>({
+        kind: 'LockHostMismatchError',
+        message: `Lock at ${lockFile} was recorded by hostname '${payload.hostname}' (this host is '${localHostname}'). Re-run with 'ti unlock --force' to override after confirming the remote process is gone.`,
+        holderHostname: payload.hostname,
+        localHostname,
+      });
+    }
+    await fs.unlink(lockFile).catch(() => { /* ignore */ });
+    return ok({ kind: 'released', previous: payload });
+  }
+  if (isPidAlive(payload.pid)) {
+    return err<TiError>({
+      kind: 'LockHeldError',
+      message: `Lock is held by PID ${String(payload.pid)} running '${payload.command}' since ${payload.startedAt}. Wait for it or kill the process.`,
+      holderPid: payload.pid,
+      command: payload.command,
+      startedAt: payload.startedAt,
+    });
+  }
+  await fs.unlink(lockFile).catch(() => { /* ignore */ });
+  return ok({ kind: 'released', previous: payload });
 }
 
 // Returns a function that unregisters all handlers. Callers use this when
