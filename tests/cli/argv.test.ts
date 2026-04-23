@@ -182,3 +182,52 @@ describe('parseArgv — ti sources --from-tests', () => {
     }
   });
 });
+
+describe('parseArgv — ti explain', () => {
+  it('accepts a single positional id or path', () => {
+    const r = parseArgv({
+      argv: ['explain', 'phpunit:tests/Shop/CartTest.php::testAdd'],
+      stdinIsTty: true,
+    });
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok' && r.value.kind === 'explain') {
+      expect(r.value.target).toBe('phpunit:tests/Shop/CartTest.php::testAdd');
+    }
+  });
+
+  it('rejects when no target given', () => {
+    const r = parseArgv({ argv: ['explain'], stdinIsTty: true });
+    expect(r.kind).toBe('err');
+    if (r.kind === 'err') expect(r.error.message).toMatch(/target/i);
+  });
+
+  it('rejects when more than one target given', () => {
+    const r = parseArgv({ argv: ['explain', 'a', 'b'], stdinIsTty: true });
+    expect(r.kind).toBe('err');
+    if (r.kind === 'err') expect(r.error.message).toMatch(/exactly one/i);
+  });
+
+  it('rejects unknown flags', () => {
+    const r = parseArgv({ argv: ['explain', 'a', '--strict'], stdinIsTty: true });
+    expect(r.kind).toBe('err');
+  });
+});
+
+describe('parseArgv — ti unlock', () => {
+  it('parses with no flags (force=false)', () => {
+    const r = parseArgv({ argv: ['unlock'], stdinIsTty: true });
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok' && r.value.kind === 'unlock') expect(r.value.force).toBe(false);
+  });
+
+  it('parses --force', () => {
+    const r = parseArgv({ argv: ['unlock', '--force'], stdinIsTty: true });
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok' && r.value.kind === 'unlock') expect(r.value.force).toBe(true);
+  });
+
+  it('rejects positional arguments', () => {
+    const r = parseArgv({ argv: ['unlock', 'extra'], stdinIsTty: true });
+    expect(r.kind).toBe('err');
+  });
+});

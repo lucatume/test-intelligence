@@ -266,6 +266,33 @@ function parseSources(
   });
 }
 
+function parseExplain(argv: readonly string[]): Result<ParsedCommand, TiError> {
+  const positionals: string[] = [];
+  for (const tok of argv) {
+    if (tok.startsWith('-')) {
+      return err<TiError>({ kind: 'CliError', message: `'ti explain' takes no flags; got '${tok}'` });
+    }
+    positionals.push(tok);
+  }
+  if (positionals.length === 0) {
+    return err<TiError>({ kind: 'CliError', message: `'ti explain' requires a target id or path` });
+  }
+  if (positionals.length > 1) {
+    return err<TiError>({ kind: 'CliError', message: `'ti explain' requires exactly one target, got ${String(positionals.length)}` });
+  }
+  const [target] = positionals;
+  return ok({ kind: 'explain', target: target ?? '' });
+}
+
+function parseUnlock(argv: readonly string[]): Result<ParsedCommand, TiError> {
+  let force = false;
+  for (const tok of argv) {
+    if (tok === '--force') { force = true; continue; }
+    return err<TiError>({ kind: 'CliError', message: `'ti unlock' does not accept '${tok}'` });
+  }
+  return ok({ kind: 'unlock', force });
+}
+
 export function parseArgv(input: ParseArgvInput): Result<ParsedCommand, TiError> {
   const { argv, stdinIsTty } = input;
   if (argv.length === 0) return ok({ kind: 'help' });
@@ -278,6 +305,10 @@ export function parseArgv(input: ParseArgvInput): Result<ParsedCommand, TiError>
       return parseTests(rest, stdinIsTty);
     case 'sources':
       return parseSources(rest, stdinIsTty);
+    case 'explain':
+      return parseExplain(rest);
+    case 'unlock':
+      return parseUnlock(rest);
     default:
       return cliError(`unknown command '${String(head)}' — run 'ti --help' for usage`);
   }
