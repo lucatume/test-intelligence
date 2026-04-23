@@ -61,3 +61,49 @@ export async function readSchemaVersion(
   }
   return ok(parsed);
 }
+
+async function fsyncFile(absolutePath: string): Promise<void> {
+  const fh = await fs.open(absolutePath, 'r+');
+  try {
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+}
+
+async function fsyncDir(dirPath: string): Promise<void> {
+  if (process.platform === 'win32') return;
+  const fh = await fs.open(dirPath, 'r');
+  try {
+    await fh.sync();
+  } finally {
+    await fh.close();
+  }
+}
+
+export async function writeSchemaVersion(
+  tiDir: string,
+  version: number,
+): Promise<Result<void, TiError>> {
+  if (!Number.isInteger(version)) {
+    throw new Error(`writeSchemaVersion: version must be an integer, got ${String(version)}`);
+  }
+  const tmpDir = path.join(tiDir, '.tmp');
+  const finalFile = path.join(tiDir, 'schema-version');
+  const tempFile = path.join(tmpDir, `schema-version.${String(process.pid)}.tmp`);
+  try {
+    await fs.mkdir(tmpDir, { recursive: true });
+    await fs.writeFile(tempFile, `${String(version)}\n`, 'utf8');
+    await fsyncFile(tempFile);
+    await fs.rename(tempFile, finalFile);
+    await fsyncDir(tiDir);
+    return ok(undefined);
+  } catch (e) {
+    try { await fs.unlink(tempFile); } catch { /* ignore */ }
+    return err<TiError>({
+      kind: 'StorageWriteError',
+      message: `Failed to write schema-version: ${e instanceof Error ? e.message : String(e)}`,
+      path: finalFile,
+    });
+  }
+}

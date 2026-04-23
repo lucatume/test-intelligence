@@ -5,6 +5,7 @@ import {
   SUPPORTED_SCHEMA,
   readSchemaVersion,
   checkSchemaRange,
+  writeSchemaVersion,
 } from '../../src/storage/schema.js';
 import { useTmpDir } from '../helpers/tmpDir.js';
 
@@ -76,5 +77,33 @@ describe('readSchemaVersion', () => {
     const r = await readSchemaVersion(tiDir);
     expect(r.kind).toBe('ok');
     if (r.kind === 'ok') expect(r.value).toBe(999);
+  });
+});
+
+describe('writeSchemaVersion', () => {
+  const tmp = useTmpDir('ti-schema-write-');
+
+  it('writes the version and reads it back', async () => {
+    const tiDir = path.join(tmp(), '.test-intelligence');
+    await fs.mkdir(tiDir, { recursive: true });
+    const w = await writeSchemaVersion(tiDir, 1);
+    expect(w.kind).toBe('ok');
+    const r = await readSchemaVersion(tiDir);
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok') expect(r.value).toBe(1);
+  });
+
+  it('leaves no temp files behind after success', async () => {
+    const tiDir = path.join(tmp(), '.test-intelligence');
+    await fs.mkdir(tiDir, { recursive: true });
+    await writeSchemaVersion(tiDir, 1);
+    const tmpDir = path.join(tiDir, '.tmp');
+    const entries = await fs.readdir(tmpDir).catch(() => [] as string[]);
+    expect(entries).toEqual([]);
+  });
+
+  it('rejects non-integer values with a programmer-error throw', async () => {
+    const tiDir = path.join(tmp(), '.test-intelligence');
+    await expect(writeSchemaVersion(tiDir, 1.5)).rejects.toThrow();
   });
 });
