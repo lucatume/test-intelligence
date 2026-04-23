@@ -36,3 +36,106 @@ describe('parseArgv — empty argv and top-level flags', () => {
     }
   });
 });
+
+describe('parseArgv — ti tests --from-sources', () => {
+  it('parses the canonical S1 invocation', () => {
+    const r = parseArgv({
+      argv: ['tests', '--from-sources', 'src/Cart.php', 'src/cart.ts', '--framework=phpunit'],
+      stdinIsTty: true,
+    });
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok' && r.value.kind === 'tests') {
+      expect(r.value.framework).toBe('phpunit');
+      expect(r.value.format).toBe('args');
+      expect(r.value.strict).toBe(false);
+      expect(r.value.minConfidence).toBeUndefined();
+      expect(r.value.fromSources).toEqual({ kind: 'args', values: ['src/Cart.php', 'src/cart.ts'] });
+    }
+  });
+
+  it('accepts --framework jest (space form)', () => {
+    const r = parseArgv({
+      argv: ['tests', '--from-sources', 'src/x.ts', '--framework', 'jest'],
+      stdinIsTty: true,
+    });
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok' && r.value.kind === 'tests') expect(r.value.framework).toBe('jest');
+  });
+
+  it('accepts --format=json', () => {
+    const r = parseArgv({
+      argv: ['tests', '--from-sources', 'src/x.ts', '--framework=playwright', '--format=json'],
+      stdinIsTty: true,
+    });
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok' && r.value.kind === 'tests') expect(r.value.format).toBe('json');
+  });
+
+  it('accepts --min-confidence=0.5 and --strict', () => {
+    const r = parseArgv({
+      argv: ['tests', '--from-sources', 'src/x.ts', '--framework=phpunit', '--min-confidence=0.5', '--strict'],
+      stdinIsTty: true,
+    });
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok' && r.value.kind === 'tests') {
+      expect(r.value.minConfidence).toBeCloseTo(0.5);
+      expect(r.value.strict).toBe(true);
+    }
+  });
+
+  it('falls back to stdin when no positionals and stdin is not a TTY', () => {
+    const r = parseArgv({
+      argv: ['tests', '--from-sources', '--framework=phpunit'],
+      stdinIsTty: false,
+    });
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok' && r.value.kind === 'tests') {
+      expect(r.value.fromSources).toEqual({ kind: 'stdin' });
+    }
+  });
+
+  it('rejects when no positionals and stdin is a TTY', () => {
+    const r = parseArgv({
+      argv: ['tests', '--from-sources', '--framework=phpunit'],
+      stdinIsTty: true,
+    });
+    expect(r.kind).toBe('err');
+    if (r.kind === 'err') expect(r.error.message).toMatch(/no source paths/i);
+  });
+
+  it('rejects missing --framework', () => {
+    const r = parseArgv({
+      argv: ['tests', '--from-sources', 'src/x.ts'],
+      stdinIsTty: true,
+    });
+    expect(r.kind).toBe('err');
+    if (r.kind === 'err') expect(r.error.message).toMatch(/--framework/);
+  });
+
+  it('rejects unknown framework name', () => {
+    const r = parseArgv({
+      argv: ['tests', '--from-sources', 'src/x.ts', '--framework=mocha'],
+      stdinIsTty: true,
+    });
+    expect(r.kind).toBe('err');
+    if (r.kind === 'err') expect(r.error.message).toMatch(/mocha/);
+  });
+
+  it('rejects --min-confidence outside [0, 1]', () => {
+    const r = parseArgv({
+      argv: ['tests', '--from-sources', 'src/x.ts', '--framework=phpunit', '--min-confidence=1.5'],
+      stdinIsTty: true,
+    });
+    expect(r.kind).toBe('err');
+    if (r.kind === 'err') expect(r.error.message).toMatch(/min-confidence/i);
+  });
+
+  it('rejects unknown flag', () => {
+    const r = parseArgv({
+      argv: ['tests', '--from-sources', 'src/x.ts', '--framework=phpunit', '--turbo'],
+      stdinIsTty: true,
+    });
+    expect(r.kind).toBe('err');
+    if (r.kind === 'err') expect(r.error.message).toMatch(/--turbo/);
+  });
+});
