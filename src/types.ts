@@ -62,7 +62,7 @@ export type AnchorType =
   | 'block'
   | 'test';
 
-export const ALL_ANCHOR_TYPES: readonly AnchorType[] = [
+export const ALL_ANCHOR_TYPES = [
   'php-symbol',
   'js-symbol',
   'js-module',
@@ -74,4 +74,4 @@ export const ALL_ANCHOR_TYPES: readonly AnchorType[] = [
   'shortcode',
   'block',
   'test',
-] as const;
+] as const satisfies readonly AnchorType[];

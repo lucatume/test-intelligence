@@ -1,6 +1,8 @@
 import { describe, expect, it, expectTypeOf } from 'vitest';
+import { ALL_ANCHOR_TYPES } from '../src/types.js';
 import type {
   AnchorKey,
+  AnchorType,
   Confidence,
   FactKind,
   FrameworkName,
@@ -60,6 +62,15 @@ describe('branded type identities', () => {
     const _bad: ProjectRelativePath = a;
     void _bad;
     expect(typeof a).toBe('string');
+  });
+
+  it('ALL_ANCHOR_TYPES enumerates exactly AnchorType', () => {
+    type FromArray = (typeof ALL_ANCHOR_TYPES)[number];
+    // type-only checks: both directions must hold.
+    const _f: FromArray extends AnchorType ? true : false = true;
+    const _g: AnchorType extends FromArray ? true : false = true;
+    void _f; void _g;
+    expect(ALL_ANCHOR_TYPES.length).toBe(11);
   });
 
   it('FactKind has the sealed v1 set', () => {
