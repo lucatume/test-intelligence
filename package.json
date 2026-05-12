@@ -23,6 +23,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "postbuild": "cp src/store/schema.sql dist/store/schema.sql",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
