@@ -36,6 +36,7 @@ function parseRest(raw: string, body: string): Result<RestAnchor, AnchorParseErr
   if (route === '' || !route.startsWith('/')) {
     return err(makeErr(raw, 'route must start with "/"'));
   }
+  // `- 1` keeps the leading '/' of the resulting route.
   if (route.startsWith(WP_JSON_PREFIX)) route = route.slice(WP_JSON_PREFIX.length - 1);
   if (route.length > 1 && route.endsWith('/')) route = route.slice(0, -1);
   const partial = ROUTE_PARAM_RE.test(route);
