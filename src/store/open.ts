@@ -22,16 +22,39 @@ export interface OpenStoreError {
 
 export function openStore(projectRoot: string): Result<OpenStore, OpenStoreError> {
   const tiDir = join(projectRoot, '.ti');
-  if (!existsSync(tiDir)) mkdirSync(tiDir, { recursive: true });
+  try {
+    if (!existsSync(tiDir)) mkdirSync(tiDir, { recursive: true });
+  } catch (e) {
+    return err({
+      kind: 'OpenStoreError',
+      message: `failed to create .ti/: ${(e as Error).message}`,
+    });
+  }
 
   const dbPath = join(tiDir, 'store.db');
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
+  let db: Database.Database;
+  try {
+    db = new Database(dbPath);
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
+  } catch (e) {
+    return err({
+      kind: 'OpenStoreError',
+      message: `failed to open ${dbPath}: ${(e as Error).message}`,
+    });
+  }
 
   let version = getSchemaVersion(db);
   if (version === null) {
-    applyInitialSchema(db);
+    try {
+      applyInitialSchema(db);
+    } catch (e) {
+      db.close();
+      return err({
+        kind: 'OpenStoreError',
+        message: `failed to apply initial schema: ${(e as Error).message}`,
+      });
+    }
     version = CURRENT_SCHEMA_VERSION;
   } else if (version < CURRENT_SCHEMA_VERSION) {
     db.close();

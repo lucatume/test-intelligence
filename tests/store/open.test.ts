@@ -35,6 +35,16 @@ describe('openStore', () => {
     }
   });
 
+  it('schema_version table rejects duplicate version rows', () => {
+    const r = openStore(root);
+    expect(r.kind).toBe('ok');
+    if (r.kind !== 'ok') return;
+    expect(() => {
+      r.value.db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(1);
+    }).toThrow(/UNIQUE constraint failed/);
+    r.value.close();
+  });
+
   it('contains the v1 tables after migration', () => {
     const r = openStore(root);
     expect(r.kind).toBe('ok');

@@ -1,5 +1,5 @@
 CREATE TABLE schema_version (
-  version INTEGER NOT NULL
+  version INTEGER PRIMARY KEY NOT NULL
 );
 
 CREATE TABLE meta (
@@ -54,6 +54,8 @@ CREATE TABLE test (
   fact_id          INTEGER NOT NULL REFERENCES fact(id) ON DELETE CASCADE
 );
 
+-- edge / edge_provenance intentionally have no REFERENCES — they are rebuilt
+-- by the derive phase and tolerate brief dangling rows during rebuild.
 CREATE TABLE edge (
   test_id    TEXT NOT NULL,
   source     TEXT NOT NULL,
