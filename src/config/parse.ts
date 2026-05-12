@@ -97,8 +97,10 @@ const DEFAULT_VENDOR: readonly string[] = ['vendor/**'];
 const DEFAULT_MAX_DEPTH = 25;
 const DEFAULT_MAX_MILLIS_PER_TEST = 5000;
 
-// `HOOK_STOP_LIST_BUILTINS` is the canonical WordPress-hook stop-list used by the
-// hooks extractor (Plan C). Defined here so the schema and the extractor share one source.
+// HOOK_STOP_LIST_BUILTINS is the default set of WP hooks that fire on every
+// page load and should not be walked by the derivation engine. The effective
+// stop-list at derivation time is `(BUILTINS ∪ hooks.stopList.add) \ hooks.stopList.remove`.
+// This export is consumed by the derivation engine landing in Plan D.
 export const HOOK_STOP_LIST_BUILTINS: readonly string[] = [
   'init',
   'wp_loaded',

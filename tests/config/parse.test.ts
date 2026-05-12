@@ -51,7 +51,7 @@ describe('parseConfig — overrides', () => {
     expect(r.value.hooks.stopList.remove).toEqual(['template_redirect']);
   });
 
-  it('clamps confidence threshold to [0, 1]', () => {
+  it('rejects confidence threshold outside [0, 1]', () => {
     const r = parseConfig({ confidence: { threshold: -0.5 } });
     expect(r.kind).toBe('err');
   });
@@ -63,6 +63,13 @@ describe('parseConfig — overrides', () => {
 
   it('rejects unknown fields at the top level', () => {
     const r = parseConfig({ frameworks: {} }); // old shape — must not be accepted silently
+    expect(r.kind).toBe('err');
+  });
+
+  it('rejects unknown sub-object fields (typo guard)', () => {
+    const r = parseConfig({
+      tests: { phpunit: { baseClass: [] } },  // singular typo; correct field is baseClasses
+    });
     expect(r.kind).toBe('err');
   });
 });
