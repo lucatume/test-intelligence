@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import { realpathSync } from 'node:fs';
 import type { Io } from './cli/io.js';
 import { HELP_TEXT } from './cli/help.js';
 import { parseArgv } from './cli/parseArgv.js';
@@ -21,16 +22,20 @@ export function run(argv: readonly string[], io: Io): Promise<number> {
       io.stderr.write(`ti: ${cmd.verb} is not yet implemented in this build\n`);
       return Promise.resolve(1);
     case 'unknown-command':
-      io.stderr.write(`ti: unknown command "${cmd.input}" — see \`ti --help\`\n`);
+      io.stderr.write(`ti: unknown command "${cmd.input}" - see \`ti --help\`\n`);
       return Promise.resolve(1);
   }
 }
 
 // Bootstrap when invoked as a binary (not when imported as a library).
-// `process.argv[1]` is the script path; compare to import.meta.url to detect.
+// `process.argv[1]` is the script path; resolve symlinks on both sides so a
+// symlinked bin (e.g. node_modules/.bin/ti -> dist/cli.js) still matches.
 const isMain = (() => {
   try {
-    return process.argv[1] === fileURLToPath(import.meta.url);
+    const moduleUrl = fileURLToPath(import.meta.url);
+    const argv1 = process.argv[1];
+    if (argv1 === undefined) return false;
+    return realpathSync(moduleUrl) === realpathSync(argv1);
   } catch {
     return false;
   }
@@ -56,7 +61,12 @@ if (isMain) {
       }),
     stdinIsTty: process.stdin.isTTY ? true : false,
   };
-  void run(process.argv.slice(2), realIo).then((code) => {
-    process.exit(code);
-  });
+  run(process.argv.slice(2), realIo)
+    .then((code) => {
+      process.exit(code);
+    })
+    .catch((e: unknown) => {
+      process.stderr.write(`ti: error: ${e instanceof Error ? e.message : String(e)}\n`);
+      process.exit(1);
+    });
 }

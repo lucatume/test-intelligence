@@ -1,4 +1,4 @@
-export const HELP_TEXT = `ti — test intelligence (static analysis)
+export const HELP_TEXT = `ti - test intelligence (static analysis)
 
 USAGE
   ti <command> [flags]
