@@ -14,20 +14,20 @@ describe('loadConfigFile — .ts', () => {
   it('loads a ti.config.ts using defineConfig', async () => {
     const cfg = path.join(tmp, 'ti.config.ts');
     await fs.writeFile(cfg, `
-      export default { frameworks: { jest: { runner: { bin: 'npx', args: ['jest'] } } } };
+      export default { tests: { jest: { fileGlobs: ['**/*.test.ts'] } } };
     `);
     const r = await loadConfigFile(cfg);
     expect(r.kind).toBe('ok');
     if (r.kind === 'ok') {
-      const v = r.value as { frameworks?: { jest?: { runner?: unknown } } };
-      expect(v.frameworks?.jest?.runner).toEqual({ bin: 'npx', args: ['jest'] });
+      const v = r.value as { tests?: { jest?: { fileGlobs?: readonly string[] } } };
+      expect(v.tests?.jest?.fileGlobs).toEqual(['**/*.test.ts']);
     }
   });
 
   it('loads a ti.config.mjs', async () => {
     const cfg = path.join(tmp, 'ti.config.mjs');
     await fs.writeFile(cfg, `
-      export default { confidence: { runtime: 1, static: 0.5, heuristic: 0.1 } };
+      export default { confidence: { threshold: 0.5 } };
     `);
     const r = await loadConfigFile(cfg);
     expect(r.kind).toBe('ok');

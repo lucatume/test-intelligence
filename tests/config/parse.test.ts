@@ -1,86 +1,68 @@
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { parseConfig } from '../../src/config/parse.js';
 
-describe('parseConfig — defaults', () => {
-  it('accepts an empty object and fills all defaults', () => {
+describe('parseConfig — empty object', () => {
+  it('produces a fully-defaulted ValidatedConfig', () => {
     const r = parseConfig({});
     expect(r.kind).toBe('ok');
-    if (r.kind === 'ok') {
-      expect(r.value.confidence).toEqual({ runtime: 1.0, static: 0.7, heuristic: 0.3 });
-      expect(r.value.build.testTimeoutSeconds).toBe(60);
-      expect(r.value.build.parallel).toBe(true);
-      expect(r.value.build.maxCoverageArtifactBytes).toBe(500 * 1024 * 1024);
-      expect(r.value.ignore).toEqual([]);
-      expect(r.value.allowSymlinkTargets).toEqual([]);
-      expect(r.value.frameworks).toEqual({});
-      expect(r.value.views).toEqual({});
-    }
+    if (r.kind !== 'ok') return;
+    const c = r.value;
+    expect(c.tests.defaultClass).toBe('unit');
+    expect(c.tests.classes).toEqual([]);
+    expect(c.tests.phpunit.baseClasses).toEqual(['PHPUnit\\Framework\\TestCase']);
+    expect(c.tests.phpunit.methodPatterns).toEqual(['test*', '@test', '#[Test]']);
+    expect(c.tests.jest.fileGlobs).toEqual([
+      '**/*.test.{ts,tsx,js,jsx}',
+      '**/*.spec.{ts,tsx,js,jsx}',
+    ]);
+    expect(c.hooks.stopList.add).toEqual([]);
+    expect(c.hooks.stopList.remove).toEqual([]);
+    expect(c.extractors).toEqual([]);
+    expect(c.confidence.threshold).toBe(0.0);
+    expect(c.traversal.maxDepth).toBe(25);
+    expect(c.traversal.maxMillisPerTest).toBe(5000);
+    expect(c.concurrency.phpWorkers).toBeUndefined();
+    expect(c.ignore).toEqual(['node_modules/**', 'dist/**', 'build/**']);
+    expect(c.vendor).toEqual(['vendor/**']);
+    expect(c.allowSymlinkTargets).toEqual([]);
   });
 });
 
-describe('parseConfig — frameworks', () => {
-  it('accepts a well-formed phpunit framework block', () => {
+describe('parseConfig — overrides', () => {
+  it('honours tests.classes path globs', () => {
     const r = parseConfig({
-      frameworks: {
-        phpunit: {
-          runner: { bin: 'vendor/bin/phpunit', args: [] },
-          coverage: 'pcov',
-        },
+      tests: {
+        classes: [{ paths: ['tests/E2E/**'], class: 'e2e' }],
+        defaultClass: 'unit',
       },
     });
     expect(r.kind).toBe('ok');
-    if (r.kind === 'ok') {
-      expect(r.value.frameworks.phpunit?.runner).toEqual({
-        bin: 'vendor/bin/phpunit', args: [],
-      });
-      expect(r.value.frameworks.phpunit?.coverage).toBe('pcov');
-    }
+    if (r.kind !== 'ok') return;
+    expect(r.value.tests.classes).toEqual([{ paths: ['tests/E2E/**'], class: 'e2e' }]);
   });
 
-  it('accepts runner with bin-only (defaults args to [])', () => {
+  it('honours hooks.stopList add/remove', () => {
     const r = parseConfig({
-      frameworks: { jest: { runner: { bin: 'npx', args: ['jest'] } } },
+      hooks: { stopList: { add: ['custom'], remove: ['template_redirect'] } },
     });
     expect(r.kind).toBe('ok');
-    if (r.kind === 'ok') {
-      expect(r.value.frameworks.jest?.runner.args).toEqual(['jest']);
-    }
+    if (r.kind !== 'ok') return;
+    expect(r.value.hooks.stopList.add).toEqual(['custom']);
+    expect(r.value.hooks.stopList.remove).toEqual(['template_redirect']);
   });
 
-  it('rejects runner missing bin', () => {
-    const r = parseConfig({
-      frameworks: { jest: { runner: { args: [] } } },
-    });
+  it('clamps confidence threshold to [0, 1]', () => {
+    const r = parseConfig({ confidence: { threshold: -0.5 } });
     expect(r.kind).toBe('err');
   });
 
-  it('rejects unknown framework name', () => {
-    const r = parseConfig({
-      frameworks: { mocha: { runner: { bin: 'x', args: [] } } },
-    });
+  it('rejects negative traversal.maxDepth', () => {
+    const r = parseConfig({ traversal: { maxDepth: -1 } });
     expect(r.kind).toBe('err');
   });
-});
 
-describe('parseConfig — confidence weights', () => {
-  it('accepts valid weights', () => {
-    const r = parseConfig({ confidence: { runtime: 0.9, static: 0.5, heuristic: 0.1 } });
-    expect(r.kind).toBe('ok');
-  });
-
-  it('rejects weights outside [0, 1]', () => {
-    const r = parseConfig({ confidence: { runtime: 1.5, static: 0.5, heuristic: 0.1 } });
+  it('rejects unknown fields at the top level', () => {
+    const r = parseConfig({ frameworks: {} }); // old shape — must not be accepted silently
     expect(r.kind).toBe('err');
-  });
-});
-
-describe('parseConfig — errors are path-qualified', () => {
-  it('reports the field path in error messages', () => {
-    const r = parseConfig({ build: { testTimeoutSeconds: 'nope' } });
-    expect(r.kind).toBe('err');
-    if (r.kind === 'err') {
-      expect(r.error.some((e) => e.path.includes('build') && e.path.includes('testTimeoutSeconds')))
-        .toBe(true);
-    }
   });
 });

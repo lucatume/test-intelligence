@@ -5,11 +5,14 @@ import type { TiError } from '../errors.js';
 
 const CONFIG_KEYS = new Set([
   'default',
-  'frameworks',
+  'tests',
+  'hooks',
+  'extractors',
   'confidence',
-  'views',
-  'build',
+  'traversal',
+  'concurrency',
   'ignore',
+  'vendor',
   'allowSymlinkTargets',
 ]);
 
