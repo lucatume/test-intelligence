@@ -21,27 +21,23 @@ export default tseslint.config(
     },
     settings: {
       'boundaries/elements': [
-        { type: 'result',    pattern: 'src/result.ts' },
-        { type: 'parse',     pattern: 'src/parse.ts' },
-        { type: 'types',     pattern: 'src/types.ts' },
-        { type: 'clock',     pattern: 'src/clock.ts' },
-        { type: 'paths',     pattern: 'src/paths.ts' },
-        { type: 'ids',       pattern: 'src/ids.ts' },
-        { type: 'errors',    pattern: 'src/errors.ts' },
-        { type: 'anchors',   pattern: 'src/anchors/**' },
-        { type: 'store',     pattern: 'src/store/**' },
-        { type: 'config',    pattern: 'src/config/**' },
+        // Foundation = the leaf modules every other zone may depend on.
+        // Collapsed to a single zone so the DAG is enforced as a DAG, not a chain.
+        { type: 'foundation', pattern: 'src/{result,parse,types,clock,paths,ids,errors}.ts' },
+        { type: 'anchors',    pattern: 'src/anchors/**' },
+        { type: 'store',      pattern: 'src/store/**' },
+        { type: 'config',     pattern: 'src/config/**' },
         // Plan B+ zones - registered now so future code is constrained on arrival.
-        { type: 'facts',     pattern: 'src/facts/**' },
-        { type: 'extract',   pattern: 'src/extract/**' },
-        { type: 'derive',    pattern: 'src/derive/**' },
-        { type: 'storage',   pattern: 'src/storage/**' },
-        { type: 'query',     pattern: 'src/query/**' },
-        { type: 'emit',      pattern: 'src/emit/**' },
-        { type: 'cli',       pattern: 'src/cli/**' },
-        { type: 'cli-entry', pattern: 'src/cli.ts' },
-        { type: 'index',     pattern: 'src/index.ts' },
-        { type: 'test',      pattern: 'tests/**' },
+        { type: 'facts',      pattern: 'src/facts/**' },
+        { type: 'extract',    pattern: 'src/extract/**' },
+        { type: 'derive',     pattern: 'src/derive/**' },
+        { type: 'query',      pattern: 'src/query/**' },
+        { type: 'emit',       pattern: 'src/emit/**' },
+        { type: 'cli',        pattern: 'src/cli/**' },
+        { type: 'cli-entry',  pattern: 'src/cli.ts' },
+        // Public barrel: may re-export from any zone exposed in the public API.
+        { type: 'barrel',     pattern: 'src/index.ts' },
+        { type: 'test',       pattern: 'tests/**' },
       ],
       'import/resolver': {
         typescript: { project: './tsconfig.json' },
@@ -50,29 +46,24 @@ export default tseslint.config(
     rules: {
       'import/no-cycle': ['error', { maxDepth: Infinity }],
       'import/no-duplicates': 'error',
+      // DAG, not a chain: every zone has an explicit positive allow-list.
+      // default: 'disallow' means anything not enumerated below is rejected.
       'boundaries/element-types': ['error', {
-        default: 'allow',
+        default: 'disallow',
         rules: [
-          // Foundations: may not depend on higher layers
-          { from: 'result',    disallow: ['parse', 'types', 'clock', 'paths', 'ids', 'errors', 'anchors', 'store', 'config', 'facts', 'extract', 'derive', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
-          { from: 'parse',     disallow: ['types', 'clock', 'paths', 'ids', 'errors', 'anchors', 'store', 'config', 'facts', 'extract', 'derive', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
-          { from: 'types',     disallow: ['clock', 'paths', 'ids', 'errors', 'anchors', 'store', 'config', 'facts', 'extract', 'derive', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
-          { from: 'clock',     disallow: ['paths', 'ids', 'errors', 'anchors', 'store', 'config', 'facts', 'extract', 'derive', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
-          { from: 'paths',     disallow: ['ids', 'errors', 'anchors', 'store', 'config', 'facts', 'extract', 'derive', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
-          { from: 'ids',       disallow: ['errors', 'anchors', 'store', 'config', 'facts', 'extract', 'derive', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
-          { from: 'errors',    disallow: ['anchors', 'store', 'config', 'facts', 'extract', 'derive', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
-          { from: 'anchors',   disallow: ['store', 'config', 'facts', 'extract', 'derive', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
-          { from: 'store',     disallow: ['config', 'facts', 'extract', 'derive', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
-          { from: 'config',    disallow: ['facts', 'extract', 'derive', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
-          // Plan B+ layers (pre-registered): facts -> extract/derive (peers) -> query/emit -> cli -> cli-entry
-          { from: 'facts',     disallow: ['extract', 'derive', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
-          { from: 'extract',   disallow: ['derive', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
-          { from: 'derive',    disallow: ['extract', 'storage', 'query', 'emit', 'cli', 'cli-entry'] },
-          { from: 'storage',   disallow: ['query', 'emit', 'cli', 'cli-entry'] },
-          { from: 'query',     disallow: ['emit', 'cli', 'cli-entry'] },
-          { from: 'emit',      disallow: ['cli', 'cli-entry'] },
-          { from: 'cli',       disallow: ['cli-entry'] },
-          // 'index' and 'cli-entry' have no outbound rules — they are the ceilings of their stacks.
+          { from: 'foundation', allow: ['foundation'] },
+          { from: 'anchors',    allow: ['anchors', 'foundation'] },
+          { from: 'store',      allow: ['store', 'foundation'] },
+          { from: 'config',     allow: ['config', 'foundation'] },
+          { from: 'facts',      allow: ['facts', 'anchors', 'foundation'] },
+          { from: 'extract',    allow: ['extract', 'anchors', 'facts', 'foundation', 'store'] },
+          { from: 'derive',     allow: ['derive', 'anchors', 'facts', 'foundation', 'store'] },
+          { from: 'query',      allow: ['query', 'store', 'anchors', 'foundation'] },
+          { from: 'emit',       allow: ['emit', 'foundation'] },
+          { from: 'cli',        allow: ['cli', 'config', 'store', 'anchors', 'query', 'emit', 'foundation'] },
+          { from: 'cli-entry',  allow: ['cli-entry', 'cli', 'config', 'store', 'anchors', 'query', 'emit', 'foundation'] },
+          // Public barrel re-exports whatever the public API surfaces.
+          { from: 'barrel',     allow: ['barrel', 'config', 'foundation'] },
         ],
       }],
       // Ban the ambient time/random effects (spec §Testing strategy).
