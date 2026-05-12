@@ -19,7 +19,14 @@ export function initCommand(opts: InitCommandOpts): Promise<number> {
 
   // Ensure .ti/ exists regardless.
   const tiDir = join(projectRoot, '.ti');
-  if (!existsSync(tiDir)) mkdirSync(tiDir, { recursive: true });
+  if (!existsSync(tiDir)) {
+    try {
+      mkdirSync(tiDir, { recursive: true });
+    } catch (e) {
+      io.stderr.write(`ti: error: failed to create .ti/: ${(e as Error).message}\n`);
+      return Promise.resolve(1);
+    }
+  }
 
   const configPath = join(projectRoot, 'ti.config.ts');
   if (existsSync(configPath)) {
@@ -29,7 +36,12 @@ export function initCommand(opts: InitCommandOpts): Promise<number> {
 
   const detected = detect(projectRoot);
   const content = renderStarterConfig(detected);
-  writeFileSync(configPath, content, { encoding: 'utf8' });
+  try {
+    writeFileSync(configPath, content, { encoding: 'utf8' });
+  } catch (e) {
+    io.stderr.write(`ti: error: failed to write ti.config.ts: ${(e as Error).message}\n`);
+    return Promise.resolve(1);
+  }
   return Promise.resolve(0);
 }
 
@@ -47,9 +59,15 @@ function detect(projectRoot: string): Detected {
 function readJsonField(projectRoot: string, file: string, path: readonly string[]): unknown {
   const fp = join(projectRoot, file);
   if (!existsSync(fp)) return null;
+  let raw: string;
+  try {
+    raw = readFileSync(fp, 'utf8');
+  } catch {
+    return null;
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(fp, 'utf8'));
+    parsed = JSON.parse(raw);
   } catch {
     return null;
   }
