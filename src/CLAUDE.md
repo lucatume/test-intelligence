@@ -4,12 +4,40 @@ This subtree is the internal library. Assume root `CLAUDE.md` conventions (TDD, 
 
 ## Module DAG
 
-Imports flow one way, left → right. Each layer may import only from layers to its left. Enforced by `eslint-plugin-boundaries` — the element types are declared in `eslint.config.js` under `settings.boundaries/elements` and the disallow rules under `rules.boundaries/element-types`.
+The architecture is a DAG of zones, not a linear chain. Each zone has an explicit positive allow-list of zones it may import from; anything not enumerated is rejected. Enforced by `eslint-plugin-boundaries` — element types declared in `eslint.config.js` under `settings.boundaries/elements` and rules under `rules.boundaries/element-types`. Authoritative definition lives in `eslint.config.js`.
+
+Zones:
 
 ```
-result → parse → types → clock → paths → ids → errors → config → storage
-    → query → emit → cli → cli.ts          ↑
-                                   index.ts (public barrel)
+foundation = src/{result,parse,types,clock,paths,ids,errors}.ts
+barrel     = src/index.ts
+anchors    = src/anchors/**
+store      = src/store/**
+config     = src/config/**
+facts      = src/facts/**          (Plan B; pre-registered, no files yet)
+extract    = src/extract/**        (Plan B; pre-registered)
+derive     = src/derive/**         (Plan D; pre-registered)
+query      = src/query/**          (Plan F; pre-registered)
+emit       = src/emit/**           (Plan F; pre-registered)
+cli        = src/cli/**
+cli-entry  = src/cli.ts
+```
+
+Allow-lists (each zone → what it may import from):
+
+```
+foundation → foundation
+anchors    → anchors, foundation
+store      → store, foundation
+config     → config, foundation
+barrel     → barrel, config, foundation
+facts      → facts, anchors, foundation
+extract    → extract, anchors, facts, foundation, store
+derive     → derive, anchors, facts, foundation, store
+query      → query, store, anchors, foundation
+emit       → emit, foundation
+cli        → cli, config, store, anchors, query, emit, foundation
+cli-entry  → cli, cli-entry, foundation
 ```
 
 Cycles are additionally forbidden by `import/no-cycle`.
@@ -24,17 +52,18 @@ Cycles are additionally forbidden by `import/no-cycle`.
 - `ids.ts` — `parseTestId` turning `framework:path[::filter]` strings into `TestId`.
 - `errors.ts` — `TiError` discriminated union + `exitCodeFor`. Exit codes: 0 success, 1 invocation, 2 strict-unknown. When a new failure mode appears, add a variant here — not an ad-hoc error type in the calling module.
 - `index.ts` — public barrel. Exports `defineConfig` and the config type aliases (`UserConfig`, `ValidatedConfig`) and **nothing else**. Interior modules are not part of the public API.
+- `anchors/` — stable file-identity primitives (path + content hash) shared by `facts`, `extract`, `derive`, `query`, and `cli`.
 - `config/` — see `config/CLAUDE.md`.
-- `storage/` — see `storage/CLAUDE.md`.
-- `cli.ts` — bin entrypoint; reads `process.argv`, `process.stdin`, `process.stdout`, `process.stderr`, calls `dispatch`, calls `process.exit(code)`. **The only file permitted to mutate `process`.**
+- `store/` — see `store/CLAUDE.md`. On-disk SQLite store, lock protocol, schema migration.
+- `cli.ts` — bin entrypoint; reads `process.argv`, `process.stdin`, `process.stdout`, `process.stderr`, calls `dispatch`, calls `process.exit(code)`. **The only file permitted to mutate `process`.** Imports only `src/cli/**` and foundations — everything else funnels through the `cli` zone.
 - `cli/` — argv parser, help/version text, dispatch orchestrator, IO seam. Adds kinds only as commands land.
-- `query/` — pure functions over synthesized `Shard[]` + `Index`. Confidence combination, staleness, deduplication and coarser-granularity collapse live here.
-- `emit/` — pure formatters. Framework-specific `--format=args` output and shared `--format=json` output.
-- `storage/schema.ts` — `SUPPORTED_SCHEMA` constants; `readSchemaVersion`, `writeSchemaVersion`, `checkSchemaRange`. The **only** module that knows the on-disk integer's encoding.
+- `query/` — pure functions over synthesized `Shard[]` + `Index`. Confidence combination, staleness, deduplication and coarser-granularity collapse live here. (Plan F; pre-registered.)
+- `emit/` — pure formatters. Framework-specific `--format=args` output and shared `--format=json` output. (Plan F; pre-registered.)
+- `facts/`, `extract/`, `derive/` — Plan B/D zones, pre-registered with empty implementations so future code is constrained on arrival.
 
 ## Adding a new unit
 
-1. Decide the layer. Every top-level file in `src/` (`result.ts`, `parse.ts`, `types.ts`, `clock.ts`, `paths.ts`, `ids.ts`, `errors.ts`) is its own boundary element, and each subdirectory (`config/`, `storage/`) is one too. A new top-level file **requires** a new `{ type, pattern }` in `settings.boundaries/elements` **and** its place in the `rules.boundaries/element-types` disallow list — declared in `eslint.config.js` before writing the code. Otherwise the new file is outside the boundary graph and silently escapes enforcement.
+1. Decide the zone. The seven foundation files (`result.ts`, `parse.ts`, `types.ts`, `clock.ts`, `paths.ts`, `ids.ts`, `errors.ts`) all share the `foundation` zone — any of them may import from any of the others. Each subdirectory (`anchors/`, `store/`, `config/`, `facts/`, `extract/`, `derive/`, `query/`, `emit/`, `cli/`) is its own zone, plus `cli.ts` (`cli-entry`) and `index.ts` (`barrel`). A new top-level file **requires** a new `{ type, pattern }` in `settings.boundaries/elements` **and** an entry in the `rules.boundaries/element-types` allow-list — declared in `eslint.config.js` before writing the code. Otherwise the new file is outside the boundary graph and silently escapes enforcement.
 2. Write the failing test first at `tests/<same-path>.test.ts` (see `tests/CLAUDE.md`).
 3. Implement to green; refactor.
 4. If the new unit is part of the public API, export it through `index.ts` — otherwise keep it interior.
@@ -46,7 +75,8 @@ Interior errors are plain `TiError` variants (or lower-level shape-specific erro
 
 ## Modify me when…
 
-- A new `src/<file>.ts` is promoted to its own boundary layer (update DAG + file list).
+- A new zone is added or an existing zone's allow-list changes in `eslint.config.js` (update DAG + allow-lists here too).
+- A pre-registered zone (`facts`, `extract`, `derive`, `query`, `emit`) gains its first real file — promote it from "pre-registered" to a real file-purpose entry.
 - The public barrel `index.ts` gains or loses an export.
 - An invariant emerges that spans more than one file in `src/` but is not universal enough for the root.
 

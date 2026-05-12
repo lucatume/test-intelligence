@@ -61,7 +61,7 @@ export default tseslint.config(
           { from: 'query',      allow: ['query', 'store', 'anchors', 'foundation'] },
           { from: 'emit',       allow: ['emit', 'foundation'] },
           { from: 'cli',        allow: ['cli', 'config', 'store', 'anchors', 'query', 'emit', 'foundation'] },
-          { from: 'cli-entry',  allow: ['cli-entry', 'cli', 'config', 'store', 'anchors', 'query', 'emit', 'foundation'] },
+          { from: 'cli-entry',  allow: ['cli-entry', 'cli', 'foundation'] },
           // Public barrel re-exports whatever the public API surfaces.
           { from: 'barrel',     allow: ['barrel', 'config', 'foundation'] },
         ],
