@@ -1,18 +1,28 @@
 import type { Result } from '../result.js';
 import { err, ok } from '../result.js';
-import type { AnchorKey } from '../types.js';
-import type { Anchor, AnchorParseError, RestAnchor } from './types.js';
+import type { AnchorKey, AnchorType } from '../types.js';
+import { ALL_ANCHOR_TYPES } from '../types.js';
+import type { Anchor, AnchorParseError, RestAnchor, SimpleAnchor } from './types.js';
 
 const ROUTE_PARAM_RE = /\{\*\}/;
 const WP_JSON_PREFIX = '/wp-json/';
+const AJAX_PREFIX_RE = /^wp_ajax_(?:nopriv_)?(.+)$/;
+
+const ANCHOR_TYPE_SET: ReadonlySet<AnchorType> = new Set(ALL_ANCHOR_TYPES);
 
 export function parseAnchor(raw: string): Result<Anchor, AnchorParseError> {
   const colon = raw.indexOf(':');
   if (colon === -1) return err(makeErr(raw, 'missing ":" separator'));
   const type = raw.slice(0, colon);
   const body = raw.slice(colon + 1);
+  if (!ANCHOR_TYPE_SET.has(type as AnchorType)) {
+    return err(makeErr(raw, `unknown anchor type "${type}"`));
+  }
+  if (body === '') return err(makeErr(raw, 'empty body'));
   if (type === 'rest') return parseRest(raw, body);
-  return err(makeErr(raw, `anchor type "${type}" not yet supported`));
+  if (type === 'ajax') return parseAjax(raw, body);
+  if (type === 'php-symbol') return parsePhpSymbol(raw, body);
+  return parseSimple(type as Exclude<AnchorType, 'rest'>, body);
 }
 
 function parseRest(raw: string, body: string): Result<RestAnchor, AnchorParseError> {
@@ -42,6 +52,27 @@ function parseRest(raw: string, body: string): Result<RestAnchor, AnchorParseErr
   const partial = ROUTE_PARAM_RE.test(route);
   const key = `rest:${method} ${route}` as AnchorKey;
   return ok({ key, type: 'rest', method, route, partial });
+}
+
+function parseAjax(raw: string, body: string): Result<SimpleAnchor, AnchorParseError> {
+  const m = AJAX_PREFIX_RE.exec(body);
+  const captured = m ? m[1] : undefined;
+  const action = captured ?? body;
+  if (action === '') return err(makeErr(raw, 'empty ajax action'));
+  return ok({ key: `ajax:${action}` as AnchorKey, type: 'ajax', body: action });
+}
+
+function parsePhpSymbol(raw: string, body: string): Result<SimpleAnchor, AnchorParseError> {
+  const normalized = body.startsWith('\\') ? body.slice(1) : body;
+  if (normalized === '') return err(makeErr(raw, 'empty symbol'));
+  return ok({ key: `php-symbol:${normalized}` as AnchorKey, type: 'php-symbol', body: normalized });
+}
+
+function parseSimple(
+  type: Exclude<AnchorType, 'rest'>,
+  body: string,
+): Result<SimpleAnchor, AnchorParseError> {
+  return ok({ key: `${type}:${body}` as AnchorKey, type, body });
 }
 
 function makeErr(raw: string, reason: string): AnchorParseError {
