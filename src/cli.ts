@@ -4,6 +4,7 @@ import type { Io } from './cli/io.js';
 import { HELP_TEXT } from './cli/help.js';
 import { parseArgv } from './cli/parseArgv.js';
 import { versionString } from './cli/version.js';
+import { initCommand } from './cli/commands/init.js';
 
 export function run(argv: readonly string[], io: Io): Promise<number> {
   const cmd = parseArgv(argv);
@@ -15,6 +16,7 @@ export function run(argv: readonly string[], io: Io): Promise<number> {
       io.stdout.write(versionString() + '\n');
       return Promise.resolve(0);
     case 'init':
+      return initCommand({ projectRoot: process.cwd(), io });
     case 'config':
       io.stderr.write(`ti: ${cmd.kind} not yet implemented in Plan A\n`);
       return Promise.resolve(1);
