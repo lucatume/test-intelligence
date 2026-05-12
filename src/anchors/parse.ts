@@ -6,7 +6,8 @@ import type { Anchor, AnchorParseError, RestAnchor, SimpleAnchor } from './types
 
 const ROUTE_PARAM_RE = /\{\*\}/;
 const WP_JSON_PREFIX = '/wp-json/';
-const AJAX_PREFIX_RE = /^wp_ajax_(?:nopriv_)?(.+)$/;
+const AJAX_PREFIX = 'wp_ajax_';
+const AJAX_NOPRIV_PREFIX = 'wp_ajax_nopriv_';
 
 const ANCHOR_TYPE_SET: ReadonlySet<AnchorType> = new Set(ALL_ANCHOR_TYPES);
 
@@ -55,9 +56,9 @@ function parseRest(raw: string, body: string): Result<RestAnchor, AnchorParseErr
 }
 
 function parseAjax(raw: string, body: string): Result<SimpleAnchor, AnchorParseError> {
-  const m = AJAX_PREFIX_RE.exec(body);
-  const captured = m ? m[1] : undefined;
-  const action = captured ?? body;
+  let action = body;
+  if (action.startsWith(AJAX_NOPRIV_PREFIX)) action = action.slice(AJAX_NOPRIV_PREFIX.length);
+  else if (action.startsWith(AJAX_PREFIX)) action = action.slice(AJAX_PREFIX.length);
   if (action === '') return err(makeErr(raw, 'empty ajax action'));
   return ok({ key: `ajax:${action}` as AnchorKey, type: 'ajax', body: action });
 }

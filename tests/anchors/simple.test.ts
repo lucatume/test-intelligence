@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { parseAnchor } from '../../src/anchors/parse.js';
 import type { Anchor, SimpleAnchor } from '../../src/anchors/types.js';
 
-function expectSimpleAnchorOfType(a: Anchor, expected: SimpleAnchor['type']): SimpleAnchor {
+function expectSimpleAnchorOfType<T extends SimpleAnchor['type']>(
+  a: Anchor,
+  expected: T,
+): SimpleAnchor & { type: T } {
   expect(a.type).toBe(expected);
-  if (a.type === 'rest' || a.type !== expected) throw new Error('unreachable');
-  return a;
+  if (a.type !== expected) throw new Error('unreachable');
+  return a as SimpleAnchor & { type: T };
 }
 
 describe('parseAnchor — ajax', () => {
@@ -90,13 +93,36 @@ describe('parseAnchor — rejection', () => {
   it('rejects unknown type', () => {
     const r = parseAnchor('nope:foo');
     expect(r.kind).toBe('err');
+    if (r.kind !== 'err') return;
+    expect(r.error.reason).toContain('unknown anchor type');
+    expect(r.error.raw).toBe('nope:foo');
   });
+
   it('rejects empty body', () => {
     const r = parseAnchor('hook:');
     expect(r.kind).toBe('err');
+    if (r.kind !== 'err') return;
+    expect(r.error.reason).toContain('empty body');
   });
-  it('rejects no colon', () => {
+
+  it('rejects missing colon', () => {
     const r = parseAnchor('init');
     expect(r.kind).toBe('err');
+    if (r.kind !== 'err') return;
+    expect(r.error.reason).toContain('missing');
+  });
+
+  it('rejects bare ajax prefix', () => {
+    const r = parseAnchor('ajax:wp_ajax_');
+    expect(r.kind).toBe('err');
+    if (r.kind !== 'err') return;
+    expect(r.error.reason).toContain('empty ajax action');
+  });
+
+  it('rejects bare ajax nopriv prefix', () => {
+    const r = parseAnchor('ajax:wp_ajax_nopriv_');
+    expect(r.kind).toBe('err');
+    if (r.kind !== 'err') return;
+    expect(r.error.reason).toContain('empty ajax action');
   });
 });
