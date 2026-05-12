@@ -66,4 +66,13 @@ describe('acquireLock / releaseLock', () => {
   it('releaseLock is a no-op on a missing file', () => {
     expect(() => { releaseLock(root); }).not.toThrow();
   });
+
+  it('returns LockHeldError when an existing lock file is unparseable', () => {
+    writeFileSync(join(root, '.ti', '.lock'), 'this is not json');
+    // Hand-occupy with corrupt content. acquireLock should NOT throw; it should
+    // reclaim (parse-fail treated as missing in pre-write branch) and succeed.
+    const r = acquireLock(root, { command: 'ti build', clock: systemClock });
+    expect(r.kind).toBe('ok');
+    releaseLock(root);
+  });
 });

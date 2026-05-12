@@ -23,6 +23,20 @@ export interface AcquireOpts {
 
 const LOCK_PATH_SEGMENT = '.ti/.lock';
 
+function readExistingLock(lockPath: string): LockPayload | undefined {
+  let content: string;
+  try {
+    content = readFileSync(lockPath, 'utf8');
+  } catch {
+    return undefined;
+  }
+  try {
+    return JSON.parse(content) as LockPayload;
+  } catch {
+    return undefined;
+  }
+}
+
 export function acquireLock(
   projectRoot: string,
   opts: AcquireOpts,
@@ -30,12 +44,7 @@ export function acquireLock(
   const lockPath = join(projectRoot, LOCK_PATH_SEGMENT);
 
   if (existsSync(lockPath)) {
-    let existing: LockPayload | undefined;
-    try {
-      existing = JSON.parse(readFileSync(lockPath, 'utf8')) as LockPayload;
-    } catch {
-      // Corrupt lock content — treat as stale and reclaim.
-    }
+    const existing = readExistingLock(lockPath);
     if (existing) {
       if (existing.hostname !== hostname()) {
         return err({ kind: 'LockHostMismatchError', holder: existing });
@@ -43,19 +52,12 @@ export function acquireLock(
       if (isPidAlive(existing.pid)) {
         return err({ kind: 'LockHeldError', holder: existing });
       }
-      // Stale; reclaim by overwrite below.
-      try {
-        unlinkSync(lockPath);
-      } catch {
-        // ignore
-      }
-    } else {
-      // Corrupt payload — remove so the exclusive open below can succeed.
-      try {
-        unlinkSync(lockPath);
-      } catch {
-        // ignore
-      }
+    }
+    // Stale, missing-on-read, or corrupt — reclaim by overwrite below.
+    try {
+      unlinkSync(lockPath);
+    } catch {
+      // already gone or never existed
     }
   }
 
@@ -72,11 +74,24 @@ export function acquireLock(
     fd = openSync(lockPath, 'wx');
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === 'EEXIST') {
-      const existing = JSON.parse(readFileSync(lockPath, 'utf8')) as LockPayload;
-      if (existing.hostname !== hostname()) {
+      const existing = readExistingLock(lockPath);
+      if (existing && existing.hostname !== hostname()) {
         return err({ kind: 'LockHostMismatchError', holder: existing });
       }
-      return err({ kind: 'LockHeldError', holder: existing });
+      if (existing) {
+        return err({ kind: 'LockHeldError', holder: existing });
+      }
+      // Race window: file appeared but is unreadable/corrupt. Treat as held by
+      // an unknown holder; safer to refuse than to clobber a peer's in-flight write.
+      return err({
+        kind: 'LockHeldError',
+        holder: {
+          pid: 0,
+          hostname: hostname(),
+          command: '<unknown>',
+          startedAt: opts.clock.now(),
+        },
+      });
     }
     throw e;
   }
