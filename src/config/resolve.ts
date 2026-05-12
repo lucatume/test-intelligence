@@ -10,7 +10,7 @@ export type ResolvedProjectRoot = {
 };
 
 // Preference order matters: a user with both .ts and .js gets .ts loaded.
-const CONFIG_CANDIDATES: readonly string[] = [
+export const CONFIG_CANDIDATES: readonly string[] = [
   'ti.config.ts',
   'ti.config.mts',
   'ti.config.mjs',

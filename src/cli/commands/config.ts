@@ -1,7 +1,6 @@
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
 import { loadConfigFile } from '../../config/load.js';
 import { parseConfig } from '../../config/parse.js';
+import { resolveProjectRoot } from '../../config/resolve.js';
 import type { ValidationError } from '../../parse.js';
 import type { Io } from '../io.js';
 
@@ -10,29 +9,22 @@ export interface ConfigCommandOpts {
   readonly io: Io;
 }
 
-// Mirrors src/config/resolve.ts CONFIG_CANDIDATES preference order.
-const CONFIG_CANDIDATES: readonly string[] = [
-  'ti.config.ts',
-  'ti.config.mts',
-  'ti.config.mjs',
-  'ti.config.js',
-  'ti.config.cjs',
-];
-
 export async function configCommand(opts: ConfigCommandOpts): Promise<number> {
   const { projectRoot, io } = opts;
-  const configPath = findConfigFile(projectRoot);
+  const resolved = await resolveProjectRoot(projectRoot);
 
   let raw: unknown = {};
-  if (configPath !== null) {
-    const loaded = await loadConfigFile(configPath);
+  if (resolved.kind === 'ok') {
+    const loaded = await loadConfigFile(resolved.value.configFile);
     if (loaded.kind === 'err') {
       io.stderr.write(`ti: error: ${loaded.error.message}\n`);
       return 1;
     }
     raw = loaded.value;
   } else {
-    io.stderr.write(`ti: notice: from-defaults - no ti.config.{ts,mts,mjs,js,cjs} at ${projectRoot}\n`);
+    io.stderr.write(
+      `ti: notice: from-defaults - no ti.config.{ts,mts,mjs,js,cjs} found above ${projectRoot}\n`,
+    );
   }
 
   const parsed = parseConfig(raw);
@@ -43,14 +35,6 @@ export async function configCommand(opts: ConfigCommandOpts): Promise<number> {
 
   io.stdout.write(JSON.stringify(parsed.value, null, 2) + '\n');
   return 0;
-}
-
-function findConfigFile(projectRoot: string): string | null {
-  for (const candidate of CONFIG_CANDIDATES) {
-    const p = join(projectRoot, candidate);
-    if (existsSync(p)) return p;
-  }
-  return null;
 }
 
 function formatValidationErrors(errors: readonly ValidationError[]): string {
