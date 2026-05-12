@@ -23,10 +23,4 @@ DEBUG / INTROSPECTION
   ti config                       Print effective merged config.
   ti --help, -h
   ti --version, -V
-
-GLOBAL FLAGS
-  --quiet, -q     Suppress non-fatal stderr.
-  --verbose, -v   Mirror detailed run log to stderr.
-  --debug         --verbose plus debug-only extensions.
-  --no-log        Do not write .ti/last-run.log.
 `;

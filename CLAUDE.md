@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`ti` (test-intelligence) is a TypeScript CLI that maintains a durable, queryable map between source files, tests, and (later) runtime views. Authoritative design lives in `docs/superpowers/specs/2026-04-21-test-intelligence-design.md`.
+`ti` (test-intelligence) is a TypeScript CLI that maintains a durable, queryable map between source files, tests, and (later) runtime views. Authoritative design lives in `docs/superpowers/specs/2026-05-11-static-analysis-test-intelligence-design.md`.
 
 ## Status
 
-Plan A foundations are shipped: the internal library (config, storage, lock, IDs, paths, parsers). **There is no user-facing `ti` CLI yet.** Plans B–E (adapters, runtime discovery, view providers, CLI surface) are pending in `docs/superpowers/plans/`.
+Plan A foundations are shipped: types/anchors/parse, SQLite store + lock, config (new shape), CLI scaffold (`ti --help`, `ti --version`, `ti init`, `ti config`; reserved verbs stub out). Plans B–G (extractor infrastructure, WordPress catalog + discovery, derivation engine, cold-start/differential orchestration, query/emit/export, lifecycle commands) are pending in `docs/superpowers/plans/`.
 
 ## How to run
 
@@ -30,7 +30,7 @@ Requires Node ≥ 20.
 
 ## Dependency policy
 
-Runtime dependency is **`jiti` only**. Dev deps are TypeScript, vitest, ESLint + `eslint-plugin-boundaries` + `eslint-plugin-import`.
+Runtime dependencies: `jiti` (config loading), `better-sqlite3` (SQLite working store). `typescript` is runtime-relevant in Plans B+ when the TS Compiler API is used in-process for JS/TS extraction. Dev deps: TypeScript, vitest, ESLint + `eslint-plugin-boundaries` + `eslint-plugin-import`.
 
 Do **not** add Zod, neverthrow, fast-check, Stryker, dependency-cruiser, a logger, or a CLI-framework library without spec-level discussion first. In-repo replacements already exist:
 
@@ -43,7 +43,7 @@ Treat new runtime dependencies as spec changes.
 
 - `src/CLAUDE.md` — module DAG, file-by-file purposes, how to add a new unit.
 - `src/config/CLAUDE.md` — config resolution, loading, and parsing.
-- `src/storage/CLAUDE.md` — on-disk layout, durable writes, lock protocol, gitignore.
+- `src/store/CLAUDE.md` — on-disk layout, durable writes, lock protocol, gitignore.
 - `tests/CLAUDE.md` — TDD workflow, isolation helpers, fixture conventions.
 - `docs/CLAUDE.md` — signpost to the spec and plans.
 
