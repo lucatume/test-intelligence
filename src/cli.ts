@@ -6,26 +6,28 @@ import { parseArgv } from './cli/parseArgv.js';
 import { versionString } from './cli/version.js';
 import { initCommand } from './cli/commands/init.js';
 
-export function run(argv: readonly string[], io: Io): Promise<number> {
+export async function run(argv: readonly string[], io: Io): Promise<number> {
   const cmd = parseArgv(argv);
   switch (cmd.kind) {
     case 'help':
       io.stdout.write(HELP_TEXT);
-      return Promise.resolve(0);
+      return 0;
     case 'version':
       io.stdout.write(versionString() + '\n');
-      return Promise.resolve(0);
+      return 0;
     case 'init':
       return initCommand({ projectRoot: process.cwd(), io });
     case 'config':
-      io.stderr.write(`ti: ${cmd.kind} not yet implemented in Plan A\n`);
-      return Promise.resolve(1);
+      return (await import('./cli/commands/config.js')).configCommand({
+        projectRoot: process.cwd(),
+        io,
+      });
     case 'not-implemented':
       io.stderr.write(`ti: ${cmd.verb} is not yet implemented in this build\n`);
-      return Promise.resolve(1);
+      return 1;
     case 'unknown-command':
       io.stderr.write(`ti: unknown command "${cmd.input}" - see \`ti --help\`\n`);
-      return Promise.resolve(1);
+      return 1;
   }
 }
 
