@@ -6,7 +6,6 @@ export type ParsedCommand =
   | { kind: 'not-implemented'; verb: string }
   | { kind: 'unknown-command'; input: string };
 
-const PLAN_A_VERBS = new Set(['init', 'config']);
 const RESERVED_VERBS = new Set([
   'build',
   'update',
@@ -31,4 +30,4 @@ export function parseArgv(argv: readonly string[]): ParsedCommand {
 }
 
 // Kept for future introspection / dispatcher reuse.
-export { PLAN_A_VERBS, RESERVED_VERBS };
+export { RESERVED_VERBS };

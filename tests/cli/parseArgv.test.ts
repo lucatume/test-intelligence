@@ -29,4 +29,11 @@ describe('parseArgv', () => {
     expect(r.kind).toBe('unknown-command');
     if (r.kind === 'unknown-command') expect(r.input).toBe('frobnicate');
   });
+  it('ignores positional args after the verb (deferred to dispatcher)', () => {
+    expect(parseArgv(['init', '--force'])).toEqual({ kind: 'init' });
+    expect(parseArgv(['build', '--from-sources', 'foo.php'])).toEqual({
+      kind: 'not-implemented',
+      verb: 'build',
+    });
+  });
 });
