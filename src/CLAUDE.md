@@ -14,11 +14,13 @@ barrel     = src/index.ts
 anchors    = src/anchors/**
 store      = src/store/**
 config     = src/config/**
-facts      = src/facts/**          (Plan B; pre-registered, no files yet)
-extract    = src/extract/**        (Plan B; pre-registered)
-derive     = src/derive/**         (Plan D; pre-registered)
+facts      = src/facts/**
+extract    = src/extract/**
+derive     = src/derive/**
 query      = src/query/**          (Plan F; pre-registered)
 emit       = src/emit/**           (Plan F; pre-registered)
+discover   = src/discover/**
+build      = src/build/**
 cli        = src/cli/**
 cli-entry  = src/cli.ts
 ```
@@ -36,7 +38,9 @@ extract    → extract, anchors, facts, foundation, store
 derive     → derive, anchors, facts, foundation, store
 query      → query, store, anchors, foundation
 emit       → emit, foundation
-cli        → cli, config, store, anchors, query, emit, foundation
+discover   → discover, config, foundation
+build      → build, discover, extract, derive, store, config, foundation, facts, anchors
+cli        → cli, config, store, anchors, query, emit, foundation, build, discover
 cli-entry  → cli, cli-entry, foundation
 ```
 
@@ -57,9 +61,13 @@ Cycles are additionally forbidden by `import/no-cycle`.
 - `store/` — see `store/CLAUDE.md`. On-disk SQLite store, lock protocol, schema migration.
 - `cli.ts` — bin entrypoint; reads `process.argv`, `process.stdin`, `process.stdout`, `process.stderr`, calls `dispatch`, calls `process.exit(code)`. **The only file permitted to mutate `process`.** Imports only `src/cli/**` and foundations — everything else funnels through the `cli` zone.
 - `cli/` — argv parser, help/version text, dispatch orchestrator, IO seam. Adds kinds only as commands land.
-- `query/` — pure functions over synthesized `Shard[]` + `Index`. Confidence combination, staleness, deduplication and coarser-granularity collapse live here. (Plan F; pre-registered.)
-- `emit/` — pure formatters. Framework-specific `--format=args` output and shared `--format=json` output. (Plan F; pre-registered.)
-- `facts/`, `extract/`, `derive/` — Plan B/D zones, pre-registered with empty implementations so future code is constrained on arrival.
+- `query/` — pure functions over the SQLite store. `testsFromSources(db, args)` returns `QueryResult { rows, unknownPaths, unknownTestIds }`; `sourcesFromTests(db, args)` mirrors it for `--from-tests`. Direct SQL (no ORM). Reads `edge` JOIN `test`, gated by `confidence >= minConfidence`. Reports unknown inputs separately so `--strict` can exit 2.
+- `emit/` — pure formatters. `emitArgs(result, { mode })` produces sorted, deduped newline-delimited output (sources or test ids); `emitJson(result)` produces a single-document JSON string with edges + unknown lists.
+- `discover/` — async filesystem walk with `ignore`/`vendor` globs; classifies files by `language` and `framework`. Pure: returns `AsyncIterable<DiscoveredFile>`, does not parse source. Glob matching is in-house (`discover/glob.ts`), no new deps.
+- `facts/` — `Fact` discriminated union (sealed by `FactKind`) and `parseFact(raw)` — the single boundary between extractor output and the typed interior. Each fact carries `kind`, `resolved`, `location`, an array of `FactAnchorRef`, and a kind-discriminated payload.
+- `extract/` — orchestration plus per-language extractors. `extract/ts/` uses the TS Compiler API in-process with synthesized `CompilerOptions` (merging `paths`/`baseUrl` from `tsconfig.json` / `jsconfig.json`). `extract/php/` runs a long-lived `php` subprocess against `vendor-php/bin/ti-php-extract.php` (nikic/php-parser) using a JSON-line protocol. `extract/declarative/` matches user-supplied + built-in (WP) call patterns against ASTs; patterns may declare an `anchor: { template, role }` to synthesize anchor keys. Built-ins: `WP_PHP_PATTERNS` (sent to the worker on startup) and `WP_JS_PATTERNS` (run through the in-process TS engine). `extract/declarative/derive-ajax-listener.ts` is a post-pass that promotes `wp_ajax_*` hook listeners to `ajax-listener` facts. `extractFile(input)` dispatches by language and returns `Result<Fact[], ExtractError>`; pass a `phpWorker` to enable PHP extraction.
+- `derive/` — pure reachability engine. `loadGraph(db)` snapshots files/facts/anchors into memory; `buildAnchorIndex(graph)` precomputes `anchor → facts` by role + `factId → links`. `traverseTest(graph, index, testFactId, ...)` performs the BFS for one test producing `Edge[]` with framework-class gating, hook stop-list, depth + time bounding, confidence combination per spec §Confidence. `derive(db, params, clock)` is the top-level orchestrator: snapshot → per-test traverse → write edges via the store helpers inside a single transaction. The caller (`build/`) passes in the resolved `params` (max depth, max millis, threshold, hook stop-list) — `derive/` cannot import from `config/`.
+- `build/` — orchestration glue. `runBuild(opts)` opens the store, acquires the lock, optionally spawns the PHP worker, iterates discovered (or user-listed) files through `extractFile`, writes facts/anchors/tests, then calls `derive`. Returns a `BuildSummary` (files/facts/tests/edges + elapsed millis). The only zone that imports `discover` + `extract` + `derive` together. CLI verbs `ti build` and `ti update` are thin wrappers around `runBuild`; `update` differs only by `onlyPaths`.
 
 ## Adding a new unit
 

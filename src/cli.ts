@@ -54,6 +54,31 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         minConfidence: cmd.minConfidence,
         strict: cmd.strict,
       });
+    case 'unlock':
+      return (await import('./cli/commands/unlock.js')).unlockCommand({
+        projectRoot: process.cwd(),
+        io,
+        force: cmd.force,
+      });
+    case 'clean':
+      return (await import('./cli/commands/clean.js')).cleanCommand({
+        projectRoot: process.cwd(),
+        io,
+        all: cmd.all,
+        force: cmd.force,
+      });
+    case 'migrate':
+      return (await import('./cli/commands/migrate.js')).migrateCommand({
+        projectRoot: process.cwd(),
+        io,
+      });
+    case 'explain':
+      return (await import('./cli/commands/explain.js')).explainCommand({
+        projectRoot: process.cwd(),
+        io,
+        target: cmd.target,
+        format: cmd.format,
+      });
     case 'not-implemented':
       io.stderr.write(`ti: ${cmd.verb} is not yet implemented in this build\n`);
       return 1;

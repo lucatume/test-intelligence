@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-Plan A foundations are shipped: types/anchors/parse, SQLite store + lock, config (new shape), CLI scaffold (`ti --help`, `ti --version`, `ti init`, `ti config`; reserved verbs stub out). Plans B–G (extractor infrastructure, WordPress catalog + discovery, derivation engine, cold-start/differential orchestration, query/emit/export, lifecycle commands) are pending in `docs/superpowers/plans/`.
+All planned scope (Plans A–G) is shipped. The CLI is feature-complete for v1: `ti init` → `ti build` → `ti tests --from-sources <paths> --framework=<name>`, plus `ti sources --from-tests`, `ti update`, `ti unlock`, `ti clean`, `ti migrate`, `ti explain`, `ti config`. Deferred to a 1.x cycle: ndjson streaming output, `ti export` JSON shards, `.ti/last-run.log`, two-hop `script-handle` bridge resolution, concurrent worker pools.
 
 ## How to run
 

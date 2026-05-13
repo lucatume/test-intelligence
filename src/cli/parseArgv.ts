@@ -20,16 +20,14 @@ export type ParsedCommand =
       minConfidence: number;
       strict: boolean;
     }
+  | { kind: 'unlock'; force: boolean }
+  | { kind: 'clean'; all: boolean; force: boolean }
+  | { kind: 'migrate' }
+  | { kind: 'explain'; target: string; format: 'args' | 'json' }
   | { kind: 'not-implemented'; verb: string }
   | { kind: 'unknown-command'; input: string };
 
-const RESERVED_VERBS = new Set([
-  'clean',
-  'migrate',
-  'unlock',
-  'export',
-  'explain',
-]);
+const RESERVED_VERBS = new Set(['export']);
 
 export function parseArgv(argv: readonly string[]): ParsedCommand {
   const [first, ...rest] = argv;
@@ -48,6 +46,14 @@ export function parseArgv(argv: readonly string[]): ParsedCommand {
   }
   if (first === 'tests') return parseTestsCmd(rest);
   if (first === 'sources') return parseSourcesCmd(rest);
+  if (first === 'unlock') return { kind: 'unlock', force: rest.includes('--force') };
+  if (first === 'clean') return { kind: 'clean', all: rest.includes('--all'), force: rest.includes('--force') };
+  if (first === 'migrate') return { kind: 'migrate' };
+  if (first === 'explain') {
+    const target = rest.find((a) => !a.startsWith('-'));
+    if (target === undefined) return { kind: 'unknown-command', input: 'explain (missing target)' };
+    return { kind: 'explain', target, format: pickFormat(rest) };
+  }
   if (RESERVED_VERBS.has(first)) return { kind: 'not-implemented', verb: first };
   return { kind: 'unknown-command', input: first };
 }

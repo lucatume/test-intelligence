@@ -26,7 +26,7 @@ describe('cli.run', () => {
 
   it('not-implemented verb exits 1 with stderr message', async () => {
     const t = makeIo();
-    const code = await run(['clean'], t.io);
+    const code = await run(['export'], t.io);
     expect(code).toBe(1);
     expect(t.err).toContain('not yet implemented');
   });

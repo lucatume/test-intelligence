@@ -20,9 +20,9 @@ describe('parseArgv', () => {
     expect(parseArgv(['config'])).toEqual({ kind: 'config' });
   });
   it('recognized-but-unimplemented verb', () => {
-    const r = parseArgv(['clean']);
+    const r = parseArgv(['export']);
     expect(r.kind).toBe('not-implemented');
-    if (r.kind === 'not-implemented') expect(r.verb).toBe('clean');
+    if (r.kind === 'not-implemented') expect(r.verb).toBe('export');
   });
   it('unknown verb', () => {
     const r = parseArgv(['frobnicate']);
