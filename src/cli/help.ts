@@ -7,7 +7,7 @@ LIFECYCLE
   ti init                         Create ti.config.ts with detected defaults.
   ti build                        Cold-start: extract every file, derive all edges.
   ti update [<paths...>]          Differential update.
-  ti clean [--all] [--force]      Remove .ti/ contents.
+  ti clean [--all] [--force]      Remove .ti/ contents (--all removes .ti/ itself).
   ti migrate                      Forward-only schema upgrade.
   ti unlock [--force]             Release stale .ti/.lock.
   ti export                       Materialize JSON shards under .ti/exports/.

@@ -16,17 +16,13 @@ export interface CleanError {
 
 const TI_DIR = '.ti';
 const LOCK_FILE = '.lock';
-const CONFIG_CANDIDATES = ['ti.config.ts', 'ti.config.mts', 'ti.config.mjs', 'ti.config.js', 'ti.config.cjs'];
 
 export function removeStoreContents(
   projectRoot: string,
   options: CleanOptions,
 ): Result<undefined, CleanError> {
   const tiDir = join(projectRoot, TI_DIR);
-  if (!existsSync(tiDir)) {
-    if (options.all) deleteConfigFiles(projectRoot);
-    return ok(undefined);
-  }
+  if (!existsSync(tiDir)) return ok(undefined);
 
   const lockPath = join(tiDir, LOCK_FILE);
   if (existsSync(lockPath) && !options.force) {
@@ -51,7 +47,6 @@ export function removeStoreContents(
   try {
     if (options.all) {
       rmSync(tiDir, { recursive: true, force: true });
-      deleteConfigFiles(projectRoot);
     } else {
       for (const entry of readdirSync(tiDir)) {
         rmSync(join(tiDir, entry), { recursive: true, force: true });
@@ -60,19 +55,6 @@ export function removeStoreContents(
     return ok(undefined);
   } catch (e) {
     return err({ kind: 'CleanError', message: (e as Error).message });
-  }
-}
-
-function deleteConfigFiles(projectRoot: string): void {
-  for (const candidate of CONFIG_CANDIDATES) {
-    const p = join(projectRoot, candidate);
-    if (existsSync(p)) {
-      try {
-        rmSync(p, { force: true });
-      } catch {
-        // tolerate
-      }
-    }
   }
 }
 

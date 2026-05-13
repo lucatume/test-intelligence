@@ -15,7 +15,7 @@ export function cleanCommand(args: CleanCommandArgs): number {
     return 1;
   }
   args.io.stderr.write(
-    args.all ? 'ti: cleaned .ti/ and removed ti.config.*\n' : 'ti: cleaned .ti/ contents\n',
+    args.all ? 'ti: removed .ti/\n' : 'ti: cleaned .ti/ contents\n',
   );
   return 0;
 }
