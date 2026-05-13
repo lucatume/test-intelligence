@@ -35,6 +35,7 @@ export default tseslint.config(
         { type: 'emit',       pattern: 'src/emit/**' },
         { type: 'discover',   pattern: 'src/discover/**' },
         { type: 'export',     pattern: 'src/export/**' },
+        { type: 'build',      pattern: 'src/build/**' },
         { type: 'cli',        pattern: 'src/cli/**' },
         { type: 'cli-entry',  pattern: 'src/cli.ts' },
         // Public barrel: may re-export from any zone exposed in the public API.
@@ -64,7 +65,8 @@ export default tseslint.config(
           { from: 'emit',       allow: ['emit', 'foundation'] },
           { from: 'discover',   allow: ['discover', 'config', 'foundation'] },
           { from: 'export',     allow: ['export', 'store', 'foundation'] },
-          { from: 'cli',        allow: ['cli', 'config', 'store', 'anchors', 'query', 'emit', 'foundation'] },
+          { from: 'build',      allow: ['build', 'discover', 'extract', 'derive', 'store', 'config', 'foundation', 'facts', 'anchors'] },
+          { from: 'cli',        allow: ['cli', 'config', 'store', 'anchors', 'query', 'emit', 'foundation', 'build', 'discover'] },
           { from: 'cli-entry',  allow: ['cli-entry', 'cli', 'foundation'] },
           // Public barrel re-exports whatever the public API surfaces.
           { from: 'barrel',     allow: ['barrel', 'config', 'foundation'] },

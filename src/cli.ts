@@ -22,6 +22,19 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         projectRoot: process.cwd(),
         io,
       });
+    case 'build':
+      return (await import('./cli/commands/build.js')).buildCommand({
+        projectRoot: process.cwd(),
+        io,
+        verbosity: cmd.verbosity,
+      });
+    case 'update':
+      return (await import('./cli/commands/update.js')).updateCommand({
+        projectRoot: process.cwd(),
+        io,
+        verbosity: cmd.verbosity,
+        paths: cmd.paths,
+      });
     case 'not-implemented':
       io.stderr.write(`ti: ${cmd.verb} is not yet implemented in this build\n`);
       return 1;

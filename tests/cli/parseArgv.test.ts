@@ -20,20 +20,31 @@ describe('parseArgv', () => {
     expect(parseArgv(['config'])).toEqual({ kind: 'config' });
   });
   it('recognized-but-unimplemented verb', () => {
-    const r = parseArgv(['build']);
+    const r = parseArgv(['clean']);
     expect(r.kind).toBe('not-implemented');
-    if (r.kind === 'not-implemented') expect(r.verb).toBe('build');
+    if (r.kind === 'not-implemented') expect(r.verb).toBe('clean');
   });
   it('unknown verb', () => {
     const r = parseArgv(['frobnicate']);
     expect(r.kind).toBe('unknown-command');
     if (r.kind === 'unknown-command') expect(r.input).toBe('frobnicate');
   });
+  it('build parses with default normal verbosity', () => {
+    expect(parseArgv(['build'])).toEqual({ kind: 'build', verbosity: 'normal' });
+  });
+  it('build --quiet and --verbose adjust verbosity', () => {
+    expect(parseArgv(['build', '--quiet'])).toEqual({ kind: 'build', verbosity: 'quiet' });
+    expect(parseArgv(['build', '-v'])).toEqual({ kind: 'build', verbosity: 'verbose' });
+  });
+  it('update collects positional paths and ignores flags', () => {
+    const r = parseArgv(['update', 'src/a.ts', '-q', 'src/b.ts']);
+    expect(r.kind).toBe('update');
+    if (r.kind === 'update') {
+      expect(r.paths).toEqual(['src/a.ts', 'src/b.ts']);
+      expect(r.verbosity).toBe('quiet');
+    }
+  });
   it('ignores positional args after the verb (deferred to dispatcher)', () => {
     expect(parseArgv(['init', '--force'])).toEqual({ kind: 'init' });
-    expect(parseArgv(['build', '--from-sources', 'foo.php'])).toEqual({
-      kind: 'not-implemented',
-      verb: 'build',
-    });
   });
 });
