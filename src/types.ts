@@ -62,6 +62,13 @@ export type AnchorType =
   | 'block'
   | 'test';
 
+// Languages we classify in discover and dispatch to extractors. Living in the
+// foundation zone so both `discover/` and `extract/` can use it without
+// `extract` having to depend on `discover` (which would cross zone boundaries).
+export type Language = 'php' | 'ts' | 'tsx' | 'js' | 'jsx' | 'mjs' | 'cjs';
+
+export const ALL_LANGUAGES: readonly Language[] = ['php', 'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs'];
+
 export const ALL_ANCHOR_TYPES = [
   'php-symbol',
   'js-symbol',

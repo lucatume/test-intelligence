@@ -7,7 +7,7 @@ export function compileGlob(pattern: string): RegExp {
   let i = 0;
   let out = '^';
   while (i < pattern.length) {
-    const c = pattern[i]!;
+    const c = pattern.charAt(i);
     if (c === '*') {
       if (pattern[i + 1] === '*') {
         out += '.*';

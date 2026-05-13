@@ -1,7 +1,6 @@
 import { matchesAny } from './glob.js';
 import type { ValidatedConfig, FrameworkClass } from '../config/parse.js';
-import type { FrameworkName } from '../types.js';
-import type { Language } from './types.js';
+import type { FrameworkName, Language } from '../types.js';
 
 const EXT_LANG: Record<string, Language> = {
   '.php': 'php',
