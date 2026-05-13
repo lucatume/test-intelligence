@@ -215,6 +215,12 @@ export function object<S extends ObjectShape>(shape: S, options?: ObjectOptions)
   };
 }
 
+export const unknown: Schema<unknown> = {
+  parse(input) {
+    return ok(input);
+  },
+};
+
 export function literal<const L extends string>(value: L): Schema<L> {
   return {
     parse(input) {
