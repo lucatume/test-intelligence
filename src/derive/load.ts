@@ -23,7 +23,9 @@ export function loadGraph(db: Database.Database): Graph {
       id: r.id,
       path: r.path,
       language: r.language,
-      vendor: r.path.startsWith('vendor/'),
+      // Matches the discover walker's default vendor glob (**/vendor/**) —
+      // monorepos place vendor/ under every package, not just at the root.
+      vendor: /(?:^|\/)vendor\//.test(r.path),
       framework: r.framework as FrameworkName | null,
       frameworkClass:
         r.framework_class === 'unit' || r.framework_class === 'e2e' ? r.framework_class : null,

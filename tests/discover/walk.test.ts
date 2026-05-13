@@ -86,6 +86,20 @@ describe('walk', () => {
     expect(vendorMap.get('src/cart.php' as never)).toBe(false);
   });
 
+  it('does not classify vendor files as tests', async () => {
+    // Vendor packages ship their own test suites (e.g. PHPCSUtils' tests).
+    // Treating those as "your project's tests" pollutes the test table and
+    // produces noise like 3,000 dangling phpunit tests on woocommerce.
+    const root = getTmp();
+    write(root, 'vendor/acme/tests/AcmeTest.php', '<?php class AcmeTest {}');
+    write(root, 'tests/CartTest.php', '<?php class CartTest {}');
+    const files = await collect(root);
+    const byPath = new Map(files.map((f) => [f.path, f]));
+    expect(byPath.get('vendor/acme/tests/AcmeTest.php' as never)?.framework).toBeNull();
+    expect(byPath.get('vendor/acme/tests/AcmeTest.php' as never)?.frameworkClass).toBeNull();
+    expect(byPath.get('tests/CartTest.php' as never)?.framework).toBe('phpunit');
+  });
+
   it('skips unsupported extensions', async () => {
     const root = getTmp();
     write(root, 'README.md', '');

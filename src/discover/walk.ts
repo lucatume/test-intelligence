@@ -64,12 +64,17 @@ async function* walkInner(
     if (branded.kind === 'err') continue;
 
     const vendor = matchesAny(relPosix, config.vendor);
+    // Vendor packages ship their own tests; treating them as project tests
+    // pollutes results. Keep them indexed as sources (their symbol-defs
+    // can still be referenced) but never as tests.
+    const framework = vendor ? null : cls.framework;
+    const frameworkClass = vendor ? null : cls.frameworkClass;
     yield {
       path: branded.value,
       language: cls.language,
       vendor,
-      framework: cls.framework,
-      frameworkClass: cls.frameworkClass,
+      framework,
+      frameworkClass,
     };
   }
 }

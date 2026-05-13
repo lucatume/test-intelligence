@@ -69,4 +69,86 @@ test('cart flow', async () => { clientFn(); });
       expect(edgeCount).toBeGreaterThan(0);
     } finally { sRes.value.close(); }
   });
+
+  it('phpunit test reaches a source file via class instantiation', async () => {
+    // The canonical PHP coverage case: a test instantiates a class defined
+    // in another file. Before symbol-use emission, all phpunit tests had
+    // zero edges. This test pins down the minimum to keep PHP working.
+    const root = getTmp();
+    write(root, 'src/Cart.php', `<?php
+namespace App;
+class Cart {
+  public function add(): void {}
+}`);
+    write(root, 'tests/CartTest.php', `<?php
+namespace App\\Tests;
+use App\\Cart;
+use PHPUnit\\Framework\\TestCase;
+class CartTest extends TestCase {
+  public function testAdd(): void {
+    $c = new Cart();
+    $c->add();
+  }
+}`);
+    const cfgRes = parseConfig({ confidence: { threshold: 0 } });
+    if (cfgRes.kind === 'err') throw new Error('cfg');
+    const r = await runBuild({
+      projectRoot: root,
+      config: cfgRes.value,
+      clock: systemClock,
+      stderr: { write: () => {} },
+      repoRoot,
+    });
+    expect(r.kind).toBe('ok');
+
+    const sRes = openStore(root);
+    if (sRes.kind !== 'ok') throw new Error('store');
+    try {
+      const rows = sRes.value.db
+        .prepare('SELECT test_id, source FROM edge WHERE source = ?')
+        .all('src/Cart.php') as Array<{ test_id: string; source: string }>;
+      expect(rows.length).toBeGreaterThan(0);
+      // testId is project-relative and namespaced with framework prefix.
+      expect(rows[0]?.test_id).toContain('phpunit:tests/CartTest.php');
+    } finally { sRes.value.close(); }
+  });
+
+  it('does not emit edges into nested vendor directories', async () => {
+    // Earlier `vendor` detection only matched top-level vendor/; monorepos
+    // place vendor/ under every package, so phpunit edges leaked into
+    // packages/<x>/vendor/phpunit/... etc. Verify that's fixed.
+    const root = getTmp();
+    write(root, 'packages/blueprint/src/A.php', `<?php
+namespace Pkg;
+class A { public function run(): void {} }`);
+    write(root, 'packages/blueprint/vendor/foo/lib/Helper.php', `<?php
+namespace Pkg;
+class A { public function leakedDef(): void {} }`);
+    write(root, 'packages/blueprint/tests/ATest.php', `<?php
+namespace Pkg\\Tests;
+use Pkg\\A;
+use PHPUnit\\Framework\\TestCase;
+class ATest extends TestCase {
+  public function testRun(): void { (new A())->run(); }
+}`);
+
+    const cfgRes = parseConfig({ confidence: { threshold: 0 } });
+    if (cfgRes.kind === 'err') throw new Error('cfg');
+    const r = await runBuild({
+      projectRoot: root,
+      config: cfgRes.value,
+      clock: systemClock,
+      stderr: { write: () => {} },
+      repoRoot,
+    });
+    expect(r.kind).toBe('ok');
+    const sRes = openStore(root);
+    if (sRes.kind !== 'ok') throw new Error('store');
+    try {
+      const rows = sRes.value.db
+        .prepare("SELECT source FROM edge WHERE source LIKE '%vendor/%'")
+        .all() as Array<{ source: string }>;
+      expect(rows).toEqual([]);
+    } finally { sRes.value.close(); }
+  });
 });
