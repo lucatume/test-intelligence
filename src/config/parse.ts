@@ -92,8 +92,21 @@ const DEFAULT_JEST_FILE_GLOBS: readonly string[] = [
   '**/*.test.{ts,tsx,js,jsx}',
   '**/*.spec.{ts,tsx,js,jsx}',
 ];
-const DEFAULT_IGNORE: readonly string[] = ['node_modules/**', 'dist/**', 'build/**'];
-const DEFAULT_VENDOR: readonly string[] = ['vendor/**'];
+// Patterns are doubled (`**/X` + `**/X/**`) so the walker prunes the directory
+// entry itself (no recursion) and also filters any descendant that slips through.
+// Monorepos (pnpm/Yarn workspaces) put node_modules under every package, so
+// anchoring at the project root is not enough.
+const DEFAULT_IGNORE: readonly string[] = [
+  '**/node_modules',
+  '**/node_modules/**',
+  '**/dist',
+  '**/dist/**',
+  '**/build',
+  '**/build/**',
+  '**/.git',
+  '**/.git/**',
+];
+const DEFAULT_VENDOR: readonly string[] = ['**/vendor', '**/vendor/**'];
 const DEFAULT_MAX_DEPTH = 25;
 const DEFAULT_MAX_MILLIS_PER_TEST = 5000;
 

@@ -22,8 +22,17 @@ describe('parseConfig — empty object', () => {
     expect(c.traversal.maxDepth).toBe(25);
     expect(c.traversal.maxMillisPerTest).toBe(5000);
     expect(c.concurrency.phpWorkers).toBeUndefined();
-    expect(c.ignore).toEqual(['node_modules/**', 'dist/**', 'build/**']);
-    expect(c.vendor).toEqual(['vendor/**']);
+    expect(c.ignore).toEqual([
+      '**/node_modules',
+      '**/node_modules/**',
+      '**/dist',
+      '**/dist/**',
+      '**/build',
+      '**/build/**',
+      '**/.git',
+      '**/.git/**',
+    ]);
+    expect(c.vendor).toEqual(['**/vendor', '**/vendor/**']);
     expect(c.allowSymlinkTargets).toEqual([]);
   });
 });

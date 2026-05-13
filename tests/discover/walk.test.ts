@@ -59,6 +59,23 @@ describe('walk', () => {
     expect(files.map((f) => f.path).sort()).toEqual(['src/a.ts']);
   });
 
+  it('skips nested node_modules / dist / build in monorepo layouts', async () => {
+    // pnpm/Yarn workspaces place node_modules under every package — the
+    // default ignore patterns must match those, not just the top-level dir.
+    const root = getTmp();
+    write(root, 'packages/a/src/x.ts', '');
+    write(root, 'packages/a/node_modules/lib/index.js', '');
+    write(root, 'plugins/b/src/y.ts', '');
+    write(root, 'plugins/b/dist/y.js', '');
+    write(root, 'tools/c/build/c.js', '');
+    write(root, 'deep/very/deep/node_modules/.pnpm/pkg/index.js', '');
+    const files = await collect(root);
+    expect(files.map((f) => f.path).sort()).toEqual([
+      'packages/a/src/x.ts',
+      'plugins/b/src/y.ts',
+    ]);
+  });
+
   it('marks vendor files', async () => {
     const root = getTmp();
     write(root, 'vendor/acme/cart.php', '<?php');
