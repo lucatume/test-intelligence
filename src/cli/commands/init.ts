@@ -1,6 +1,19 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Io } from '../io.js';
+
+// Pruned during manifest discovery — mirrors the default `ignore` /
+// `vendor` defaults but is hard-coded here because init runs before any
+// config exists.
+const PRUNE_DIR_NAMES = new Set([
+  'node_modules',
+  'vendor',
+  'dist',
+  'build',
+  '.git',
+  '.ti',
+]);
+const MAX_DETECT_DEPTH = 4;
 
 export interface InitCommandOpts {
   readonly projectRoot: string;
@@ -46,22 +59,78 @@ export function initCommand(opts: InitCommandOpts): Promise<number> {
 }
 
 function detect(projectRoot: string): Detected {
-  const phpunit =
-    readJsonField(projectRoot, 'composer.json', ['require-dev', 'phpunit/phpunit']) !== null ||
-    readJsonField(projectRoot, 'composer.json', ['require', 'phpunit/phpunit']) !== null;
-  const jest = readJsonField(projectRoot, 'package.json', ['devDependencies', 'jest']) !== null;
-  const vitest = readJsonField(projectRoot, 'package.json', ['devDependencies', 'vitest']) !== null;
-  const playwright =
-    readJsonField(projectRoot, 'package.json', ['devDependencies', '@playwright/test']) !== null;
+  let phpunit = false;
+  let jest = false;
+  let vitest = false;
+  let playwright = false;
+
+  for (const manifest of findManifests(projectRoot, MAX_DETECT_DEPTH)) {
+    if (manifest.file === 'composer.json') {
+      if (
+        readJsonAtFile(manifest.absPath, ['require-dev', 'phpunit/phpunit']) !== null ||
+        readJsonAtFile(manifest.absPath, ['require', 'phpunit/phpunit']) !== null
+      ) {
+        phpunit = true;
+      }
+    } else {
+      if (readJsonAtFile(manifest.absPath, ['devDependencies', 'jest']) !== null) jest = true;
+      if (readJsonAtFile(manifest.absPath, ['devDependencies', 'vitest']) !== null) vitest = true;
+      if (readJsonAtFile(manifest.absPath, ['devDependencies', '@playwright/test']) !== null) {
+        playwright = true;
+      }
+    }
+  }
+
   return { phpunit, jest, vitest, playwright };
 }
 
-function readJsonField(projectRoot: string, file: string, path: readonly string[]): unknown {
-  const fp = join(projectRoot, file);
-  if (!existsSync(fp)) return null;
+interface FoundManifest {
+  readonly absPath: string;
+  readonly file: 'package.json' | 'composer.json';
+}
+
+function* findManifests(root: string, maxDepth: number): Iterable<FoundManifest> {
+  yield* walkForManifests(root, root, 0, maxDepth);
+}
+
+function* walkForManifests(
+  root: string,
+  dir: string,
+  depth: number,
+  maxDepth: number,
+): Iterable<FoundManifest> {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (e.name === 'package.json' || e.name === 'composer.json') {
+      const full = join(dir, e.name);
+      try {
+        if (statSync(full).isFile()) {
+          yield { absPath: full, file: e.name };
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+  if (depth >= maxDepth) return;
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    if (PRUNE_DIR_NAMES.has(e.name)) continue;
+    if (e.name.startsWith('.') && e.name !== '.') continue;
+    yield* walkForManifests(root, join(dir, e.name), depth + 1, maxDepth);
+  }
+}
+
+function readJsonAtFile(absPath: string, path: readonly string[]): unknown {
+  if (!existsSync(absPath)) return null;
   let raw: string;
   try {
-    raw = readFileSync(fp, 'utf8');
+    raw = readFileSync(absPath, 'utf8');
   } catch {
     return null;
   }
@@ -109,8 +178,8 @@ ${testsBlock}
   // confidence: { weights: {}, threshold: 0.0 },
   // traversal: { maxDepth: 25, maxMillisPerTest: 5000 },
   // concurrency: { phpWorkers: undefined, tsWorkers: undefined, deriveWorkers: undefined },
-  // ignore: ['node_modules/**', 'dist/**', 'build/**'],
-  // vendor: ['vendor/**'],
+  // ignore: ['**/node_modules', '**/node_modules/**', '**/dist', '**/dist/**', '**/build', '**/build/**', '**/.git', '**/.git/**'],
+  // vendor: ['**/vendor', '**/vendor/**'],
 };
 `;
 }

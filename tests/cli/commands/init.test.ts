@@ -58,6 +58,36 @@ describe('initCommand', () => {
     expect(content).toContain('jest');
   });
 
+  it('detects frameworks declared in nested manifests (monorepo layout)', async () => {
+    const root = getTmp();
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'monorepo' }));
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(join(root, 'plugins', 'woocommerce'), { recursive: true });
+    mkdirSync(join(root, 'packages', 'js', 'admin'), { recursive: true });
+    writeFileSync(
+      join(root, 'plugins', 'woocommerce', 'composer.json'),
+      JSON.stringify({ 'require-dev': { 'phpunit/phpunit': '^11.0' } }),
+    );
+    writeFileSync(
+      join(root, 'packages', 'js', 'admin', 'package.json'),
+      JSON.stringify({ devDependencies: { '@playwright/test': '^1.0.0' } }),
+    );
+    // Declarations buried inside node_modules must not count.
+    mkdirSync(join(root, 'node_modules', 'some-pkg'), { recursive: true });
+    writeFileSync(
+      join(root, 'node_modules', 'some-pkg', 'package.json'),
+      JSON.stringify({ devDependencies: { jest: '^29.0.0' } }),
+    );
+
+    const t = makeIo();
+    const code = await initCommand({ projectRoot: root, io: t.io });
+    expect(code).toBe(0);
+    const content = readFileSync(join(root, 'ti.config.ts'), 'utf8');
+    expect(content).toContain('phpunit');
+    expect(content).toContain('playwright');
+    expect(content).not.toContain('jest:');
+  });
+
   it('exits 1 with stderr when .ti/ cannot be created', async () => {
     const root = getTmp();
     // Use a non-directory parent so mkdirSync(join(parent, '.ti'), ...) fails with ENOTDIR.
