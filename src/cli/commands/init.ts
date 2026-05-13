@@ -25,6 +25,8 @@ interface Detected {
   readonly jest: boolean;
   readonly vitest: boolean;
   readonly playwright: boolean;
+  // Project-relative POSIX directories that contain a playwright.config.*
+  readonly playwrightConfigDirs: readonly string[];
 }
 
 export function initCommand(opts: InitCommandOpts): Promise<number> {
@@ -63,42 +65,51 @@ function detect(projectRoot: string): Detected {
   let jest = false;
   let vitest = false;
   let playwright = false;
+  const playwrightConfigDirs: string[] = [];
 
-  for (const manifest of findManifests(projectRoot, MAX_DETECT_DEPTH)) {
-    if (manifest.file === 'composer.json') {
+  for (const found of findRelevantFiles(projectRoot, MAX_DETECT_DEPTH)) {
+    if (found.kind === 'composer') {
       if (
-        readJsonAtFile(manifest.absPath, ['require-dev', 'phpunit/phpunit']) !== null ||
-        readJsonAtFile(manifest.absPath, ['require', 'phpunit/phpunit']) !== null
+        readJsonAtFile(found.absPath, ['require-dev', 'phpunit/phpunit']) !== null ||
+        readJsonAtFile(found.absPath, ['require', 'phpunit/phpunit']) !== null
       ) {
         phpunit = true;
       }
-    } else {
-      if (readJsonAtFile(manifest.absPath, ['devDependencies', 'jest']) !== null) jest = true;
-      if (readJsonAtFile(manifest.absPath, ['devDependencies', 'vitest']) !== null) vitest = true;
-      if (readJsonAtFile(manifest.absPath, ['devDependencies', '@playwright/test']) !== null) {
+    } else if (found.kind === 'package') {
+      if (readJsonAtFile(found.absPath, ['devDependencies', 'jest']) !== null) jest = true;
+      if (readJsonAtFile(found.absPath, ['devDependencies', 'vitest']) !== null) vitest = true;
+      if (readJsonAtFile(found.absPath, ['devDependencies', '@playwright/test']) !== null) {
         playwright = true;
       }
+    } else {
+      // playwright.config.* — the parent dir is the implied test root.
+      playwright = true;
+      playwrightConfigDirs.push(found.relDir);
     }
   }
 
-  return { phpunit, jest, vitest, playwright };
+  return { phpunit, jest, vitest, playwright, playwrightConfigDirs };
 }
 
-interface FoundManifest {
+type FoundKind = 'package' | 'composer' | 'playwright';
+const PLAYWRIGHT_CONFIG_RE = /^playwright\.config\.(?:[mc]?[tj]s)$/;
+
+interface FoundFile {
   readonly absPath: string;
-  readonly file: 'package.json' | 'composer.json';
+  readonly relDir: string;
+  readonly kind: FoundKind;
 }
 
-function* findManifests(root: string, maxDepth: number): Iterable<FoundManifest> {
-  yield* walkForManifests(root, root, 0, maxDepth);
+function* findRelevantFiles(root: string, maxDepth: number): Iterable<FoundFile> {
+  yield* walkForFiles(root, root, 0, maxDepth);
 }
 
-function* walkForManifests(
+function* walkForFiles(
   root: string,
   dir: string,
   depth: number,
   maxDepth: number,
-): Iterable<FoundManifest> {
+): Iterable<FoundFile> {
   let entries;
   try {
     entries = readdirSync(dir, { withFileTypes: true });
@@ -106,24 +117,35 @@ function* walkForManifests(
     return;
   }
   for (const e of entries) {
-    if (e.name === 'package.json' || e.name === 'composer.json') {
-      const full = join(dir, e.name);
-      try {
-        if (statSync(full).isFile()) {
-          yield { absPath: full, file: e.name };
-        }
-      } catch {
-        // ignore
-      }
+    const kind: FoundKind | null =
+      e.name === 'package.json' ? 'package'
+      : e.name === 'composer.json' ? 'composer'
+      : PLAYWRIGHT_CONFIG_RE.test(e.name) ? 'playwright'
+      : null;
+    if (kind === null) continue;
+    const full = join(dir, e.name);
+    try {
+      if (!statSync(full).isFile()) continue;
+    } catch {
+      continue;
     }
+    const relDir = toPosixRelDir(root, dir);
+    yield { absPath: full, relDir, kind };
   }
   if (depth >= maxDepth) return;
   for (const e of entries) {
     if (!e.isDirectory()) continue;
     if (PRUNE_DIR_NAMES.has(e.name)) continue;
     if (e.name.startsWith('.') && e.name !== '.') continue;
-    yield* walkForManifests(root, join(dir, e.name), depth + 1, maxDepth);
+    yield* walkForFiles(root, join(dir, e.name), depth + 1, maxDepth);
   }
+}
+
+function toPosixRelDir(root: string, dir: string): string {
+  if (dir === root) return '';
+  // join uses platform sep — switch to posix here so the glob we emit is portable.
+  const rel = dir.slice(root.length).replace(/^[/\\]+/, '');
+  return rel.split(/[/\\]/).join('/');
 }
 
 function readJsonAtFile(absPath: string, path: readonly string[]): unknown {
@@ -148,6 +170,29 @@ function readJsonAtFile(absPath: string, path: readonly string[]): unknown {
   return cur ?? null;
 }
 
+// When playwright.config.* files are found, derive globs anchored at their
+// parent directories — those are the strongest signal for where pw tests
+// actually live. Otherwise fall back to conventional directory names; we
+// deliberately keep these narrow so a generic *.spec.ts elsewhere is still
+// classified as jest.
+function formatPlaywrightGlobs(configDirs: readonly string[]): string {
+  const exts = '{ts,tsx,js,jsx}';
+  let globs: string[];
+  if (configDirs.length > 0) {
+    globs = configDirs.flatMap((d) => [
+      `${d}/**/*.spec.${exts}`,
+      `${d}/**/*.test.${exts}`,
+    ]);
+  } else {
+    globs = [
+      `**/e2e-pw/**/*.spec.${exts}`,
+      `**/e2e_pw/**/*.spec.${exts}`,
+      `**/playwright/**/*.spec.${exts}`,
+    ];
+  }
+  return `[${globs.map((g) => `'${g}'`).join(', ')}]`;
+}
+
 function renderStarterConfig(d: Detected): string {
   const blocks: string[] = [];
   if (d.phpunit) {
@@ -163,7 +208,7 @@ function renderStarterConfig(d: Detected): string {
   }
   if (d.playwright) {
     blocks.push(`    playwright: {
-      // Discovery uses playwright.config.* testDir/testMatch if present.
+      fileGlobs: ${formatPlaywrightGlobs(d.playwrightConfigDirs)},
     },`);
   }
   const testsBlock =

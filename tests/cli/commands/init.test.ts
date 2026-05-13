@@ -58,6 +58,42 @@ describe('initCommand', () => {
     expect(content).toContain('jest');
   });
 
+  it('derives playwright fileGlobs from located playwright.config files', async () => {
+    // The classifier needs explicit globs to mark a .spec.ts as playwright,
+    // otherwise the default jest glob swallows it. Use the location of each
+    // playwright.config.* as a strong signal for where pw tests live.
+    const root = getTmp();
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(join(root, 'plugins', 'a', 'tests', 'e2e-pw'), { recursive: true });
+    writeFileSync(
+      join(root, 'package.json'),
+      JSON.stringify({ devDependencies: { '@playwright/test': '^1.0.0' } }),
+    );
+    writeFileSync(
+      join(root, 'plugins', 'a', 'tests', 'e2e-pw', 'playwright.config.ts'),
+      "import { defineConfig } from '@playwright/test'; export default defineConfig({});",
+    );
+    const t = makeIo();
+    const code = await initCommand({ projectRoot: root, io: t.io });
+    expect(code).toBe(0);
+    const content = readFileSync(join(root, 'ti.config.ts'), 'utf8');
+    expect(content).toContain('plugins/a/tests/e2e-pw/**/*.spec.{ts,tsx,js,jsx}');
+  });
+
+  it('falls back to conventional playwright globs when no config is found', async () => {
+    const root = getTmp();
+    writeFileSync(
+      join(root, 'package.json'),
+      JSON.stringify({ devDependencies: { '@playwright/test': '^1.0.0' } }),
+    );
+    const t = makeIo();
+    const code = await initCommand({ projectRoot: root, io: t.io });
+    expect(code).toBe(0);
+    const content = readFileSync(join(root, 'ti.config.ts'), 'utf8');
+    // Conservative defaults that do not steal generic .spec files from jest.
+    expect(content).toMatch(/\*\*\/e2e[-_]?pw\/\*\*\/\*\.spec/);
+  });
+
   it('detects frameworks declared in nested manifests (monorepo layout)', async () => {
     const root = getTmp();
     writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'monorepo' }));
