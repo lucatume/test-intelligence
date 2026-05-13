@@ -35,6 +35,25 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         verbosity: cmd.verbosity,
         paths: cmd.paths,
       });
+    case 'tests':
+      return (await import('./cli/commands/tests.js')).testsCommand({
+        projectRoot: process.cwd(),
+        io,
+        sources: cmd.sources,
+        framework: cmd.framework,
+        format: cmd.format,
+        minConfidence: cmd.minConfidence,
+        strict: cmd.strict,
+      });
+    case 'sources':
+      return (await import('./cli/commands/sources.js')).sourcesCommand({
+        projectRoot: process.cwd(),
+        io,
+        testIds: cmd.testIds,
+        format: cmd.format,
+        minConfidence: cmd.minConfidence,
+        strict: cmd.strict,
+      });
     case 'not-implemented':
       io.stderr.write(`ti: ${cmd.verb} is not yet implemented in this build\n`);
       return 1;

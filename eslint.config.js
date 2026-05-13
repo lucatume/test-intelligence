@@ -62,7 +62,7 @@ export default tseslint.config(
           { from: 'extract',    allow: ['extract', 'anchors', 'facts', 'foundation', 'store'] },
           { from: 'derive',     allow: ['derive', 'anchors', 'facts', 'foundation', 'store'] },
           { from: 'query',      allow: ['query', 'store', 'anchors', 'foundation'] },
-          { from: 'emit',       allow: ['emit', 'foundation'] },
+          { from: 'emit',       allow: ['emit', 'foundation', 'query'] },
           { from: 'discover',   allow: ['discover', 'config', 'foundation'] },
           { from: 'export',     allow: ['export', 'store', 'foundation'] },
           { from: 'build',      allow: ['build', 'discover', 'extract', 'derive', 'store', 'config', 'foundation', 'facts', 'anchors'] },
