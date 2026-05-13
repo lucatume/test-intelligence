@@ -102,9 +102,7 @@ function renderStarterConfig(d: Detected): string {
       ? `  // tests: { phpunit: { ... }, jest: { ... } },`
       : `  tests: {\n${blocks.join('\n')}\n    classes: [],\n    defaultClass: 'unit',\n  },`;
 
-  return `import { defineConfig } from 'ti';
-
-export default defineConfig({
+  return `export default {
 ${testsBlock}
   // hooks: { stopList: { add: [], remove: [] } },
   // extractors: [],
@@ -113,6 +111,6 @@ ${testsBlock}
   // concurrency: { phpWorkers: undefined, tsWorkers: undefined, deriveWorkers: undefined },
   // ignore: ['node_modules/**', 'dist/**', 'build/**'],
   // vendor: ['vendor/**'],
-});
+};
 `;
 }

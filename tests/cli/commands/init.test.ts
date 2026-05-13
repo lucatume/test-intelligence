@@ -16,7 +16,10 @@ describe('initCommand', () => {
     expect(existsSync(join(root, 'ti.config.ts'))).toBe(true);
     expect(existsSync(join(root, '.ti'))).toBe(true);
     const content = readFileSync(join(root, 'ti.config.ts'), 'utf8');
-    expect(content).toContain('defineConfig');
+    expect(content).toContain('export default');
+    // Generated config must not import 'ti' so it loads in projects that
+    // don't have the package installed as a dependency.
+    expect(content).not.toMatch(/from ['"]ti['"]/);
   });
 
   it('is a no-op when ti.config.ts already exists', async () => {
