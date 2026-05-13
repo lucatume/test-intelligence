@@ -18,7 +18,7 @@ import { walk } from '../discover/walk.js';
 import { classifyFile } from '../discover/framework.js';
 import { matchesAny } from '../discover/glob.js';
 import { extractFile } from '../extract/index.js';
-import { synthesizeCompilerOptions } from '../extract/ts/compiler.js';
+import { CompilerOptionsResolver } from '../extract/ts/compiler.js';
 import { startPhpWorker, hasPhpAvailable, type PhpWorker } from '../extract/php/spawn.js';
 import { WP_PHP_PATTERNS } from '../extract/declarative/wp-php-patterns.js';
 import { parseProjectRelativePath } from '../paths.js';
@@ -66,7 +66,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
         }
       }
 
-      const compilerOptions = synthesizeCompilerOptions(opts.projectRoot);
+      const compilerOptionsResolver = new CompilerOptionsResolver(opts.projectRoot);
       const source = opts.onlyPaths !== undefined
         ? listFromPaths(opts.onlyPaths, opts.projectRoot, opts.config, opts.stderr, verbosity)
         : walk(opts.projectRoot, opts.config);
@@ -88,6 +88,9 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
           frameworkClass: file.frameworkClass,
         });
 
+        const compilerOptions = compilerOptionsResolver.forFile(
+          join(opts.projectRoot, file.path),
+        );
         const r = await extractFile({
           projectRoot: opts.projectRoot,
           path: file.path,
@@ -121,7 +124,11 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
             const anchorId = upsertAnchor(db, { key: parsed.value.key, type: parsed.value.type });
             insertFactAnchor(db, { factId, anchorId, role: a.role });
           }
-          if (f.kind === 'test-def') {
+          // Only register test-defs whose file the walker classified as a
+          // test. The PHP extractor emits test-defs for any class extending
+          // PHPUnit\TestCase, including vendor-shipped test suites — those
+          // should be indexed as sources, not as project tests.
+          if (f.kind === 'test-def' && file.framework !== null) {
             const payload = f.payload as { testId?: unknown; framework?: unknown };
             if (typeof payload.testId === 'string' && typeof payload.framework === 'string') {
               insertTest(db, {
