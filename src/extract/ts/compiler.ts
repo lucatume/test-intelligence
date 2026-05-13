@@ -15,6 +15,93 @@ function defaults(): ts.CompilerOptions {
   };
 }
 
+interface RawCompilerOptions {
+  baseUrl?: string;
+  paths?: Record<string, string[]>;
+}
+
+interface ResolvedFromFile {
+  // Absolute baseUrl, if specified.
+  baseUrl?: string;
+  paths?: Record<string, string[]>;
+}
+
+// Read tsconfig at an absolute file path, recursively resolving `extends`.
+// Returns merged baseUrl/paths or null if unreadable. Child compilerOptions
+// override extended ones. baseUrl resolves against the file that declares
+// it (per TypeScript spec). `seen` guards against extends cycles.
+function readConfigFile(absPath: string, seen: Set<string>): ResolvedFromFile | null {
+  if (seen.has(absPath)) return null;
+  seen.add(absPath);
+  if (!existsSync(absPath)) return null;
+  let raw: string;
+  try {
+    raw = readFileSync(absPath, 'utf8');
+  } catch {
+    return null;
+  }
+  const parsed = ts.parseConfigFileTextToJson(absPath, raw);
+  if (parsed.error || !parsed.config) return null;
+  const cfg = parsed.config as { extends?: string | string[]; compilerOptions?: RawCompilerOptions };
+  const dir = dirname(absPath);
+
+  // Start with the extended config (TS allows extends to be a string or array).
+  let merged: ResolvedFromFile = {};
+  const extendsList = Array.isArray(cfg.extends)
+    ? cfg.extends
+    : typeof cfg.extends === 'string' ? [cfg.extends] : [];
+  for (const ext of extendsList) {
+    const target = resolveExtendsPath(dir, ext);
+    if (target === null) continue;
+    const parentResolved = readConfigFile(target, seen);
+    if (parentResolved) merged = mergeResolved(merged, parentResolved);
+  }
+
+  // Overlay this file's own compilerOptions.
+  const co = cfg.compilerOptions;
+  if (co) {
+    const own: ResolvedFromFile = {};
+    if (co.baseUrl) own.baseUrl = resolve(dir, co.baseUrl);
+    if (co.paths) own.paths = co.paths;
+    merged = mergeResolved(merged, own);
+  }
+  return merged;
+}
+
+function mergeResolved(base: ResolvedFromFile, overlay: ResolvedFromFile): ResolvedFromFile {
+  const out: ResolvedFromFile = {};
+  if (overlay.baseUrl !== undefined) out.baseUrl = overlay.baseUrl;
+  else if (base.baseUrl !== undefined) out.baseUrl = base.baseUrl;
+  if (overlay.paths !== undefined) {
+    out.paths = {};
+    for (const [k, v] of Object.entries(overlay.paths)) out.paths[k] = [...v];
+  } else if (base.paths !== undefined) {
+    out.paths = {};
+    for (const [k, v] of Object.entries(base.paths)) out.paths[k] = [...v];
+  }
+  return out;
+}
+
+// `extends` can be a relative path, an absolute path, or a bare package name
+// (resolved against node_modules). For project-local extends we just resolve
+// against the declaring file's directory; package-style extends would need
+// node module resolution, deferred until a real case demands it.
+function resolveExtendsPath(fromDir: string, ext: string): string | null {
+  if (ext.startsWith('./') || ext.startsWith('../') || ext.startsWith('/')) {
+    let cand = resolve(fromDir, ext);
+    if (existsSync(cand)) return cand;
+    if (!cand.endsWith('.json')) {
+      cand = `${cand}.json`;
+      if (existsSync(cand)) return cand;
+    }
+    return null;
+  }
+  // Bare specifier — TS resolves these via Node-style module resolution
+  // (e.g. `@tsconfig/strictest/tsconfig.json`). Not commonly used in the
+  // projects we target; skip for now.
+  return null;
+}
+
 // Reads tsconfig.json or jsconfig.json from a specific directory and
 // returns CompilerOptions merged onto defaults — or null if no config exists
 // there. `baseUrl` resolves against the config's own directory (per the
@@ -23,26 +110,13 @@ function readConfigAt(dir: string): ts.CompilerOptions | null {
   for (const name of ['tsconfig.json', 'jsconfig.json']) {
     const path = resolve(dir, name);
     if (!existsSync(path)) continue;
-    try {
-      const raw = readFileSync(path, 'utf8');
-      const parsed = ts.parseConfigFileTextToJson(path, raw);
-      if (parsed.error || !parsed.config) continue;
-      const cfg = parsed.config as {
-        compilerOptions?: { baseUrl?: string; paths?: Record<string, string[]> };
-      };
-      const co = cfg.compilerOptions;
-      if (!co) continue;
-      const out = defaults();
-      if (co.baseUrl) out.baseUrl = resolve(dir, co.baseUrl);
-      if (co.paths) {
-        const paths: Record<string, string[]> = {};
-        for (const [k, v] of Object.entries(co.paths)) paths[k] = [...v];
-        out.paths = paths;
-      }
-      return out;
-    } catch {
-      // fall through to the next candidate
-    }
+    const resolved = readConfigFile(path, new Set());
+    if (resolved === null) continue;
+    if (resolved.baseUrl === undefined && resolved.paths === undefined) continue;
+    const out = defaults();
+    if (resolved.baseUrl !== undefined) out.baseUrl = resolved.baseUrl;
+    if (resolved.paths !== undefined) out.paths = resolved.paths;
+    return out;
   }
   return null;
 }

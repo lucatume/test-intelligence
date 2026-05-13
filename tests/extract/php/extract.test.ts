@@ -137,6 +137,38 @@ class A {
     expect(names).toContain('App\\Helper');
   });
 
+  it('does not emit symbol-use for PHP built-in classes', async () => {
+    // Exception/stdClass/DateTime/Reflection* etc. are PHP language built-ins.
+    // Their "uses" never find a project symbol-def, so they only pollute the
+    // anchor index (e.g. wordpress-develop: 161 uses of stdClass, 114 of
+    // TypeError, 95 of InvalidArgumentException — all dead weight).
+    const root = getTmp();
+    write(root, 'src/A.php', `<?php
+namespace App;
+class A {
+  public function go(): void {
+    throw new \\Exception('x');
+    $std = new \\stdClass();
+    $r = new \\ReflectionClass(self::class);
+    $dt = new \\DateTime();
+    $iae = new \\InvalidArgumentException();
+  }
+}`);
+    const facts = await extractPhpFile({
+      projectRoot: root,
+      relPath: 'src/A.php',
+      worker,
+    });
+    const names = facts
+      .filter((f) => f.kind === 'symbol-use')
+      .map((u) => (u.payload as { name: string }).name);
+    expect(names).not.toContain('Exception');
+    expect(names).not.toContain('stdClass');
+    expect(names).not.toContain('ReflectionClass');
+    expect(names).not.toContain('DateTime');
+    expect(names).not.toContain('InvalidArgumentException');
+  });
+
   it('test-def uses project-relative paths (not absolute) in testId + anchors', async () => {
     // JS tests use relative paths in their test_id (e.g. `jest:src/foo.test.ts::...`).
     // PHP must match so queries are symmetric and stable across machines.

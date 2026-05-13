@@ -37,6 +37,35 @@ describe('synthesizeCompilerOptions', () => {
     expect(opts.paths).toEqual({ '@/*': ['src/*'] });
   });
 
+  it('follows `extends` to pull paths from a base tsconfig', () => {
+    // WooCommerce-style layout: tsconfig.json extends tsconfig.base.json
+    // and the path aliases live only in the base. Without extends support
+    // every @woocommerce/* import resolves to nothing.
+    const root = getTmp();
+    writeFileSync(join(root, 'tsconfig.base.json'), JSON.stringify({
+      compilerOptions: { baseUrl: '.', paths: { '@pkg/*': ['src/*'] } },
+    }));
+    writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({
+      extends: './tsconfig.base.json',
+      include: ['src/**/*'],
+    }));
+    const opts = synthesizeCompilerOptions(root);
+    expect(opts.paths).toEqual({ '@pkg/*': ['src/*'] });
+  });
+
+  it('child compilerOptions overrides extended compilerOptions', () => {
+    const root = getTmp();
+    writeFileSync(join(root, 'tsconfig.base.json'), JSON.stringify({
+      compilerOptions: { paths: { '@old/*': ['old/*'] } },
+    }));
+    writeFileSync(join(root, 'tsconfig.json'), JSON.stringify({
+      extends: './tsconfig.base.json',
+      compilerOptions: { paths: { '@new/*': ['new/*'] } },
+    }));
+    const opts = synthesizeCompilerOptions(root);
+    expect(opts.paths).toEqual({ '@new/*': ['new/*'] });
+  });
+
   it('falls back to jsconfig.json when tsconfig is absent', () => {
     const root = getTmp();
     writeFileSync(join(root, 'jsconfig.json'), JSON.stringify({

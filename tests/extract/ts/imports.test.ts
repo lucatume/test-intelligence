@@ -74,6 +74,28 @@ describe('extractImports', () => {
     }
   });
 
+  it('classifies style/asset imports as resolved with meta.asset=true', () => {
+    // ./style.scss / ./block.json / ./editor.scss are real imports but not
+    // JS modules — bundlers handle them. On woocommerce these alone account
+    // for ~700 of 1,905 "unresolved" imports, drowning out the real
+    // resolution gaps.
+    const root = getTmp();
+    write(
+      root,
+      'src/a.ts',
+      "import './style.scss';\nimport block from './block.json';\nimport './editor.css';\n",
+    );
+    const sf = parseFile(root, 'src/a.ts');
+    const opts = synthesizeCompilerOptions(root);
+    const facts = extractImports(sf, 'src/a.ts', root, opts);
+    expect(facts).toHaveLength(3);
+    for (const f of facts) {
+      expect(f.resolved).toBe(true);
+      expect((f.payload as { meta?: { asset?: boolean } }).meta?.asset).toBe(true);
+      expect((f.payload as { resolvedPath?: string }).resolvedPath).toBeUndefined();
+    }
+  });
+
   it('handles dynamic import() and require() (cjs)', () => {
     const root = getTmp();
     write(root, 'src/dyn.ts', "const x = import('./helpers'); const y = require('./helpers');\n");

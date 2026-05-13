@@ -31,6 +31,96 @@ final class Visitor extends NodeVisitorAbstract
     /** @var array<int, string> */
     public array $phpUnitBaseClasses = ['PHPUnit\\Framework\\TestCase'];
 
+    /** @var array<string, true> Static PHP language built-ins. */
+    private const PHP_BUILTIN_CLASSES = [
+        // SPL exceptions + core hierarchy
+        'Exception' => true, 'Error' => true, 'TypeError' => true,
+        'ValueError' => true, 'ArgumentCountError' => true, 'ArithmeticError' => true,
+        'AssertionError' => true, 'DivisionByZeroError' => true, 'ParseError' => true,
+        'UnhandledMatchError' => true, 'Throwable' => true,
+        'LogicException' => true, 'BadFunctionCallException' => true,
+        'BadMethodCallException' => true, 'DomainException' => true,
+        'InvalidArgumentException' => true, 'LengthException' => true,
+        'OutOfRangeException' => true, 'RuntimeException' => true,
+        'OutOfBoundsException' => true, 'OverflowException' => true,
+        'RangeException' => true, 'UnderflowException' => true,
+        'UnexpectedValueException' => true,
+        // SPL data structures + iterators
+        'ArrayAccess' => true, 'ArrayIterator' => true, 'ArrayObject' => true,
+        'Countable' => true, 'IteratorAggregate' => true, 'Iterator' => true,
+        'IteratorIterator' => true, 'Traversable' => true, 'Generator' => true,
+        'SplDoublyLinkedList' => true, 'SplFixedArray' => true,
+        'SplHeap' => true, 'SplMaxHeap' => true, 'SplMinHeap' => true,
+        'SplObjectStorage' => true, 'SplPriorityQueue' => true,
+        'SplQueue' => true, 'SplStack' => true, 'SplObserver' => true,
+        'SplSubject' => true, 'SplFileInfo' => true, 'SplFileObject' => true,
+        'SplTempFileObject' => true, 'WeakMap' => true, 'WeakReference' => true,
+        'Stringable' => true, 'UnitEnum' => true, 'BackedEnum' => true,
+        'Closure' => true, 'Generator' => true,
+        // SPL filesystem / recursive iterators
+        'DirectoryIterator' => true, 'FilesystemIterator' => true,
+        'RecursiveDirectoryIterator' => true, 'GlobIterator' => true,
+        'RecursiveIteratorIterator' => true, 'RecursiveArrayIterator' => true,
+        'RecursiveFilterIterator' => true, 'RecursiveCallbackFilterIterator' => true,
+        'RecursiveRegexIterator' => true, 'RecursiveTreeIterator' => true,
+        'RegexIterator' => true, 'AppendIterator' => true,
+        'CachingIterator' => true, 'CallbackFilterIterator' => true,
+        'EmptyIterator' => true, 'FilterIterator' => true,
+        'InfiniteIterator' => true, 'LimitIterator' => true,
+        'MultipleIterator' => true, 'NoRewindIterator' => true,
+        'ParentIterator' => true, 'OuterIterator' => true,
+        'RecursiveCachingIterator' => true, 'SeekableIterator' => true,
+        // Reflection
+        'Reflection' => true, 'ReflectionClass' => true,
+        'ReflectionClassConstant' => true, 'ReflectionEnum' => true,
+        'ReflectionEnumBackedCase' => true, 'ReflectionEnumUnitCase' => true,
+        'ReflectionExtension' => true, 'ReflectionFiber' => true,
+        'ReflectionFunction' => true, 'ReflectionFunctionAbstract' => true,
+        'ReflectionGenerator' => true, 'ReflectionMethod' => true,
+        'ReflectionNamedType' => true, 'ReflectionObject' => true,
+        'ReflectionParameter' => true, 'ReflectionProperty' => true,
+        'ReflectionReference' => true, 'ReflectionType' => true,
+        'ReflectionUnionType' => true, 'ReflectionIntersectionType' => true,
+        'ReflectionZendExtension' => true, 'Reflector' => true,
+        // Date/Time
+        'DateTime' => true, 'DateTimeImmutable' => true,
+        'DateTimeInterface' => true, 'DateTimeZone' => true,
+        'DateInterval' => true, 'DatePeriod' => true,
+        // Common standard / extensions
+        'stdClass' => true, 'Imagick' => true, 'ImagickDraw' => true,
+        'ImagickPixel' => true, 'ImagickPixelIterator' => true,
+        'ImagickKernel' => true, 'PDO' => true, 'PDOStatement' => true,
+        'PDOException' => true, 'mysqli' => true, 'mysqli_stmt' => true,
+        'mysqli_result' => true, 'SQLite3' => true, 'SQLite3Stmt' => true,
+        'SQLite3Result' => true, 'XMLReader' => true, 'XMLWriter' => true,
+        'DOMDocument' => true, 'DOMNode' => true, 'DOMElement' => true,
+        'DOMNodeList' => true, 'DOMXPath' => true, 'DOMAttr' => true,
+        'DOMText' => true, 'DOMComment' => true, 'DOMException' => true,
+        'SimpleXMLElement' => true, 'JsonException' => true,
+        'JsonSerializable' => true, 'CURLFile' => true, 'CURLStringFile' => true,
+        'Fiber' => true, 'FiberError' => true,
+        // Common PHP extensions (Imagick/Memcached/Zip etc.)
+        'Memcached' => true, 'Memcache' => true,
+        'Redis' => true, 'RedisException' => true,
+        'ZipArchive' => true, 'Phar' => true, 'PharData' => true,
+        'PharException' => true, 'PharFileInfo' => true,
+        'finfo' => true, 'GMP' => true, 'GdImage' => true,
+    ];
+
+    /** @var array<string, true>|null lowercase mirror, lazily built once */
+    private static ?array $phpBuiltinClassesLower = null;
+
+    private static function isPhpBuiltinClass(string $name): bool
+    {
+        if (self::$phpBuiltinClassesLower === null) {
+            self::$phpBuiltinClassesLower = [];
+            foreach (self::PHP_BUILTIN_CLASSES as $k => $_) {
+                self::$phpBuiltinClassesLower[strtolower($k)] = true;
+            }
+        }
+        return isset(self::$phpBuiltinClassesLower[strtolower($name)]);
+    }
+
     public function __construct(string $file, ?string $relFile = null)
     {
         $this->file = $file;
@@ -210,6 +300,12 @@ final class Visitor extends NodeVisitorAbstract
             if ($lower === 'self' || $lower === 'static' || $lower === 'parent') return;
         }
         $resolved = $this->resolveClassName($cls);
+        // PHP language built-ins (Exception, stdClass, DateTime, Reflection*,
+        // etc.) have no project symbol-def, so emitting uses just produces
+        // dead anchors. Skip them entirely. Mirror of the Node-builtin handling
+        // on the TS side. PHP class names are case-insensitive — match on
+        // lowercase so `imagick` and `Imagick` both hit.
+        if (self::isPhpBuiltinClass($resolved)) return;
         $this->facts[] = [
             'kind' => 'symbol-use',
             'resolved' => true,

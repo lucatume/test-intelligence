@@ -23,6 +23,19 @@ function isNodeBuiltin(spec: string): boolean {
   return NODE_BUILTINS.has(spec);
 }
 
+// Specifiers ending in a non-JS extension are bundler-handled assets
+// (styles, JSON, fonts, images, WP block descriptors). They are real imports
+// but never resolve to JS modules. Mark them resolved+asset so they stop
+// inflating the unresolved bucket.
+const ASSET_EXT_RE =
+  /\.(?:scss|sass|css|less|stylus|styl|json|json5|yaml|yml|svg|png|jpg|jpeg|gif|webp|avif|ico|woff2?|ttf|otf|eot|mp3|mp4|webm|wav|md|mdx|txt|html|wasm)$/i;
+
+function isAssetSpecifier(spec: string): boolean {
+  // Strip query/fragment that bundlers tolerate.
+  const cleaned = spec.replace(/[?#].*$/, '');
+  return ASSET_EXT_RE.test(cleaned);
+}
+
 interface SpecifierRef {
   readonly specifier: string;
   readonly startLine: number;
@@ -46,8 +59,9 @@ export function extractImports(
     seen.add(key);
 
     const builtin = isNodeBuiltin(ref.specifier);
+    const asset = !builtin && isAssetSpecifier(ref.specifier);
     let resolvedRel: string | undefined;
-    if (!builtin) {
+    if (!builtin && !asset) {
       const resolved = ts.resolveModuleName(ref.specifier, sf.fileName, options, host);
       if (resolved.resolvedModule) {
         const abs = resolved.resolvedModule.resolvedFileName;
@@ -56,14 +70,17 @@ export function extractImports(
       }
     }
 
-    const isResolved = builtin || resolvedRel !== undefined;
+    const isResolved = builtin || asset || resolvedRel !== undefined;
     const anchorBody = resolvedRel ?? ref.specifier;
+    const metaFlags: Record<string, unknown> = {};
+    if (builtin) metaFlags['builtin'] = true;
+    if (asset) metaFlags['asset'] = true;
     const payload: ImportEdgePayload = {
       kind: 'import-edge',
       specifier: ref.specifier,
       resolved: isResolved,
       ...(resolvedRel !== undefined ? { resolvedPath: resolvedRel } : {}),
-      ...(builtin ? { meta: { builtin: true } } : {}),
+      ...(Object.keys(metaFlags).length > 0 ? { meta: metaFlags } : {}),
     };
 
     const location: FactLocation = {
