@@ -6,6 +6,7 @@ import type { ISODate } from './types.js';
 
 export interface Clock {
   now(): ISODate;
+  nowMillis(): number;
 }
 
 export interface Random {
@@ -19,10 +20,17 @@ export const systemClock: Clock = {
   now(): ISODate {
     return new nativeDate().toISOString() as ISODate;
   },
+  nowMillis(): number {
+    return nativeDate.now();
+  },
 };
 
 export function fixedClock(value: ISODate): Clock {
-  return { now: () => value };
+  const millis = nativeDate.parse(value);
+  return {
+    now: () => value,
+    nowMillis: () => (Number.isFinite(millis) ? millis : 0),
+  };
 }
 
 const nativeMath = Math;
