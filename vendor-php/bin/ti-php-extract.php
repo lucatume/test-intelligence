@@ -21,6 +21,7 @@ final class Visitor extends NodeVisitorAbstract
     /** @var array<int, array<string, mixed>> */
     public array $facts = [];
     public string $file;
+    public string $relFile;
     public ?string $namespace = null;
     /** @var array<string, string> */
     public array $useAliases = [];
@@ -30,9 +31,13 @@ final class Visitor extends NodeVisitorAbstract
     /** @var array<int, string> */
     public array $phpUnitBaseClasses = ['PHPUnit\\Framework\\TestCase'];
 
-    public function __construct(string $file)
+    public function __construct(string $file, ?string $relFile = null)
     {
         $this->file = $file;
+        // Project-relative POSIX path used in test_ids + anchor keys so
+        // outputs are portable across machines. When omitted, the absolute
+        // path is the fallback identifier.
+        $this->relFile = $relFile ?? $file;
     }
 
     public function enterNode(Node $node): void
@@ -54,9 +59,20 @@ final class Visitor extends NodeVisitorAbstract
             $this->classStack[] = $name;
             $isPhpUnit = false;
             if ($node instanceof Node\Stmt\Class_ && $node->extends !== null) {
-                $extends = $this->resolveName($node->extends->toString());
+                $this->emitClassUse($node, $node->extends);
+                $extends = $this->resolveClassName($node->extends);
                 if (in_array($extends, $this->phpUnitBaseClasses, true)) {
                     $isPhpUnit = true;
+                }
+            }
+            if ($node instanceof Node\Stmt\Class_) {
+                foreach ($node->implements as $iface) {
+                    $this->emitClassUse($node, $iface);
+                }
+            }
+            if ($node instanceof Node\Stmt\Interface_) {
+                foreach ($node->extends as $parent) {
+                    $this->emitClassUse($node, $parent);
                 }
             }
             $this->classIsPhpUnit = $isPhpUnit;
@@ -89,8 +105,31 @@ final class Visitor extends NodeVisitorAbstract
         }
         if ($node instanceof Node\Expr\StaticCall) {
             $name = $node->name instanceof Node\Identifier ? $node->name->name : null;
-            $recv = $node->class instanceof Node\Name ? $this->resolveName($node->class->toString()) : null;
+            if ($node->class instanceof Node\Name) {
+                $this->emitClassUse($node, $node->class);
+                $recv = $this->resolveClassName($node->class);
+            } else {
+                $recv = null;
+            }
             if ($name !== null) $this->tryEmitDeclarative('static-call', $node, $name, $recv);
+            return;
+        }
+        if ($node instanceof Node\Expr\New_) {
+            if ($node->class instanceof Node\Name) {
+                $this->emitClassUse($node, $node->class);
+            }
+            return;
+        }
+        if ($node instanceof Node\Expr\ClassConstFetch) {
+            if ($node->class instanceof Node\Name) {
+                $this->emitClassUse($node, $node->class);
+            }
+            return;
+        }
+        if ($node instanceof Node\Expr\StaticPropertyFetch) {
+            if ($node->class instanceof Node\Name) {
+                $this->emitClassUse($node, $node->class);
+            }
             return;
         }
     }
@@ -136,14 +175,60 @@ final class Visitor extends NodeVisitorAbstract
         return $raw;
     }
 
+    // Like resolveName, but applies PHP scope rules for class references:
+    // fully-qualified names lose only their leading backslash; unqualified
+    // names without a matching use-alias receive the current namespace as
+    // prefix. Used for class instantiation / extends / implements / static
+    // access, where this scoping is semantically required.
+    private function resolveClassName(Node\Name $name): string
+    {
+        $raw = $name->toString();
+        if ($name->isFullyQualified()) {
+            return ltrim($raw, '\\');
+        }
+        $first = strstr($raw, '\\', true);
+        if ($first === false) $first = $raw;
+        if (isset($this->useAliases[$first])) {
+            return $this->useAliases[$first] . substr($raw, strlen($first));
+        }
+        if ($this->namespace !== null) {
+            return $this->namespace . '\\' . $raw;
+        }
+        return $raw;
+    }
+
+    private function emitClassUse(Node $where, ?Node\Name $cls): void
+    {
+        if ($cls === null) return;
+        // self / static / parent are pseudo-classes referring to the current
+        // class lexically — not real symbols. Emitting them as anchors
+        // produces giant useless pairings (every `self::foo()` would point
+        // at every other class anywhere using `self`).
+        $raw = $cls->toString();
+        if (!$cls->isFullyQualified()) {
+            $lower = strtolower($raw);
+            if ($lower === 'self' || $lower === 'static' || $lower === 'parent') return;
+        }
+        $resolved = $this->resolveClassName($cls);
+        $this->facts[] = [
+            'kind' => 'symbol-use',
+            'resolved' => true,
+            'location' => $this->loc($where),
+            'anchors' => [['key' => 'php-symbol:' . $resolved, 'role' => 'subject']],
+            'payload' => ['kind' => 'symbol-use', 'name' => $resolved],
+        ];
+    }
+
     /** @return array<string, mixed> */
     private function factSymbolDef(Node $n, string $name, bool $exported): array
     {
+        // role: 'target' — definitions are the destination of references.
+        // symbol-use facts at role 'subject' bridge here via the anchor index.
         return [
             'kind' => 'symbol-def',
             'resolved' => true,
             'location' => $this->loc($n),
-            'anchors' => [['key' => 'php-symbol:' . $name, 'role' => 'subject']],
+            'anchors' => [['key' => 'php-symbol:' . $name, 'role' => 'target']],
             'payload' => ['kind' => 'symbol-def', 'name' => $name, 'exported' => $exported],
         ];
     }
@@ -151,7 +236,7 @@ final class Visitor extends NodeVisitorAbstract
     /** @return array<string, mixed> */
     private function factTestDef(Node $n, string $class, string $method): array
     {
-        $id = 'phpunit:' . $this->file . '::' . $class . '::' . $method;
+        $id = 'phpunit:' . $this->relFile . '::' . $class . '::' . $method;
         return [
             'kind' => 'test-def',
             'resolved' => true,
@@ -284,6 +369,7 @@ while (($line = fgets($stdin)) !== false) {
     }
     if ($op === 'extract') {
         $file = $req['file'] ?? '';
+        $relFile = isset($req['relFile']) && is_string($req['relFile']) ? $req['relFile'] : null;
         if (!is_string($file) || !is_file($file)) {
             emit(['op' => 'facts', 'file' => $file, 'facts' => []]);
             continue;
@@ -293,7 +379,7 @@ while (($line = fgets($stdin)) !== false) {
             if ($code === false) { emit(['op' => 'facts', 'file' => $file, 'facts' => []]); continue; }
             $ast = $parser->parse($code);
             if ($ast === null) { emit(['op' => 'facts', 'file' => $file, 'facts' => []]); continue; }
-            $visitor = new Visitor($file);
+            $visitor = new Visitor($file, $relFile);
             $visitor->phpUnitBaseClasses = $req['phpUnitBaseClasses'] ?? ['PHPUnit\\Framework\\TestCase'];
             $traverser = new NodeTraverser();
             $traverser->addVisitor($visitor);

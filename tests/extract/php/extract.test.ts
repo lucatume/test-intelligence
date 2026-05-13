@@ -63,4 +63,101 @@ class CartTest extends TestCase {
     expect(test).toBeDefined();
     expect((test?.payload as { framework: string }).framework).toBe('phpunit');
   });
+
+  it('emits symbol-use for new / extends / static-call / class-const using use-aliased names', async () => {
+    // Without symbol-use facts, PHP tests have nothing to bridge from —
+    // all phpunit tests dangle. The use-alias case dominates real codebases.
+    const root = getTmp();
+    write(root, 'tests/CartTest.php', `<?php
+namespace App\\Tests;
+use App\\Cart;
+use App\\Base\\BaseTest;
+class CartTest extends BaseTest {
+  public function testAdds(): void {
+    $c = new Cart();
+    Cart::staticDo();
+    $n = Cart::NAME;
+  }
+}`);
+    const facts = await extractPhpFile({
+      projectRoot: root,
+      relPath: 'tests/CartTest.php',
+      worker,
+    });
+    const uses = facts.filter((f) => f.kind === 'symbol-use');
+    const names = uses
+      .map((u) => (u.payload as { name: string }).name)
+      .sort();
+    expect(names).toContain('App\\Cart');
+    expect(names).toContain('App\\Base\\BaseTest');
+    // Anchor key uses php-symbol: so derive's BFS can bridge to symbol-defs.
+    const cartUse = uses.find(
+      (u) => (u.payload as { name: string }).name === 'App\\Cart',
+    );
+    expect(cartUse?.anchors[0]?.key).toBe('php-symbol:App\\Cart');
+  });
+
+  it('emits symbol-use for fully-qualified names (leading backslash)', async () => {
+    const root = getTmp();
+    write(root, 'tests/Foo.php', `<?php
+namespace App\\Tests;
+class Foo {
+  public function bar() {
+    $x = new \\App\\Cart();
+  }
+}`);
+    const facts = await extractPhpFile({
+      projectRoot: root,
+      relPath: 'tests/Foo.php',
+      worker,
+    });
+    const names = facts
+      .filter((f) => f.kind === 'symbol-use')
+      .map((u) => (u.payload as { name: string }).name);
+    expect(names).toContain('App\\Cart');
+  });
+
+  it('emits symbol-use prepending current namespace for unqualified names', async () => {
+    // PHP semantics: inside namespace App, `new Foo()` is `App\Foo` unless
+    // a use-statement says otherwise. Our extractor must match.
+    const root = getTmp();
+    write(root, 'src/A.php', `<?php
+namespace App;
+class A {
+  public function go() { $x = new Helper(); }
+}`);
+    const facts = await extractPhpFile({
+      projectRoot: root,
+      relPath: 'src/A.php',
+      worker,
+    });
+    const names = facts
+      .filter((f) => f.kind === 'symbol-use')
+      .map((u) => (u.payload as { name: string }).name);
+    expect(names).toContain('App\\Helper');
+  });
+
+  it('test-def uses project-relative paths (not absolute) in testId + anchors', async () => {
+    // JS tests use relative paths in their test_id (e.g. `jest:src/foo.test.ts::...`).
+    // PHP must match so queries are symmetric and stable across machines.
+    const root = getTmp();
+    write(root, 'tests/CartTest.php', `<?php
+namespace MyPkg\\Tests;
+use PHPUnit\\Framework\\TestCase;
+class CartTest extends TestCase {
+  public function testAdds(): void {}
+}`);
+    const facts = await extractPhpFile({
+      projectRoot: root,
+      relPath: 'tests/CartTest.php',
+      worker,
+    });
+    const test = facts.find((f) => f.kind === 'test-def');
+    if (!test) throw new Error('no test-def');
+    const testId = (test.payload as { testId: string }).testId;
+    expect(testId.startsWith('phpunit:tests/CartTest.php::')).toBe(true);
+    expect(testId).not.toMatch(/^phpunit:\//);
+    const anchor = test.anchors[0];
+    expect(anchor?.key.startsWith('test:phpunit:tests/CartTest.php::')).toBe(true);
+  });
 });

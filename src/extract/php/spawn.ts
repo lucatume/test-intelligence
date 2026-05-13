@@ -7,7 +7,7 @@ import { Protocol } from './protocol.js';
 export interface PhpWorker {
   ping(): Promise<boolean>;
   registerPatterns(patterns: readonly unknown[]): Promise<number>;
-  extract(absFile: string, phpUnitBaseClasses?: readonly string[]): Promise<unknown>;
+  extract(absFile: string, phpUnitBaseClasses?: readonly string[], relFile?: string): Promise<unknown>;
   shutdown(): Promise<void>;
 }
 
@@ -51,10 +51,11 @@ export function startPhpWorker(opts: SpawnOptions): Result<PhpWorker, SpawnError
       const r = await proto.request({ op: 'register-patterns', patterns });
       return (r as { count?: number }).count ?? 0;
     },
-    async extract(absFile, phpUnitBaseClasses): Promise<unknown> {
+    async extract(absFile, phpUnitBaseClasses, relFile): Promise<unknown> {
       return await proto.request({
         op: 'extract',
         file: absFile,
+        ...(relFile !== undefined ? { relFile } : {}),
         ...(phpUnitBaseClasses !== undefined ? { phpUnitBaseClasses } : {}),
       });
     },

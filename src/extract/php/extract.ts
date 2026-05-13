@@ -12,7 +12,7 @@ export interface ExtractPhpInput {
 
 export async function extractPhpFile(input: ExtractPhpInput): Promise<Fact[]> {
   const abs = resolve(input.projectRoot, input.relPath);
-  const res = await input.worker.extract(abs, input.phpUnitBaseClasses);
+  const res = await input.worker.extract(abs, input.phpUnitBaseClasses, input.relPath);
   const env = res as { op?: string; file?: string; facts?: unknown[] };
   if (env.op !== 'facts' || !Array.isArray(env.facts)) return [];
 
