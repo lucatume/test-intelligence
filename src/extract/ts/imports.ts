@@ -3,6 +3,26 @@ import ts from 'typescript';
 import type { Fact, FactLocation, ImportEdgePayload } from '../../facts/types.js';
 import type { AnchorKey } from '../../types.js';
 
+// Node.js built-in modules. Specifiers in this set (or `node:`-prefixed) are
+// real modules — just not project files — so they should not be counted as
+// unresolved. Source: `module.builtinModules` snapshot for Node 20 / 22.
+const NODE_BUILTINS: ReadonlySet<string> = new Set([
+  'assert', 'async_hooks', 'buffer', 'child_process', 'cluster',
+  'console', 'constants', 'crypto', 'dgram', 'diagnostics_channel',
+  'dns', 'domain', 'events', 'fs', 'fs/promises', 'http', 'http2',
+  'https', 'inspector', 'module', 'net', 'os', 'path', 'path/posix',
+  'path/win32', 'perf_hooks', 'process', 'punycode', 'querystring',
+  'readline', 'repl', 'stream', 'stream/consumers', 'stream/promises',
+  'stream/web', 'string_decoder', 'sys', 'test', 'timers',
+  'timers/promises', 'tls', 'trace_events', 'tty', 'url', 'util',
+  'util/types', 'v8', 'vm', 'wasi', 'worker_threads', 'zlib',
+]);
+
+function isNodeBuiltin(spec: string): boolean {
+  if (spec.startsWith('node:')) return true;
+  return NODE_BUILTINS.has(spec);
+}
+
 interface SpecifierRef {
   readonly specifier: string;
   readonly startLine: number;
@@ -25,20 +45,25 @@ export function extractImports(
     if (seen.has(key)) return;
     seen.add(key);
 
-    const resolved = ts.resolveModuleName(ref.specifier, sf.fileName, options, host);
+    const builtin = isNodeBuiltin(ref.specifier);
     let resolvedRel: string | undefined;
-    if (resolved.resolvedModule) {
-      const abs = resolved.resolvedModule.resolvedFileName;
-      const rel = toPosix(relative(projectRoot, abs));
-      if (!rel.startsWith('..') && !rel.startsWith('/')) resolvedRel = rel;
+    if (!builtin) {
+      const resolved = ts.resolveModuleName(ref.specifier, sf.fileName, options, host);
+      if (resolved.resolvedModule) {
+        const abs = resolved.resolvedModule.resolvedFileName;
+        const rel = toPosix(relative(projectRoot, abs));
+        if (!rel.startsWith('..') && !rel.startsWith('/')) resolvedRel = rel;
+      }
     }
 
+    const isResolved = builtin || resolvedRel !== undefined;
     const anchorBody = resolvedRel ?? ref.specifier;
     const payload: ImportEdgePayload = {
       kind: 'import-edge',
       specifier: ref.specifier,
-      resolved: resolvedRel !== undefined,
+      resolved: isResolved,
       ...(resolvedRel !== undefined ? { resolvedPath: resolvedRel } : {}),
+      ...(builtin ? { meta: { builtin: true } } : {}),
     };
 
     const location: FactLocation = {
@@ -49,7 +74,7 @@ export function extractImports(
 
     out.push({
       kind: 'import-edge',
-      resolved: resolvedRel !== undefined,
+      resolved: isResolved,
       location,
       anchors: [{ key: `js-module:${anchorBody}` as AnchorKey, role: 'module' }],
       payload,

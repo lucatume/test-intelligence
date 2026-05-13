@@ -53,6 +53,27 @@ describe('extractImports', () => {
     expect(anchor.key).toBe('js-module:some-npm-pkg');
   });
 
+  it('flags Node built-in modules as resolved with meta.builtin=true', () => {
+    // Without this, `path`, `fs`, etc. show as `resolved: false` and inflate
+    // the unresolved-import count, masking real gaps (workspace pkgs, path
+    // aliases). They are real modules — just not project files.
+    const root = getTmp();
+    write(
+      root,
+      'src/a.ts',
+      "import path from 'path';\nimport { promises } from 'node:fs';\n",
+    );
+    const sf = parseFile(root, 'src/a.ts');
+    const opts = synthesizeCompilerOptions(root);
+    const facts = extractImports(sf, 'src/a.ts', root, opts);
+    expect(facts).toHaveLength(2);
+    for (const f of facts) {
+      expect(f.resolved).toBe(true);
+      expect((f.payload as { meta?: { builtin?: boolean } }).meta?.builtin).toBe(true);
+      expect((f.payload as { resolvedPath?: string }).resolvedPath).toBeUndefined();
+    }
+  });
+
   it('handles dynamic import() and require() (cjs)', () => {
     const root = getTmp();
     write(root, 'src/dyn.ts', "const x = import('./helpers'); const y = require('./helpers');\n");
