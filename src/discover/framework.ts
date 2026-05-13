@@ -21,10 +21,17 @@ export interface FileClassification {
   readonly frameworkClass: FrameworkClass | null;
 }
 
+// TypeScript declaration files (.d.ts and its module-variants) carry no
+// executable behavior; reachability through them is purely a type-level
+// re-export chain that dead-ends in implementations the resolver already
+// reaches directly. Treat them as unsupported.
+const DECLARATION_RE = /\.d\.(?:ts|tsx|mts|cts)$/i;
+
 export function classifyFile(
   relPath: string,
   config: ValidatedConfig,
 ): FileClassification | null {
+  if (DECLARATION_RE.test(relPath)) return null;
   const dot = relPath.lastIndexOf('.');
   if (dot === -1) return null;
   const ext = relPath.slice(dot);

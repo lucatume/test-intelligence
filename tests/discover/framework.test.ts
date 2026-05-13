@@ -23,6 +23,19 @@ describe('classifyFile', () => {
     expect(classifyFile('readme.md', cfg)).toBeNull();
     expect(classifyFile('src/a.css', cfg)).toBeNull();
   });
+  it('returns null for .d.ts declaration files', () => {
+    // .d.ts files carry no executable logic; including them as sources
+    // produces noisy reachability results (~2/3 of "sources --from-tests"
+    // hits in a typical monorepo come from generated build-types/*.d.ts).
+    expect(classifyFile('packages/x/build-types/index.d.ts', cfg)).toBeNull();
+    expect(classifyFile('node_modules/foo/index.d.ts', cfg)).toBeNull();
+    expect(classifyFile('src/api.d.ts', cfg)).toBeNull();
+  });
+  it('also rejects .d.tsx, .d.mts, .d.cts declaration variants', () => {
+    expect(classifyFile('a.d.tsx', cfg)).toBeNull();
+    expect(classifyFile('a.d.mts', cfg)).toBeNull();
+    expect(classifyFile('a.d.cts', cfg)).toBeNull();
+  });
 
   it('classifies a Jest test by default glob', () => {
     const c = classifyFile('tests/cart.test.ts', cfg);
