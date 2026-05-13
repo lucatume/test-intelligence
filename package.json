@@ -30,7 +30,8 @@
     "test:watch": "vitest",
     "test:cov": "vitest run --coverage",
     "lint": "eslint src tests",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "postinstall": "node scripts/postinstall.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",

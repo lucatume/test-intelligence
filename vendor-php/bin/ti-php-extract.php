@@ -1,0 +1,327 @@
+#!/usr/bin/env php
+<?php
+declare(strict_types=1);
+
+require_once __DIR__ . '/../vendor/autoload.php';
+
+use PhpParser\Error as ParserError;
+use PhpParser\Node;
+use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitorAbstract;
+use PhpParser\ParserFactory;
+
+final class Patterns
+{
+    /** @var array<int, array<string, mixed>> */
+    public static array $entries = [];
+}
+
+final class Visitor extends NodeVisitorAbstract
+{
+    /** @var array<int, array<string, mixed>> */
+    public array $facts = [];
+    public string $file;
+    public ?string $namespace = null;
+    /** @var array<string, string> */
+    public array $useAliases = [];
+    /** @var array<int, string> */
+    public array $classStack = [];
+    public bool $classIsPhpUnit = false;
+    /** @var array<int, string> */
+    public array $phpUnitBaseClasses = ['PHPUnit\\Framework\\TestCase'];
+
+    public function __construct(string $file)
+    {
+        $this->file = $file;
+    }
+
+    public function enterNode(Node $node): void
+    {
+        if ($node instanceof Node\Stmt\Namespace_) {
+            $this->namespace = $node->name?->toString();
+            $this->useAliases = [];
+            return;
+        }
+        if ($node instanceof Node\Stmt\Use_) {
+            foreach ($node->uses as $u) {
+                $alias = $u->alias?->name ?? $u->name->getLast();
+                $this->useAliases[$alias] = $u->name->toString();
+            }
+            return;
+        }
+        if ($node instanceof Node\Stmt\ClassLike && $node->name !== null) {
+            $name = $this->namespace ? $this->namespace . '\\' . $node->name->name : $node->name->name;
+            $this->classStack[] = $name;
+            $isPhpUnit = false;
+            if ($node instanceof Node\Stmt\Class_ && $node->extends !== null) {
+                $extends = $this->resolveName($node->extends->toString());
+                if (in_array($extends, $this->phpUnitBaseClasses, true)) {
+                    $isPhpUnit = true;
+                }
+            }
+            $this->classIsPhpUnit = $isPhpUnit;
+            $this->facts[] = $this->factSymbolDef($node, $name, true);
+            return;
+        }
+        if ($node instanceof Node\Stmt\Function_) {
+            $name = $this->namespace ? $this->namespace . '\\' . $node->name->name : $node->name->name;
+            $this->facts[] = $this->factSymbolDef($node, $name, true);
+            return;
+        }
+        if ($node instanceof Node\Stmt\ClassMethod && !empty($this->classStack)) {
+            $class = end($this->classStack);
+            $fqn = $class . '::' . $node->name->name;
+            $this->facts[] = $this->factSymbolDef($node, $fqn, false);
+            if ($this->classIsPhpUnit && $this->isPhpUnitTestMethod($node)) {
+                $this->facts[] = $this->factTestDef($node, $class, $node->name->name);
+            }
+            return;
+        }
+        if ($node instanceof Node\Expr\FuncCall) {
+            $this->tryEmitDeclarative('function-call', $node, $this->funcName($node), null);
+            return;
+        }
+        if ($node instanceof Node\Expr\MethodCall) {
+            $name = $node->name instanceof Node\Identifier ? $node->name->name : null;
+            $recv = $node->var instanceof Node\Expr\Variable && is_string($node->var->name) ? $node->var->name : null;
+            if ($name !== null) $this->tryEmitDeclarative('method-call', $node, $name, $recv);
+            return;
+        }
+        if ($node instanceof Node\Expr\StaticCall) {
+            $name = $node->name instanceof Node\Identifier ? $node->name->name : null;
+            $recv = $node->class instanceof Node\Name ? $this->resolveName($node->class->toString()) : null;
+            if ($name !== null) $this->tryEmitDeclarative('static-call', $node, $name, $recv);
+            return;
+        }
+    }
+
+    public function leaveNode(Node $node): void
+    {
+        if ($node instanceof Node\Stmt\Namespace_) $this->namespace = null;
+        if ($node instanceof Node\Stmt\ClassLike) {
+            array_pop($this->classStack);
+            $this->classIsPhpUnit = false;
+        }
+    }
+
+    private function isPhpUnitTestMethod(Node\Stmt\ClassMethod $m): bool
+    {
+        $name = $m->name->name;
+        if (str_starts_with($name, 'test')) return true;
+        $doc = $m->getDocComment()?->getText() ?? '';
+        if (str_contains($doc, '@test')) return true;
+        foreach ($m->attrGroups as $g) {
+            foreach ($g->attrs as $a) {
+                if ($a->name->toString() === 'Test') return true;
+            }
+        }
+        return false;
+    }
+
+    private function funcName(Node\Expr\FuncCall $n): ?string
+    {
+        if ($n->name instanceof Node\Name) return $n->name->toString();
+        return null;
+    }
+
+    private function resolveName(string $raw): string
+    {
+        $raw = ltrim($raw, '\\');
+        if (isset($this->useAliases[$raw])) return $this->useAliases[$raw];
+        $first = strstr($raw, '\\', true);
+        if ($first === false) $first = $raw;
+        if (isset($this->useAliases[$first])) {
+            return $this->useAliases[$first] . substr($raw, strlen($first));
+        }
+        return $raw;
+    }
+
+    /** @return array<string, mixed> */
+    private function factSymbolDef(Node $n, string $name, bool $exported): array
+    {
+        return [
+            'kind' => 'symbol-def',
+            'resolved' => true,
+            'location' => $this->loc($n),
+            'anchors' => [['key' => 'php-symbol:' . $name, 'role' => 'subject']],
+            'payload' => ['kind' => 'symbol-def', 'name' => $name, 'exported' => $exported],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function factTestDef(Node $n, string $class, string $method): array
+    {
+        $id = 'phpunit:' . $this->file . '::' . $class . '::' . $method;
+        return [
+            'kind' => 'test-def',
+            'resolved' => true,
+            'location' => $this->loc($n),
+            'anchors' => [['key' => 'test:' . $id, 'role' => 'subject']],
+            'payload' => ['kind' => 'test-def', 'framework' => 'phpunit', 'testId' => $id, 'title' => $class . '::' . $method],
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function loc(Node $n): array
+    {
+        return [
+            'file' => $this->file,
+            'startLine' => $n->getStartLine() ?: 1,
+            'endLine' => $n->getEndLine() ?: 1,
+        ];
+    }
+
+    private function tryEmitDeclarative(string $nodeKind, Node $n, ?string $name, ?string $receiver): void
+    {
+        if ($name === null) return;
+        foreach (Patterns::$entries as $p) {
+            $m = $p['match'] ?? null;
+            if (!is_array($m)) continue;
+            if (($m['lang'] ?? null) !== 'php') continue;
+            if (($m['nodeKind'] ?? null) !== $nodeKind) continue;
+            if (($m['name'] ?? null) !== $name) continue;
+            if (isset($m['receiver']) && $m['receiver'] !== $receiver) continue;
+
+            $args = $this->extractArgs($n);
+            $payload = ['kind' => $p['emit']];
+            $resolved = true;
+            foreach (($p['bind'] ?? []) as $field => $b) {
+                $i = $b['arg'];
+                $v = $this->readLiteral($args[$i] ?? null, $b['type']);
+                if ($v === null && !($b['optional'] ?? false)) $resolved = false;
+                if ($v !== null) $payload[$field] = $v;
+            }
+            $anchors = [];
+            $anchorRule = $p['anchor'] ?? null;
+            if (is_array($anchorRule)) {
+                $key = $this->renderAnchorKey($anchorRule['template'] ?? '', $payload);
+                if ($key !== null) $anchors[] = ['key' => $key, 'role' => $anchorRule['role'] ?? 'subject'];
+                else $resolved = false;
+            }
+            $this->facts[] = [
+                'kind' => $p['emit'],
+                'resolved' => $resolved,
+                'location' => $this->loc($n),
+                'anchors' => $anchors,
+                'payload' => $payload,
+            ];
+        }
+    }
+
+    /** @return array<int, Node> */
+    private function extractArgs(Node $n): array
+    {
+        if ($n instanceof Node\Expr\FuncCall || $n instanceof Node\Expr\MethodCall || $n instanceof Node\Expr\StaticCall) {
+            $out = [];
+            foreach ($n->args as $a) {
+                if ($a instanceof Node\Arg) $out[] = $a->value;
+            }
+            return $out;
+        }
+        return [];
+    }
+
+    private function readLiteral(?Node $node, string $type): mixed
+    {
+        if ($node === null) return null;
+        if ($type === 'string' && $node instanceof Node\Scalar\String_) return $node->value;
+        if ($type === 'int' && $node instanceof Node\Scalar\Int_) return $node->value;
+        if ($type === 'bool') {
+            if ($node instanceof Node\Expr\ConstFetch) {
+                $n = strtolower($node->name->toString());
+                if ($n === 'true' || $n === 'false') return $n === 'true';
+            }
+            return null;
+        }
+        if ($type === 'callable') {
+            if ($node instanceof Node\Scalar\String_) return $node->value;
+            if ($node instanceof Node\Expr\Array_ && count($node->items) === 2) {
+                $aItem = $node->items[0];
+                $bItem = $node->items[1];
+                if ($aItem === null || $bItem === null) return null;
+                $a = $aItem->value;
+                $b = $bItem->value;
+                $aStr = $a instanceof Node\Scalar\String_ ? $a->value : null;
+                $bStr = $b instanceof Node\Scalar\String_ ? $b->value : null;
+                if ($aStr !== null && $bStr !== null) return $aStr . '::' . $bStr;
+            }
+            return null;
+        }
+        if ($type === 'path-literal' && $node instanceof Node\Scalar\String_) return $node->value;
+        return null;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function renderAnchorKey(string $tpl, array $payload): ?string
+    {
+        $ok = true;
+        $out = preg_replace_callback('/\{(\w+)\}/', function (array $m) use ($payload, &$ok): string {
+            if (!isset($payload[$m[1]])) { $ok = false; return ''; }
+            return (string) $payload[$m[1]];
+        }, $tpl);
+        return $ok ? $out : null;
+    }
+}
+
+$parser = (new ParserFactory)->createForNewestSupportedVersion();
+
+$stdin = fopen('php://stdin', 'r');
+while (($line = fgets($stdin)) !== false) {
+    $line = trim($line);
+    if ($line === '') continue;
+    $req = json_decode($line, true);
+    if (!is_array($req)) {
+        emit(['op' => 'error', 'message' => 'invalid JSON']);
+        continue;
+    }
+    $op = $req['op'] ?? '';
+    if ($op === 'ping') { emit(['op' => 'pong']); continue; }
+    if ($op === 'shutdown') exit(0);
+    if ($op === 'register-patterns') {
+        Patterns::$entries = $req['patterns'] ?? [];
+        emit(['op' => 'registered', 'count' => count(Patterns::$entries)]);
+        continue;
+    }
+    if ($op === 'extract') {
+        $file = $req['file'] ?? '';
+        if (!is_string($file) || !is_file($file)) {
+            emit(['op' => 'facts', 'file' => $file, 'facts' => []]);
+            continue;
+        }
+        try {
+            $code = file_get_contents($file);
+            if ($code === false) { emit(['op' => 'facts', 'file' => $file, 'facts' => []]); continue; }
+            $ast = $parser->parse($code);
+            if ($ast === null) { emit(['op' => 'facts', 'file' => $file, 'facts' => []]); continue; }
+            $visitor = new Visitor($file);
+            $visitor->phpUnitBaseClasses = $req['phpUnitBaseClasses'] ?? ['PHPUnit\\Framework\\TestCase'];
+            $traverser = new NodeTraverser();
+            $traverser->addVisitor($visitor);
+            $traverser->traverse($ast);
+            emit(['op' => 'facts', 'file' => $file, 'facts' => $visitor->facts]);
+        } catch (ParserError $e) {
+            emit([
+                'op' => 'facts',
+                'file' => $file,
+                'facts' => [[
+                    'kind' => 'parse-error',
+                    'resolved' => false,
+                    'location' => ['file' => $file, 'startLine' => $e->getStartLine() ?: 1, 'endLine' => $e->getStartLine() ?: 1],
+                    'anchors' => [],
+                    'payload' => ['kind' => 'parse-error', 'message' => $e->getMessage(), 'line' => $e->getStartLine() ?: 1],
+                ]],
+            ]);
+        } catch (\Throwable $t) {
+            emit(['op' => 'error', 'message' => 'extract failed: ' . $t->getMessage()]);
+        }
+        continue;
+    }
+    emit(['op' => 'error', 'message' => 'unknown op: ' . $op]);
+}
+
+/** @param array<string, mixed> $msg */
+function emit(array $msg): void
+{
+    fwrite(STDOUT, json_encode($msg, JSON_UNESCAPED_SLASHES) . "\n");
+    fflush(STDOUT);
+}

@@ -1,0 +1,54 @@
+import type { UserPattern } from './pattern.js';
+
+const AXIOS_METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
+
+const axiosPatterns: readonly UserPattern[] = AXIOS_METHODS.map((method) => ({
+  match: { lang: 'ts' as const, nodeKind: 'method-call' as const, name: method, receiver: 'axios' },
+  bind: { url: { arg: 0, type: 'string' as const } },
+  emit: 'rest-call-js' as const,
+  anchor: { template: `rest:${method.toUpperCase()} {url}`, role: 'target' as const },
+}));
+
+export const WP_JS_PATTERNS: readonly UserPattern[] = [
+  // apiFetch({ path: '/myplugin/v1/items' }) — @wordpress/api-fetch
+  {
+    match: { lang: 'ts', nodeKind: 'function-call', name: 'apiFetch' },
+    bind: { config: { arg: 0, type: 'object' } },
+    emit: 'rest-call-js',
+    anchor: { template: 'rest:GET {config.path}', role: 'target' },
+  },
+  // fetch('/wp-json/myplugin/v1/items', { method: 'POST' })
+  {
+    match: { lang: 'ts', nodeKind: 'function-call', name: 'fetch' },
+    bind: { url: { arg: 0, type: 'string' }, init: { arg: 1, type: 'object', optional: true } },
+    emit: 'rest-call-js',
+    anchor: { template: 'rest:GET {url}', role: 'target' },
+  },
+  ...axiosPatterns,
+  // jQuery.ajax({ url: ajaxurl, data: { action: 'x' } }) and $.post(ajaxurl, { action })
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'ajax', receiver: 'jQuery' },
+    bind: { config: { arg: 0, type: 'object' } },
+    emit: 'ajax-call-js',
+    anchor: { template: 'ajax:{config.data.action}', role: 'target' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'post', receiver: 'jQuery' },
+    bind: { url: { arg: 0, type: 'string', optional: true }, data: { arg: 1, type: 'object', optional: true } },
+    emit: 'ajax-call-js',
+    anchor: { template: 'ajax:{data.action}', role: 'target' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'post', receiver: '$' },
+    bind: { url: { arg: 0, type: 'string', optional: true }, data: { arg: 1, type: 'object', optional: true } },
+    emit: 'ajax-call-js',
+    anchor: { template: 'ajax:{data.action}', role: 'target' },
+  },
+  // wp.ajax.post('my_action', data)
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'post', receiver: 'ajax' },
+    bind: { action: { arg: 0, type: 'string' } },
+    emit: 'ajax-call-js',
+    anchor: { template: 'ajax:{action}', role: 'target' },
+  },
+];
