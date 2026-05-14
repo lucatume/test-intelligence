@@ -4,7 +4,8 @@ import { createHash } from 'node:crypto';
 import { cpus } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { err, ok, type Result } from '../result.js';
+import type { Result } from '../result.js';
+import { err, ok } from '../result.js';
 import { acquireLock, releaseLock } from '../store/lock.js';
 import { openStore } from '../store/open.js';
 import {
@@ -21,12 +22,7 @@ import { extractFile } from '../extract/index.js';
 import { CompilerOptionsResolver } from '../extract/ts/compiler.js';
 import { hasPhpAvailable, type PhpWorker } from '../extract/php/spawn.js';
 import { startPhpWorkerPool } from '../extract/php/pool.js';
-import { startTsWorkerPool, type TsWorkerPool } from '../extract/ts/pool.js';
 import { WP_PHP_PATTERNS } from '../extract/declarative/wp-php-patterns.js';
-import { WP_JS_PATTERNS } from '../extract/declarative/wp-js-patterns.js';
-import type { Fact } from '../facts/types.js';
-import type { ExtractError } from '../extract/types.js';
-import type { Language } from '../types.js';
 import { parseProjectRelativePath } from '../paths.js';
 import { parseAnchor } from '../anchors/parse.js';
 import { derive } from '../derive/derive.js';
@@ -57,12 +53,10 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
     let factsInserted = 0;
     let testsFound = 0;
     let worker: PhpWorker | undefined;
-    let tsPool: TsWorkerPool | undefined;
 
     try {
       const repoRoot = opts.repoRoot ?? resolveRepoRoot();
       const phpWorkers = resolvePhpWorkers(opts.config.concurrency.phpWorkers);
-      const tsWorkers = resolveTsWorkers(opts.config.concurrency.tsWorkers);
       if (mayHavePhp(opts) && hasPhpAvailable()) {
         const wRes = startPhpWorkerPool({ repoRoot, size: phpWorkers });
         if (wRes.kind === 'ok') {
@@ -74,22 +68,17 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
           );
         }
       }
-      if (tsWorkers > 0) {
-        tsPool = startTsWorkerPool({ projectRoot: opts.projectRoot, size: tsWorkers });
-      }
 
-      const compilerOptionsResolver = tsPool === undefined
-        ? new CompilerOptionsResolver(opts.projectRoot)
-        : null;
+      const compilerOptionsResolver = new CompilerOptionsResolver(opts.projectRoot);
       const source = opts.onlyPaths !== undefined
         ? listFromPaths(opts.onlyPaths, opts.projectRoot, opts.config, opts.stderr, verbosity)
         : walk(opts.projectRoot, opts.config);
       const it = toAsyncIterator(source);
 
-      // Lane count is the larger of the two pool sizes — saturates the bigger
-      // pool while letting the smaller queue. SQLite writes are synchronous
-      // and serialize naturally between the lanes' awaits.
-      const laneCount = Math.max(phpWorkers, tsWorkers, 1);
+      // Lane count tracks pool size: each lane awaits a PHP extract on one
+      // slot, but ties up no slot during file read / TS extract. SQLite writes
+      // are synchronous and so naturally serialize between the lanes' awaits.
+      const laneCount = phpWorkers;
       const lanes: Promise<void>[] = [];
       for (let i = 0; i < laneCount; i++) {
         lanes.push((async (): Promise<void> => {
@@ -103,13 +92,17 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
               continue;
             }
             const contentHash = createHash('sha1').update(text).digest('hex');
-            const r = await dispatchExtract({
-              file,
-              text,
+            const compilerOptions = compilerOptionsResolver.forFile(
+              join(opts.projectRoot, file.path),
+            );
+            const r = await extractFile({
               projectRoot: opts.projectRoot,
-              tsPool,
-              phpWorker: worker,
-              compilerOptionsResolver,
+              path: file.path,
+              language: file.language,
+              framework: file.framework,
+              compilerOptions,
+              patterns: [],
+              ...(worker !== undefined ? { phpWorker: worker } : {}),
             });
             if (r.kind === 'err') {
               if (verbosity !== 'quiet') {
@@ -204,7 +197,6 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       return ok(summary);
     } finally {
       if (worker) await worker.shutdown();
-      if (tsPool) await tsPool.shutdown();
       close();
     }
   } finally {
@@ -245,65 +237,6 @@ function resolveDeriveWorkers(configured: number | undefined): number {
     return Math.min(Math.max(cpus().length - 2, 0), 8);
   }
   return Math.max(configured, 0);
-}
-
-// Resolve the TS extractor pool size. Default: cpus-2 clamped to [0,4].
-// Smaller cap than PHP because each worker holds its own typescript import
-// plus a per-dir tsconfig cache (~40MB+). 0 keeps TS extraction in-process.
-function resolveTsWorkers(configured: number | undefined): number {
-  if (configured === undefined) {
-    return Math.min(Math.max(cpus().length - 2, 0), 4);
-  }
-  return Math.max(configured, 0);
-}
-
-const TS_LANGUAGES: ReadonlySet<Language> = new Set([
-  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs',
-] as const);
-
-interface DispatchInput {
-  readonly file: DiscoveredFile;
-  readonly text: string;
-  readonly projectRoot: string;
-  readonly tsPool: TsWorkerPool | undefined;
-  readonly phpWorker: PhpWorker | undefined;
-  readonly compilerOptionsResolver: CompilerOptionsResolver | null;
-}
-
-// dispatchExtract picks the right execution path per file: TS files go to the
-// ts worker pool when available, PHP files go through the existing extractFile
-// + PHP worker pool, everything else falls back to in-process extractFile.
-async function dispatchExtract(input: DispatchInput): Promise<Result<readonly Fact[], ExtractError>> {
-  const { file } = input;
-  if (input.tsPool && TS_LANGUAGES.has(file.language)) {
-    try {
-      const facts = await input.tsPool.extract({
-        relPath: file.path,
-        language: file.language,
-        framework: file.framework,
-        source: input.text,
-        // Match extract/index.ts: WP_JS_PATTERNS are part of the built-in
-        // pattern set for TS extraction. User patterns sit on top.
-        patterns: WP_JS_PATTERNS,
-      });
-      return ok(facts);
-    } catch (e) {
-      return err({ kind: 'ExtractError', path: file.path, message: e instanceof Error ? e.message : String(e) });
-    }
-  }
-  // In-process path needs a resolver. If the TS pool is on, we don't keep one
-  // around for PHP files (PHP dispatch ignores compilerOptions).
-  const resolver = input.compilerOptionsResolver ?? new CompilerOptionsResolver(input.projectRoot);
-  const compilerOptions = resolver.forFile(join(input.projectRoot, file.path));
-  return extractFile({
-    projectRoot: input.projectRoot,
-    path: file.path,
-    language: file.language,
-    framework: file.framework,
-    compilerOptions,
-    patterns: [],
-    ...(input.phpWorker !== undefined ? { phpWorker: input.phpWorker } : {}),
-  });
 }
 
 function* listFromPaths(
