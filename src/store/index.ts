@@ -10,7 +10,7 @@ export {
   insertFactAnchor,
   insertTest,
   insertEdge,
-  insertEdgeProvenance,
+  insertEdgesBulk,
   clearEdgesForTest,
   clearAllEdges,
 } from './writers.js';
@@ -21,7 +21,6 @@ export type {
   FactAnchorInsert,
   TestInsert,
   EdgeInsert,
-  EdgeProvenanceInsert,
 } from './writers.js';
 export { removeStoreContents } from './clean.js';
 export type { CleanOptions, CleanError } from './clean.js';

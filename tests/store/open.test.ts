@@ -13,11 +13,11 @@ describe('openStore', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('creates .ti/store.db on first open and applies migration to v1', () => {
+  it('creates .ti/store.db on first open and applies migration to v2', () => {
     const r = openStore(root);
     expect(r.kind).toBe('ok');
     if (r.kind !== 'ok') return;
-    expect(r.value.schemaVersion).toBe(1);
+    expect(r.value.schemaVersion).toBe(2);
     r.value.close();
   });
 
@@ -30,7 +30,7 @@ describe('openStore', () => {
     const r2 = openStore(root);
     expect(r2.kind).toBe('ok');
     if (r2.kind === 'ok') {
-      expect(r2.value.schemaVersion).toBe(1);
+      expect(r2.value.schemaVersion).toBe(2);
       r2.value.close();
     }
   });
@@ -40,12 +40,12 @@ describe('openStore', () => {
     expect(r.kind).toBe('ok');
     if (r.kind !== 'ok') return;
     expect(() => {
-      r.value.db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(1);
+      r.value.db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(2);
     }).toThrow(/UNIQUE constraint failed/);
     r.value.close();
   });
 
-  it('contains the v1 tables after migration', () => {
+  it('contains the v2 tables after migration', () => {
     const r = openStore(root);
     expect(r.kind).toBe('ok');
     if (r.kind !== 'ok') return;
@@ -56,7 +56,6 @@ describe('openStore', () => {
     for (const expected of [
       'anchor',
       'edge',
-      'edge_provenance',
       'fact',
       'fact_anchor',
       'file',
@@ -66,6 +65,17 @@ describe('openStore', () => {
     ]) {
       expect(names).toContain(expected);
     }
+    // v2 dropped edge_provenance — provenance now lives on edge as JSON.
+    expect(names).not.toContain('edge_provenance');
+    r.value.close();
+  });
+
+  it('edge table has a provenance TEXT column (v2)', () => {
+    const r = openStore(root);
+    expect(r.kind).toBe('ok');
+    if (r.kind !== 'ok') return;
+    const cols = r.value.db.prepare('PRAGMA table_info(edge)').all() as Array<{ name: string; type: string }>;
+    expect(cols.find((c) => c.name === 'provenance')?.type).toBe('TEXT');
     r.value.close();
   });
 });

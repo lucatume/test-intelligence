@@ -110,17 +110,21 @@ export interface EdgeInsert {
   readonly partial: boolean;
   readonly evidence: unknown;
   readonly derivedAt: string;
+  /** Flat list of fact_ids that contributed to this edge. v1 stored these
+   *  in a separate edge_provenance table; v2 inlines them as JSON. */
+  readonly provenance: readonly number[];
 }
 
 export function insertEdge(db: Database.Database, e: EdgeInsert): void {
   db.prepare(`
-    INSERT INTO edge (test_id, source, confidence, partial, evidence, derived_at)
-    VALUES (@test_id, @source, @confidence, @partial, @evidence, @derived_at)
+    INSERT INTO edge (test_id, source, confidence, partial, evidence, derived_at, provenance)
+    VALUES (@test_id, @source, @confidence, @partial, @evidence, @derived_at, @provenance)
     ON CONFLICT(test_id, source) DO UPDATE SET
       confidence = excluded.confidence,
       partial = excluded.partial,
       evidence = excluded.evidence,
-      derived_at = excluded.derived_at
+      derived_at = excluded.derived_at,
+      provenance = excluded.provenance
   `).run({
     test_id: e.testId,
     source: e.source,
@@ -128,27 +132,55 @@ export function insertEdge(db: Database.Database, e: EdgeInsert): void {
     partial: e.partial ? 1 : 0,
     evidence: JSON.stringify(e.evidence),
     derived_at: e.derivedAt,
+    provenance: JSON.stringify(e.provenance),
   });
 }
 
-export interface EdgeProvenanceInsert {
-  readonly testId: string;
-  readonly source: string;
-  readonly factId: number;
+// MAX_VARIABLE_NUMBER on the bundled better-sqlite3 build is 32766. We stay
+// well below it (28000) so that callers cannot blow the limit by accident.
+// `edge` has 7 columns now → 4000 rows × 7 = 28000.
+const EDGE_BULK_BATCH = 4000;
+const EDGE_BULK_COLS = 7;
+
+function buildPlaceholders(cols: number, rows: number): string {
+  // Hand-rolled: `(?,?,?), (?,?,?), …` for `rows` groups of `cols` ?s.
+  const oneRow = `(${'?,'.repeat(cols - 1)}?)`;
+  return `${`${oneRow},`.repeat(rows - 1)}${oneRow}`;
 }
 
-export function insertEdgeProvenance(db: Database.Database, p: EdgeProvenanceInsert): void {
-  db.prepare(`
-    INSERT OR IGNORE INTO edge_provenance (test_id, source, fact_id) VALUES (?, ?, ?)
-  `).run(p.testId, p.source, p.factId);
+/**
+ * Bulk insert edges in chunks. Caller must ensure the table is empty (or
+ * that no (test_id, source) duplicates exist within the input) — there is
+ * no ON CONFLICT clause. Used from derive() after clearAllEdges().
+ */
+export function insertEdgesBulk(db: Database.Database, edges: readonly EdgeInsert[]): void {
+  if (edges.length === 0) return;
+
+  for (let offset = 0; offset < edges.length; offset += EDGE_BULK_BATCH) {
+    const chunkLen = Math.min(EDGE_BULK_BATCH, edges.length - offset);
+    const sql =
+      `INSERT INTO edge (test_id, source, confidence, partial, evidence, derived_at, provenance) VALUES ${buildPlaceholders(EDGE_BULK_COLS, chunkLen)}`;
+    const params: unknown[] = new Array<unknown>(chunkLen * EDGE_BULK_COLS);
+    let p = 0;
+    for (let i = 0; i < chunkLen; i++) {
+      const e = edges[offset + i];
+      if (e === undefined) continue; // unreachable — slice bounded by chunkLen
+      params[p++] = e.testId;
+      params[p++] = e.source;
+      params[p++] = e.confidence;
+      params[p++] = e.partial ? 1 : 0;
+      params[p++] = JSON.stringify(e.evidence);
+      params[p++] = e.derivedAt;
+      params[p++] = JSON.stringify(e.provenance);
+    }
+    db.prepare(sql).run(...params);
+  }
 }
 
 export function clearEdgesForTest(db: Database.Database, testId: string): void {
   db.prepare('DELETE FROM edge WHERE test_id = ?').run(testId);
-  db.prepare('DELETE FROM edge_provenance WHERE test_id = ?').run(testId);
 }
 
 export function clearAllEdges(db: Database.Database): void {
   db.prepare('DELETE FROM edge').run();
-  db.prepare('DELETE FROM edge_provenance').run();
 }

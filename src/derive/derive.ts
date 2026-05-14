@@ -6,8 +6,8 @@ import { traverseTest, type TraversalResult } from './traverse.js';
 import { startDeriveWorkerPool } from './pool.js';
 import {
   clearAllEdges,
-  insertEdge,
-  insertEdgeProvenance,
+  insertEdgesBulk,
+  type EdgeInsert,
 } from '../store/writers.js';
 
 export interface DeriveParams {
@@ -39,6 +39,35 @@ export interface DeriveSummary {
   readonly edgesWritten: number;
   readonly testsBounded: number;
   readonly timings: DeriveTimings;
+}
+
+interface PragmaSnapshot {
+  readonly synchronous: number;
+  readonly cacheSize: number;
+  readonly tempStore: number;
+}
+
+function snapshotPragmas(db: Database.Database): PragmaSnapshot {
+  return {
+    synchronous: db.pragma('synchronous', { simple: true }) as number,
+    cacheSize: db.pragma('cache_size', { simple: true }) as number,
+    tempStore: db.pragma('temp_store', { simple: true }) as number,
+  };
+}
+
+function applyBulkPragmas(db: Database.Database): void {
+  // Write phase only — caller restores after the tx commits. `synchronous=OFF`
+  // is safe here because the derive output is fully reproducible from facts;
+  // a power-cut mid-derive is recoverable by re-running `ti build`.
+  db.pragma('synchronous = OFF');
+  db.pragma('cache_size = -65536');
+  db.pragma('temp_store = MEMORY');
+}
+
+function restorePragmas(db: Database.Database, prior: PragmaSnapshot): void {
+  db.pragma(`synchronous = ${String(prior.synchronous)}`);
+  db.pragma(`cache_size = ${String(prior.cacheSize)}`);
+  db.pragma(`temp_store = ${String(prior.tempStore)}`);
 }
 
 export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
@@ -104,45 +133,59 @@ export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
 
   const traverseMs = opts.clock.nowMillis() - traverseStart;
 
-  const writeStart = opts.clock.nowMillis();
-  const tx = opts.db.transaction((): { testsProcessed: number; edgesWritten: number; testsBounded: number } => {
-    clearAllEdges(opts.db);
-
-    let testsProcessed = 0;
-    let edgesWritten = 0;
-    let testsBounded = 0;
-
-    for (let i = 0; i < graph.tests.length; i++) {
-      const r = results[i];
-      if (!r) continue;
-      testsProcessed++;
-      if (r.bounded) testsBounded++;
-      for (const e of r.edges) {
-        insertEdge(opts.db, {
-          testId: e.testId,
-          source: e.source,
-          confidence: e.confidence,
-          partial: e.partial,
-          evidence: e.evidence,
-          derivedAt,
-        });
-        for (const piece of e.evidence) {
-          for (const fid of piece.factIds) {
-            insertEdgeProvenance(opts.db, { testId: e.testId, source: e.source, factId: fid });
-          }
-        }
-        edgesWritten++;
+  // Materialize the full edge buffer in JS — one trip through `results` to
+  // count + aggregate provenance fact ids per edge, deduplicated and sorted
+  // ascending for a stable on-disk representation.
+  const buffered: EdgeInsert[] = [];
+  let testsProcessed = 0;
+  let testsBounded = 0;
+  for (let i = 0; i < graph.tests.length; i++) {
+    const r = results[i];
+    if (!r) continue;
+    testsProcessed++;
+    if (r.bounded) testsBounded++;
+    for (const e of r.edges) {
+      const ids = new Set<number>();
+      for (const piece of e.evidence) {
+        for (const fid of piece.factIds) ids.add(fid);
       }
+      const provenance: number[] = Array.from(ids).sort((a, b) => a - b);
+      buffered.push({
+        testId: e.testId,
+        source: e.source,
+        confidence: e.confidence,
+        partial: e.partial,
+        evidence: e.evidence,
+        derivedAt,
+        provenance,
+      });
     }
-    return { testsProcessed, edgesWritten, testsBounded };
-  });
+  }
+  const edgesWritten = buffered.length;
 
-  const counts = tx();
+  const writeStart = opts.clock.nowMillis();
+  const priorPragmas = snapshotPragmas(opts.db);
+  applyBulkPragmas(opts.db);
+  try {
+    const tx = opts.db.transaction((): void => {
+      clearAllEdges(opts.db);
+      // Drop the non-PK secondary index before bulk-inserting; rebuild after.
+      // Avoids per-row B-tree updates during the hot path.
+      opts.db.exec('DROP INDEX IF EXISTS edge_source_idx');
+      insertEdgesBulk(opts.db, buffered);
+      opts.db.exec('CREATE INDEX IF NOT EXISTS edge_source_idx ON edge(source)');
+    });
+    tx();
+  } finally {
+    restorePragmas(opts.db, priorPragmas);
+  }
   const writeMs = opts.clock.nowMillis() - writeStart;
   const totalMs = opts.clock.nowMillis() - start;
 
   return {
-    ...counts,
+    testsProcessed,
+    edgesWritten,
+    testsBounded,
     timings: { loadGraphMs, buildIndexMs, traverseMs, writeMs, totalMs },
   };
 }

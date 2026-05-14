@@ -28,10 +28,12 @@ describe('sourcesFromTests', () => {
     insertEdge(db, {
       testId: 'jest:tests/cart.test.ts::adds', source: 'src/cart.ts',
       confidence: 0.9, partial: false, evidence: [], derivedAt: 't',
+      provenance: [],
     });
     insertEdge(db, {
       testId: 'jest:tests/cart.test.ts::adds', source: 'src/helpers.ts',
       confidence: 0.7, partial: true, evidence: [], derivedAt: 't',
+      provenance: [],
     });
     return { db, close };
   }

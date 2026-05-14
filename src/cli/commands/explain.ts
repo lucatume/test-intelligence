@@ -44,15 +44,21 @@ export function explainCommand(args: ExplainCommandArgs): number {
       return 0;
     }
 
+    // v2: provenance fact ids live as a JSON array on edge.provenance.
+    // json_each lets us JOIN against fact + file in a single query so the
+    // output shape matches the v1 edge_provenance-based command exactly.
     const provenanceStmt = s.value.db.prepare(`
-      SELECT ep.test_id, ep.source, ep.fact_id,
+      SELECT e.test_id AS test_id, e.source AS source,
+             je.value AS fact_id,
              f.kind AS fact_kind, f.resolved AS fact_resolved,
-             f.start_line AS fact_start_line, fl.path AS file_path, f.payload AS payload
-      FROM edge_provenance ep
-      JOIN fact f ON f.id = ep.fact_id
+             f.start_line AS fact_start_line,
+             fl.path AS file_path, f.payload AS payload
+      FROM edge e
+      JOIN json_each(e.provenance) je
+      JOIN fact f ON f.id = je.value
       JOIN file fl ON fl.id = f.file_id
-      WHERE ${isTestId ? 'ep.test_id = ?' : 'ep.source = ?'}
-      ORDER BY ep.test_id, ep.source, ep.fact_id
+      WHERE ${isTestId ? 'e.test_id = ?' : 'e.source = ?'}
+      ORDER BY e.test_id, e.source, je.value
     `);
     const provenance = provenanceStmt.all(args.target) as ProvenanceRow[];
 

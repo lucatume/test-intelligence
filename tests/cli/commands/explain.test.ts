@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { openStore } from '../../../src/store/open.js';
 import {
-  upsertFile, insertFact, insertEdge, insertEdgeProvenance, insertTest,
+  upsertFile, insertFact, insertEdge, insertTest,
 } from '../../../src/store/writers.js';
 import { explainCommand } from '../../../src/cli/commands/explain.js';
 import { useTmpDir } from '../../helpers/tmpDir.js';
@@ -37,9 +37,7 @@ describe('explainCommand', () => {
     insertEdge(db, {
       testId: 'jest:tests/cart.test.ts::adds', source: 'src/cart.ts',
       confidence: 0.9, partial: false, evidence: [], derivedAt: 't',
-    });
-    insertEdgeProvenance(db, {
-      testId: 'jest:tests/cart.test.ts::adds', source: 'src/cart.ts', factId: sFact,
+      provenance: [sFact],
     });
     close();
   }

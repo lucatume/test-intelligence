@@ -54,8 +54,10 @@ CREATE TABLE test (
   fact_id          INTEGER NOT NULL REFERENCES fact(id) ON DELETE CASCADE
 );
 
--- edge / edge_provenance intentionally have no REFERENCES — they are rebuilt
--- by the derive phase and tolerate brief dangling rows during rebuild.
+-- edge intentionally has no REFERENCES — it is rebuilt by the derive phase
+-- and tolerates brief dangling rows during rebuild. `provenance` is a JSON
+-- array of fact_ids that contributed to this edge; it replaces the v1
+-- edge_provenance table, which has been dropped.
 CREATE TABLE edge (
   test_id    TEXT NOT NULL,
   source     TEXT NOT NULL,
@@ -63,14 +65,7 @@ CREATE TABLE edge (
   partial    INTEGER NOT NULL,
   evidence   TEXT NOT NULL,
   derived_at TEXT NOT NULL,
+  provenance TEXT NOT NULL DEFAULT '[]',
   PRIMARY KEY (test_id, source)
 );
 CREATE INDEX edge_source_idx ON edge(source);
-
-CREATE TABLE edge_provenance (
-  test_id TEXT NOT NULL,
-  source  TEXT NOT NULL,
-  fact_id INTEGER NOT NULL,
-  PRIMARY KEY (test_id, source, fact_id)
-);
-CREATE INDEX edge_prov_fact_idx ON edge_provenance(fact_id);
