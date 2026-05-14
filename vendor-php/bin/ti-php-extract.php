@@ -153,6 +153,13 @@ final class Visitor extends NodeVisitorAbstract
                 $extends = $this->resolveClassName($node->extends);
                 if (in_array($extends, $this->phpUnitBaseClasses, true)) {
                     $isPhpUnit = true;
+                } elseif ($this->looksLikeTestBaseClass($extends)) {
+                    // Catch transitive base classes by name pattern. WP tests
+                    // extend WP_UnitTestCase, WC tests extend WC_Unit_Test_Case,
+                    // many projects roll their own ProjectTestCase. The static
+                    // extractor can't follow the inheritance chain across files
+                    // in a single pass, so use the parent's name as the signal.
+                    $isPhpUnit = true;
                 }
             }
             if ($node instanceof Node\Stmt\Class_) {
@@ -251,6 +258,19 @@ final class Visitor extends NodeVisitorAbstract
     {
         if ($n->name instanceof Node\Name) return $n->name->toString();
         return null;
+    }
+
+    // Heuristic: a parent class name that ends in TestCase / UnitTestCase /
+    // Test_Case (any casing) is almost certainly a test base class. The chain
+    // up to PHPUnit\Framework\TestCase can be 4+ hops (WP: WP_UnitTestCase →
+    // WP_UnitTestCase_Base → PHPUnit_Adapter_TestCase → Polyfill_TestCase →
+    // TestCase), which a per-file extractor cannot resolve.
+    private function looksLikeTestBaseClass(string $fqn): bool
+    {
+        $last = $fqn;
+        $pos = strrpos($fqn, '\\');
+        if ($pos !== false) $last = substr($fqn, $pos + 1);
+        return (bool)preg_match('/(?:^|_)(?:Unit)?Test_?Case$/i', $last);
     }
 
     private function resolveName(string $raw): string

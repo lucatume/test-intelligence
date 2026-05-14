@@ -169,6 +169,35 @@ class A {
     expect(names).not.toContain('InvalidArgumentException');
   });
 
+  it('detects classes extending WP-style / WC-style test base classes as phpunit', async () => {
+    // wordpress-develop / woocommerce define WP_UnitTestCase, WC_Unit_Test_Case
+    // as the project-local phpunit base. Tests don't extend PHPUnit\\TestCase
+    // directly. Match by parent-class name suffix so the common WP+WC chain
+    // is detected without per-project config. ~1,000 WP test files +
+    // hundreds of WC tests recovered by this single heuristic.
+    const root = getTmp();
+    write(root, 'tests/WPTest.php', `<?php
+class Tests_Admin_Menu extends WP_UnitTestCase {
+  public function test_something(): void {}
+}`);
+    write(root, 'tests/WCTest.php', `<?php
+class WC_Cart_Test extends WC_Unit_Test_Case {
+  public function test_add_item(): void {}
+}`);
+    const factsA = await extractPhpFile({
+      projectRoot: root,
+      relPath: 'tests/WPTest.php',
+      worker,
+    });
+    const factsB = await extractPhpFile({
+      projectRoot: root,
+      relPath: 'tests/WCTest.php',
+      worker,
+    });
+    expect(factsA.find((f) => f.kind === 'test-def')).toBeDefined();
+    expect(factsB.find((f) => f.kind === 'test-def')).toBeDefined();
+  });
+
   it('test-def uses project-relative paths (not absolute) in testId + anchors', async () => {
     // JS tests use relative paths in their test_id (e.g. `jest:src/foo.test.ts::...`).
     // PHP must match so queries are symmetric and stable across machines.
