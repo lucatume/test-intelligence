@@ -194,6 +194,31 @@ final class Visitor extends NodeVisitorAbstract
             }
             return;
         }
+        if ($node instanceof Node\Expr\Include_) {
+            $raw = $this->readStringSkeleton($node->expr);
+            if ($raw === null) {
+                // Argument shape we don't know how to read — emit unresolved with no anchor.
+                $this->facts[] = [
+                    'kind' => 'php-include',
+                    'resolved' => false,
+                    'location' => $this->loc($node),
+                    'anchors' => [],
+                    'payload' => ['kind' => 'php-include', 'target' => '{*}'],
+                ];
+                return;
+            }
+            $hasWildcard = str_contains($raw, '{*}');
+            $target = $hasWildcard ? $raw : $this->normalizeIncludePath($raw);
+            $resolved = !$hasWildcard;
+            $this->facts[] = [
+                'kind' => 'php-include',
+                'resolved' => $resolved,
+                'location' => $this->loc($node),
+                'anchors' => [['key' => 'php-file:' . $target, 'role' => 'target']],
+                'payload' => ['kind' => 'php-include', 'target' => $target],
+            ];
+            return;
+        }
         if ($node instanceof Node\Expr\FuncCall) {
             $this->tryEmitDeclarative('function-call', $node, $this->funcName($node), null);
             return;
@@ -429,6 +454,19 @@ final class Visitor extends NodeVisitorAbstract
         return [];
     }
 
+    private function normalizeIncludePath(string $p): string
+    {
+        $p = str_replace('\\', '/', $p);
+        $p = preg_replace('#/+#', '/', $p) ?? $p;
+        $segments = [];
+        foreach (explode('/', $p) as $seg) {
+            if ($seg === '' || $seg === '.') continue;
+            if ($seg === '..') { array_pop($segments); continue; }
+            $segments[] = $seg;
+        }
+        return implode('/', $segments);
+    }
+
     private function readStringSkeleton(?Node $node): ?string
     {
         if ($node === null) return null;
@@ -449,6 +487,13 @@ final class Visitor extends NodeVisitorAbstract
                 }
             }
             return $out;
+        }
+        if ($node instanceof Node\Scalar\MagicConst\Dir) {
+            $d = dirname($this->relFile);
+            return $d === '.' ? '' : $d;
+        }
+        if ($node instanceof Node\Scalar\MagicConst\File) {
+            return $this->relFile;
         }
         if ($node instanceof Node\Expr\ConstFetch) {
             $name = $node->name->toString();

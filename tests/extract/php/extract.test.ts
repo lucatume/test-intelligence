@@ -332,4 +332,37 @@ class CartTest extends TestCase {
     const anchor = test.anchors[0];
     expect(anchor?.key.startsWith('test:phpunit:tests/CartTest.php::')).toBe(true);
   });
+
+  it('emits php-include for require_once with __DIR__-relative literal', async () => {
+    const root = getTmp();
+    write(root, 'sub/parent.php', "<?php require_once __DIR__ . '/child.php';");
+    write(root, 'sub/child.php', "<?php // child");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'sub/parent.php', worker });
+    const inc = facts.find((f) => f.kind === 'php-include');
+    expect(inc).toBeDefined();
+    expect((inc?.payload as { target?: string }).target).toBe('sub/child.php');
+    expect(inc?.resolved).toBe(true);
+    expect(inc?.anchors[0]?.key).toBe('php-file:sub/child.php');
+    expect(inc?.anchors[0]?.role).toBe('target');
+  });
+
+  it('emits resolved php-include for a literal relative path', async () => {
+    const root = getTmp();
+    write(root, 'a/main.php', "<?php require 'a/util.php';");
+    write(root, 'a/util.php', "<?php // util");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'a/main.php', worker });
+    const inc = facts.find((f) => f.kind === 'php-include');
+    expect((inc?.payload as { target?: string }).target).toBe('a/util.php');
+    expect(inc?.resolved).toBe(true);
+  });
+
+  it('emits unresolved php-include with {*} skeleton when path is dynamic', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php require_once ABSPATH . WPINC . '/version.php';");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const inc = facts.find((f) => f.kind === 'php-include');
+    expect(inc).toBeDefined();
+    expect((inc?.payload as { target?: string }).target).toMatch(/\{\*\}.*version\.php/);
+    expect(inc?.resolved).toBe(false);
+  });
 });
