@@ -98,6 +98,12 @@ export const WP_PHP_PATTERNS: readonly PhpPatternWithAnchor[] = [
     anchor: { template: 'shortcode:{tag}', role: 'subject' },
   },
   {
+    match: { lang: 'php', nodeKind: 'function-call', name: 'do_shortcode' },
+    bind: { tag: { arg: 0, type: 'string' } },
+    emit: 'shortcode',
+    anchor: { template: 'shortcode:{tag}', role: 'target' },
+  },
+  {
     match: { lang: 'php', nodeKind: 'function-call', name: 'register_block_type' },
     bind: { name: { arg: 0, type: 'string' } },
     emit: 'block-render',

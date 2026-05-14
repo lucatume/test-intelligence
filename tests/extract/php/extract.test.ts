@@ -470,4 +470,14 @@ ti_deletemeelephant_helper();
     expect(enq).toBeDefined();
     expect(enq?.anchors[0]?.key).toBe('script-handle:reg-style');
   });
+
+  it('emits shortcode (target role) for do_shortcode', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php echo do_shortcode('my_tag');");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const sc = facts.find((f) => f.kind === 'shortcode' && f.anchors[0]?.role === 'target');
+    expect(sc).toBeDefined();
+    expect(sc?.anchors[0]?.key).toBe('shortcode:my_tag');
+    expect((sc?.payload as { tag?: string }).tag).toBe('my_tag');
+  });
 });
