@@ -15,6 +15,7 @@ export interface DeriveParams {
   readonly maxMillisPerTest: number;
   readonly threshold: number;
   readonly hookStopList: ReadonlySet<string>;
+  readonly maxWildcardMatchesPerAnchor: number;
 }
 
 export interface DeriveOptions {
@@ -167,6 +168,7 @@ export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
           threshold: opts.params.threshold,
           hookStopList: opts.params.hookStopList,
           now: () => opts.clock.nowMillis(),
+          maxWildcardMatchesPerAnchor: opts.params.maxWildcardMatchesPerAnchor,
         });
         absorb(r);
       }

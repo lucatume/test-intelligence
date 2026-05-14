@@ -197,6 +197,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
           maxMillisPerTest: opts.config.traversal.maxMillisPerTest,
           threshold: opts.config.confidence.threshold,
           hookStopList: stopList,
+          maxWildcardMatchesPerAnchor: opts.config.traversal.maxWildcardMatchesPerAnchor,
         },
         workers: resolveDeriveWorkers(opts.config.concurrency.deriveWorkers),
       });

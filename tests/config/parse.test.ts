@@ -21,6 +21,7 @@ describe('parseConfig — empty object', () => {
     expect(c.confidence.threshold).toBe(0.0);
     expect(c.traversal.maxDepth).toBe(100);
     expect(c.traversal.maxMillisPerTest).toBe(5000);
+    expect(c.traversal.maxWildcardMatchesPerAnchor).toBe(32);
     expect(c.concurrency.phpWorkers).toBeUndefined();
     // The default ignore list now ships several bundles (worktrees, tool dirs,
     // test artifacts, build caches, minified). The full enumeration lives in

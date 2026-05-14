@@ -132,6 +132,7 @@ test('cart flow', async () => { clientFn(); });
           maxMillisPerTest: cfg.traversal.maxMillisPerTest,
           threshold: cfg.confidence.threshold,
           hookStopList: stopList,
+          maxWildcardMatchesPerAnchor: cfg.traversal.maxWildcardMatchesPerAnchor,
         },
         clock: systemClock,
       });

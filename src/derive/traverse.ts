@@ -1,7 +1,7 @@
 import type { AnchorKey, FactKind } from '../types.js';
 import type { AnchorRole } from '../facts/types.js';
 import type { Edge, EdgeKind, FactRow, Graph } from './types.js';
-import type { AnchorIndex } from './anchor-index.js';
+import { wildcardKeyToRegex, type AnchorIndex, type WildcardAnchorEntry } from './anchor-index.js';
 import { BASE_CONFIDENCE, combineConfidence } from './confidence.js';
 
 export interface TraversalOptions {
@@ -10,6 +10,7 @@ export interface TraversalOptions {
   readonly threshold: number;
   readonly hookStopList: ReadonlySet<string>;
   readonly now: () => number;
+  readonly maxWildcardMatchesPerAnchor: number;
 }
 
 export interface TraversalResult {
@@ -168,7 +169,7 @@ function enqueueDownstream(
 
   const links = index.linksByFact.get(fact.id) ?? [];
   for (const link of links) {
-    for (const partner of complementaryFactsForRole(index, link.anchorKey, link.role)) {
+    for (const partner of complementaryFactsForRole(index, link.anchorKey, link.role, options.maxWildcardMatchesPerAnchor)) {
       if (enqueued.has(partner.id)) continue;
       enqueued.add(partner.id);
       queue.push({
@@ -247,11 +248,56 @@ function complementaryFactsForRole(
   idx: AnchorIndex,
   key: AnchorKey,
   role: AnchorRole,
+  cap: number,
 ): readonly FactRow[] {
+  const isWild = key.includes('{*}');
+  // Pick the complementary side's exact map and wildcard list.
+  let exactMap: ReadonlyMap<AnchorKey, readonly FactRow[]>;
+  let wildList: readonly WildcardAnchorEntry[];
   switch (role) {
-    case 'target':   return idx.subjectsByAnchor.get(key) ?? [];
-    case 'subject':  return idx.targetsByAnchor.get(key) ?? [];
-    case 'module':   return idx.modulesByAnchor.get(key) ?? [];
-    case 'callback': return idx.callbacksByAnchor.get(key) ?? [];
+    case 'target':
+      exactMap = idx.subjectsByAnchor;
+      wildList = idx.wildcardSubjects;
+      break;
+    case 'subject':
+      exactMap = idx.targetsByAnchor;
+      wildList = idx.wildcardTargets;
+      break;
+    case 'module':
+      exactMap = idx.modulesByAnchor;
+      wildList = idx.wildcardModules;
+      break;
+    case 'callback':
+      exactMap = idx.callbacksByAnchor;
+      wildList = idx.wildcardCallbacks;
+      break;
+  }
+
+  if (!isWild) {
+    // Literal-side: exact lookup + wildcard scan.
+    const exact = exactMap.get(key) ?? [];
+    if (wildList.length === 0) return exact;
+    const wildMatches: FactRow[] = [];
+    outer: for (const entry of wildList) {
+      if (entry.regex.test(key)) {
+        for (const f of entry.facts) {
+          wildMatches.push(f);
+          if (wildMatches.length >= cap) break outer;
+        }
+      }
+    }
+    return wildMatches.length === 0 ? exact : [...exact, ...wildMatches];
+  } else {
+    // Wildcard-side: scan exact map's keys via regex.
+    const regex = wildcardKeyToRegex(key);
+    const out: FactRow[] = [];
+    outer: for (const [candidateKey, facts] of exactMap) {
+      if (!regex.test(candidateKey)) continue;
+      for (const f of facts) {
+        out.push(f);
+        if (out.length >= cap) break outer;
+      }
+    }
+    return out;
   }
 }

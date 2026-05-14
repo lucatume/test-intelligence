@@ -48,6 +48,7 @@ export interface ConfidenceConfig {
 export interface TraversalConfig {
   readonly maxDepth: number;
   readonly maxMillisPerTest: number;
+  readonly maxWildcardMatchesPerAnchor: number;
 }
 
 export interface ConcurrencyConfig {
@@ -200,6 +201,7 @@ const DEFAULT_IGNORE_TOGGLES: IgnoreDefaultsConfig = {
 const DEFAULT_VENDOR: readonly string[] = ['**/vendor', '**/vendor/**'];
 const DEFAULT_MAX_DEPTH = 100;
 const DEFAULT_MAX_MILLIS_PER_TEST = 5000;
+const DEFAULT_MAX_WILDCARD_MATCHES_PER_ANCHOR = 32;
 
 // HOOK_STOP_LIST_BUILTINS is the default set of WP hooks that fire on every
 // page load and should not be walked by the derivation engine. The effective
@@ -291,6 +293,9 @@ const traversalSchema = P.object(
     ),
     maxMillisPerTest: P.optional(
       P.refine(P.number, (n) => (n >= 0 ? null : 'must be >= 0')),
+    ),
+    maxWildcardMatchesPerAnchor: P.optional(
+      P.refine(P.number, (n) => (n >= 1 ? null : 'must be >= 1')),
     ),
   },
   { strict: true },
@@ -392,6 +397,7 @@ export function parseConfig(raw: unknown): ParseResult<ValidatedConfig> {
     traversal: {
       maxDepth: r.traversal?.maxDepth ?? DEFAULT_MAX_DEPTH,
       maxMillisPerTest: r.traversal?.maxMillisPerTest ?? DEFAULT_MAX_MILLIS_PER_TEST,
+      maxWildcardMatchesPerAnchor: r.traversal?.maxWildcardMatchesPerAnchor ?? DEFAULT_MAX_WILDCARD_MATCHES_PER_ANCHOR,
     },
     concurrency,
     ignore: computeEffectiveIgnore(r.ignore, r.ignoreDefaults),

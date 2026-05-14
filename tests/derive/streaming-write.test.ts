@@ -81,7 +81,7 @@ describe('derive streamed write', () => {
       seedFixture(db, 8);
       await derive({
         db,
-        params: { maxDepth: 10, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set() },
+        params: { maxDepth: 10, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), maxWildcardMatchesPerAnchor: 32 },
         clock: systemClock,
         workers: 2,
       });
@@ -103,7 +103,7 @@ describe('derive streamed write', () => {
       const beforeTemp = db.pragma('temp_store', { simple: true }) as number;
       await derive({
         db,
-        params: { maxDepth: 10, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set() },
+        params: { maxDepth: 10, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), maxWildcardMatchesPerAnchor: 32 },
         clock: systemClock,
         workers: 2,
       });
@@ -124,7 +124,7 @@ describe('derive streamed write', () => {
     try {
       seedFixture(dbA, 12);
       seedFixture(dbB, 12);
-      const params = { maxDepth: 10, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set<string>() };
+      const params = { maxDepth: 10, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set<string>(), maxWildcardMatchesPerAnchor: 32 };
       await derive({ db: dbA, params, clock: systemClock, workers: 0 });
       await derive({ db: dbB, params, clock: systemClock, workers: 2 });
       const rowsA = dbA.prepare('SELECT test_id, source, confidence, partial, evidence, provenance FROM edge ORDER BY test_id, source').all();
@@ -144,7 +144,7 @@ describe('derive streamed write', () => {
     try {
       seedFixture(dbA, 5);
       seedFixture(dbB, 5);
-      const params = { maxDepth: 10, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set<string>() };
+      const params = { maxDepth: 10, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set<string>(), maxWildcardMatchesPerAnchor: 32 };
       const a = await derive({ db: dbA, params, clock: systemClock, workers: 0 });
       const b = await derive({ db: dbB, params, clock: systemClock, workers: 2 });
       expect(b.testsProcessed).toBe(a.testsProcessed);
@@ -161,7 +161,7 @@ describe('derive streamed write', () => {
       seedFixture(db, 6);
       await derive({
         db,
-        params: { maxDepth: 10, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set() },
+        params: { maxDepth: 10, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), maxWildcardMatchesPerAnchor: 32 },
         clock: systemClock,
         workers: 2,
       });

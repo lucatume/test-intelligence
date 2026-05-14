@@ -60,6 +60,7 @@ describe('traverseTest', () => {
     const r = traverseTest(g, idx, 100, 't1', 'unit', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
     });
     const sources = r.edges.map((e) => e.source).sort();
     expect(sources).toEqual(['a.php', 'b.php']);
@@ -72,6 +73,7 @@ describe('traverseTest', () => {
     const r = traverseTest(g, idx, 100, 't1', 'unit', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(['thing']), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
     });
     const sources = r.edges.map((e) => e.source).sort();
     expect(sources).toEqual(['a.php']);
@@ -83,6 +85,7 @@ describe('traverseTest', () => {
     const r = traverseTest(g, idx, 100, 't1', 'unit', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0.9,
       hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
     });
     const sources = r.edges.map((e) => e.source);
     expect(sources).not.toContain('b.php');
@@ -106,10 +109,79 @@ describe('traverseTest', () => {
     };
     const idx = buildAnchorIndex(g);
 
-    const e2e = traverseTest(g, idx, 1, 't1', 'e2e', { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), now: () => 0 });
+    const e2e = traverseTest(g, idx, 1, 't1', 'e2e', { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32 });
     expect(e2e.edges.some((e) => e.source === 'src/endpoint.php')).toBe(true);
 
-    const unit = traverseTest(g, idx, 1, 't2', 'unit', { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), now: () => 0 });
+    const unit = traverseTest(g, idx, 1, 't2', 'unit', { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32 });
     expect(unit.edges.some((e) => e.source === 'src/endpoint.php')).toBe(false);
+  });
+});
+
+describe('traverseTest — wildcard bridge', () => {
+  const testFile: FileRow = {
+    id: 1, path: 'tests/x.php', language: 'php', vendor: false,
+    framework: 'phpunit', frameworkClass: 'unit',
+  };
+  const sourceFile: FileRow = {
+    id: 2, path: 'src/listener.php', language: 'php', vendor: false,
+    framework: null, frameworkClass: null,
+  };
+
+  it('emits hook-mediated-uncertain via wildcard fact → literal listener', () => {
+    const wildFire: FactRow = {
+      id: 100, fileId: 1, kind: 'hook-fire', resolved: false,
+      startLine: 1, endLine: 1, payload: { kind: 'hook-fire', hook: 'wp_ajax_{*}' },
+    };
+    const literalListener: FactRow = {
+      id: 101, fileId: 2, kind: 'hook-listener', resolved: true,
+      startLine: 1, endLine: 1, payload: { kind: 'hook-listener', hook: 'wp_ajax_save' },
+    };
+    const graph: Graph = {
+      files: new Map([[1, testFile], [2, sourceFile]]),
+      facts: new Map([[100, wildFire], [101, literalListener]]),
+      factsByFile: new Map([[1, [wildFire]], [2, [literalListener]]]),
+      anchorLinks: [
+        { factId: 100, anchorKey: k('hook:wp_ajax_{*}'), role: 'target' },
+        { factId: 101, anchorKey: k('hook:wp_ajax_save'), role: 'subject' },
+      ],
+      tests: [],
+    };
+    const idx = buildAnchorIndex(graph);
+    const r = traverseTest(graph, idx, 100, 'phpunit:tests/x.php::Foo::testIt', 'unit', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    expect(r.edges.map((e) => e.source)).toEqual(['src/listener.php']);
+    const kinds = r.edges[0]?.evidence.map((e) => e.kind) ?? [];
+    expect(kinds).toContain('hook-mediated-uncertain');
+  });
+
+  it('emits hook-mediated-uncertain via literal fact → wildcard listener', () => {
+    const literalFire: FactRow = {
+      id: 200, fileId: 1, kind: 'hook-fire', resolved: true,
+      startLine: 1, endLine: 1, payload: { kind: 'hook-fire', hook: 'my_event' },
+    };
+    const wildListener: FactRow = {
+      id: 201, fileId: 2, kind: 'hook-listener', resolved: false,
+      startLine: 1, endLine: 1, payload: { kind: 'hook-listener', hook: 'my_{*}' },
+    };
+    const graph: Graph = {
+      files: new Map([[1, testFile], [2, sourceFile]]),
+      facts: new Map([[200, literalFire], [201, wildListener]]),
+      factsByFile: new Map([[1, [literalFire]], [2, [wildListener]]]),
+      anchorLinks: [
+        { factId: 200, anchorKey: k('hook:my_event'), role: 'target' },
+        { factId: 201, anchorKey: k('hook:my_{*}'), role: 'subject' },
+      ],
+      tests: [],
+    };
+    const idx = buildAnchorIndex(graph);
+    const r = traverseTest(graph, idx, 200, 'phpunit:tests/x.php::Foo::testIt', 'unit', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    expect(r.edges.map((e) => e.source)).toEqual(['src/listener.php']);
   });
 });

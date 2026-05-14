@@ -67,6 +67,7 @@ export function startDeriveWorkerPool(opts: DerivePoolOptions): DeriveWorkerPool
       maxMillisPerTest: opts.params.maxMillisPerTest,
       threshold: opts.params.threshold,
       hookStopList: [...opts.params.hookStopList],
+      maxWildcardMatchesPerAnchor: opts.params.maxWildcardMatchesPerAnchor,
     },
   };
 

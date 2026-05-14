@@ -62,6 +62,7 @@ describe('startDeriveWorkerPool', () => {
         maxMillisPerTest: 5000,
         threshold: 0,
         hookStopList: new Set(),
+        maxWildcardMatchesPerAnchor: 32,
       },
       size: 2,
     });
@@ -75,6 +76,7 @@ describe('startDeriveWorkerPool', () => {
       maxMillisPerTest: 5000,
       threshold: 0,
       hookStopList: new Set<string>(),
+      maxWildcardMatchesPerAnchor: 32,
     } as const;
 
     const pool1 = startDeriveWorkerPool({ graph, index, params, size: 1 });
@@ -109,6 +111,7 @@ describe('startDeriveWorkerPool', () => {
         maxMillisPerTest: 5000,
         threshold: 0,
         hookStopList: new Set(),
+        maxWildcardMatchesPerAnchor: 32,
       },
       size: 4,
     });

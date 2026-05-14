@@ -13,6 +13,7 @@ interface WorkerInit {
     readonly maxMillisPerTest: number;
     readonly threshold: number;
     readonly hookStopList: readonly string[];
+    readonly maxWildcardMatchesPerAnchor: number;
   };
 }
 
@@ -47,6 +48,7 @@ port.on('message', (req: DeriveRequest) => {
       threshold: init.params.threshold,
       hookStopList: stopList,
       now: () => systemClock.nowMillis(),
+      maxWildcardMatchesPerAnchor: init.params.maxWildcardMatchesPerAnchor,
     },
   );
   const resp: DeriveResponse = { id: req.id, result };
