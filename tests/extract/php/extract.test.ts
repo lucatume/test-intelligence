@@ -198,6 +198,17 @@ class WC_Cart_Test extends WC_Unit_Test_Case {
     expect(factsB.find((f) => f.kind === 'test-def')).toBeDefined();
   });
 
+  it('flattens concatenated hook names into a {*} skeleton', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php apply_filters('prefix_' . $context . '_suffix', null);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const fire = facts.find((f) => f.kind === 'hook-fire');
+    expect(fire).toBeDefined();
+    expect((fire?.payload as { hook?: string }).hook).toBe('prefix_{*}_suffix');
+    expect(fire?.anchors[0]?.key).toBe('hook:prefix_{*}_suffix');
+    expect(fire?.resolved).toBe(false);
+  });
+
   it('test-def uses project-relative paths (not absolute) in testId + anchors', async () => {
     // JS tests use relative paths in their test_id (e.g. `jest:src/foo.test.ts::...`).
     // PHP must match so queries are symmetric and stable across machines.

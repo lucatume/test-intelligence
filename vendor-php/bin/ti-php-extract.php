@@ -390,7 +390,10 @@ final class Visitor extends NodeVisitorAbstract
                 $i = $b['arg'];
                 $v = $this->readLiteral($args[$i] ?? null, $b['type']);
                 if ($v === null && !($b['optional'] ?? false)) $resolved = false;
-                if ($v !== null) $payload[$field] = $v;
+                if ($v !== null) {
+                    $payload[$field] = $v;
+                    if (is_string($v) && str_contains($v, '{*}')) $resolved = false;
+                }
             }
             $anchors = [];
             $anchorRule = $p['anchor'] ?? null;
@@ -422,10 +425,23 @@ final class Visitor extends NodeVisitorAbstract
         return [];
     }
 
+    private function readStringSkeleton(?Node $node): ?string
+    {
+        if ($node === null) return null;
+        if ($node instanceof Node\Scalar\String_) return $node->value;
+        if ($node instanceof Node\Expr\BinaryOp\Concat) {
+            $left  = $this->readStringSkeleton($node->left);
+            $right = $this->readStringSkeleton($node->right);
+            if ($left === null && $right === null) return '{*}';
+            return ($left ?? '{*}') . ($right ?? '{*}');
+        }
+        return null;
+    }
+
     private function readLiteral(?Node $node, string $type): mixed
     {
         if ($node === null) return null;
-        if ($type === 'string' && $node instanceof Node\Scalar\String_) return $node->value;
+        if ($type === 'string') return $this->readStringSkeleton($node);
         if ($type === 'int' && $node instanceof Node\Scalar\Int_) return $node->value;
         if ($type === 'bool') {
             if ($node instanceof Node\Expr\ConstFetch) {
