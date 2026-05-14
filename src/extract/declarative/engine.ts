@@ -83,6 +83,7 @@ function applyPattern(m: MatchedCall, p: UserPattern, sf: ts.SourceFile, relPath
     if (value === null && binding.optional !== true) resolved = false;
     if (value !== null) fields[fieldName] = value;
   }
+  if (resolved && containsWildcard(fields)) resolved = false;
 
   const anchors: FactAnchorRef[] = [];
   if (p.anchor !== undefined) {
@@ -106,9 +107,33 @@ function applyPattern(m: MatchedCall, p: UserPattern, sf: ts.SourceFile, relPath
   };
 }
 
+function templateLiteralSkeleton(n: ts.TemplateExpression): string {
+  let out = n.head.text;
+  for (const span of n.templateSpans) {
+    out += '{*}';
+    out += span.literal.text;
+  }
+  return out;
+}
+
+function containsWildcard(v: unknown): boolean {
+  if (typeof v === 'string') return v.includes('{*}');
+  if (v !== null && typeof v === 'object') {
+    const rec = v as Record<string, unknown>;
+    for (const k of Object.keys(rec)) {
+      if (containsWildcard(rec[k])) return true;
+    }
+  }
+  return false;
+}
+
 function readLiteral(n: ts.Expression, type: string): unknown {
-  if (type === 'string' && ts.isStringLiteral(n)) return n.text;
-  if (type === 'string' && ts.isNoSubstitutionTemplateLiteral(n)) return n.text;
+  if (type === 'string') {
+    if (ts.isStringLiteral(n)) return n.text;
+    if (ts.isNoSubstitutionTemplateLiteral(n)) return n.text;
+    if (ts.isTemplateExpression(n)) return templateLiteralSkeleton(n);
+    return null;
+  }
   if (type === 'int' && ts.isNumericLiteral(n)) return Number(n.text);
   if (type === 'bool' && (n.kind === ts.SyntaxKind.TrueKeyword || n.kind === ts.SyntaxKind.FalseKeyword)) {
     return n.kind === ts.SyntaxKind.TrueKeyword;
@@ -120,6 +145,8 @@ function readLiteral(n: ts.Expression, type: string): unknown {
       const val = prop.initializer;
       if (ts.isStringLiteral(val) || ts.isNoSubstitutionTemplateLiteral(val)) {
         out[prop.name.text] = val.text;
+      } else if (ts.isTemplateExpression(val)) {
+        out[prop.name.text] = templateLiteralSkeleton(val);
       } else if (ts.isNumericLiteral(val)) {
         out[prop.name.text] = Number(val.text);
       } else if (val.kind === ts.SyntaxKind.TrueKeyword || val.kind === ts.SyntaxKind.FalseKeyword) {

@@ -61,4 +61,35 @@ describe('runDeclarativePatterns', () => {
     const sf = parse('src/a.ts', "apiFetch('/x');");
     expect(runDeclarativePatterns(sf, 'src/a.ts', [])).toEqual([]);
   });
+
+  it('reads a template literal with substitutions as a {*} skeleton', () => {
+    const sf = parse('src/a.ts', "apiFetch({ path: `/wc/v3/products/${id}` });");
+    const pattern: UserPattern = {
+      match: { lang: 'ts', nodeKind: 'function-call', name: 'apiFetch' },
+      bind: { config: { arg: 0, type: 'object' } },
+      emit: 'rest-call-js',
+      anchor: { template: 'rest:GET {config.path}', role: 'target' },
+    };
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', [pattern]);
+    expect(facts).toHaveLength(1);
+    const [f] = facts;
+    if (!f) throw new Error('no fact');
+    expect((f.payload as { config?: { path?: string } }).config?.path).toBe('/wc/v3/products/{*}');
+    expect(f.anchors[0]?.key).toBe('rest:GET /wc/v3/products/{*}');
+    expect(f.resolved).toBe(false);
+  });
+
+  it('does not consume tagged template literals as a string skeleton', () => {
+    const sf = parse('src/a.ts', "apiFetch({ path: html`/x/${id}` });");
+    const pattern: UserPattern = {
+      match: { lang: 'ts', nodeKind: 'function-call', name: 'apiFetch' },
+      bind: { config: { arg: 0, type: 'object' } },
+      emit: 'rest-call-js',
+    };
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', [pattern]);
+    expect(facts).toHaveLength(1);
+    const [f] = facts;
+    if (!f) throw new Error('no fact');
+    expect((f.payload as { config?: { path?: string } }).config?.path).toBeUndefined();
+  });
 });
