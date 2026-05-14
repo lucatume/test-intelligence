@@ -164,6 +164,52 @@ class ${cls}Test extends TestCase {
     expect(four.edgesWritten).toBe(one.edgesWritten);
   });
 
+  it('produces identical totals across ts worker pool sizes', async () => {
+    // Mirror of the PHP-pool equality test, for the JS/TS path. Both runs
+    // hit the same fixture; counts must be identical regardless of whether
+    // TS extraction goes through the pool or the in-process compiler.
+    const root = getTmp();
+    for (let i = 0; i < 12; i++) {
+      write(root, `src/m${String(i)}.ts`, `
+import { shared } from './shared';
+export function m${String(i)}() { shared(); }
+`);
+      write(root, `tests/m${String(i)}.test.ts`, `
+import { m${String(i)} } from '../src/m${String(i)}';
+import { describe, it } from 'vitest';
+describe('m${String(i)}', () => { it('runs', () => { m${String(i)}(); }); });
+`);
+    }
+    write(root, 'src/shared.ts', 'export function shared() {}');
+
+    async function buildOnce(workers: number) {
+      const cfg = parseConfig({
+        concurrency: { tsWorkers: workers, phpWorkers: 1 },
+        confidence: { threshold: 0 },
+      });
+      if (cfg.kind === 'err') throw new Error('cfg');
+      const r = await runBuild({
+        projectRoot: root,
+        config: cfg.value,
+        clock: systemClock,
+        stderr: { write: () => {} },
+        repoRoot,
+      });
+      if (r.kind !== 'ok') throw new Error('build failed');
+      return r.value;
+    }
+
+    const inProcess = await buildOnce(0);
+    const fs = await import('node:fs/promises');
+    await fs.rm(join(root, '.test-intelligence'), { recursive: true, force: true });
+    const pooled = await buildOnce(2);
+
+    expect(pooled.filesExtracted).toBe(inProcess.filesExtracted);
+    expect(pooled.factsInserted).toBe(inProcess.factsInserted);
+    expect(pooled.testsFound).toBe(inProcess.testsFound);
+    expect(pooled.edgesWritten).toBe(inProcess.edgesWritten);
+  }, { timeout: 30_000 });
+
   it('does not emit edges into nested vendor directories', async () => {
     // Earlier `vendor` detection only matched top-level vendor/; monorepos
     // place vendor/ under every package, so phpunit edges leaked into
