@@ -5,6 +5,7 @@ import { ALL_ANCHOR_TYPES } from '../types.js';
 import type { Anchor, AnchorParseError, RestAnchor, SimpleAnchor } from './types.js';
 
 const ROUTE_PARAM_RE = /\{\*\}/;
+const WILDCARD_RE = /\{\*\}/;
 const WP_JSON_PREFIX = '/wp-json/';
 const AJAX_PREFIX = 'wp_ajax_';
 const AJAX_NOPRIV_PREFIX = 'wp_ajax_nopriv_';
@@ -60,20 +61,28 @@ function parseAjax(raw: string, body: string): Result<SimpleAnchor, AnchorParseE
   if (action.startsWith(AJAX_NOPRIV_PREFIX)) action = action.slice(AJAX_NOPRIV_PREFIX.length);
   else if (action.startsWith(AJAX_PREFIX)) action = action.slice(AJAX_PREFIX.length);
   if (action === '') return err(makeErr(raw, 'empty ajax action'));
-  return ok({ key: `ajax:${action}` as AnchorKey, type: 'ajax', body: action });
+  const partial = WILDCARD_RE.test(action);
+  return ok({ key: `ajax:${action}` as AnchorKey, type: 'ajax', body: action, partial });
 }
 
 function parsePhpSymbol(raw: string, body: string): Result<SimpleAnchor, AnchorParseError> {
   const normalized = body.startsWith('\\') ? body.slice(1) : body;
   if (normalized === '') return err(makeErr(raw, 'empty symbol'));
-  return ok({ key: `php-symbol:${normalized}` as AnchorKey, type: 'php-symbol', body: normalized });
+  const partial = WILDCARD_RE.test(normalized);
+  return ok({
+    key: `php-symbol:${normalized}` as AnchorKey,
+    type: 'php-symbol',
+    body: normalized,
+    partial,
+  });
 }
 
 function parseSimple(
   type: Exclude<AnchorType, 'rest'>,
   body: string,
 ): Result<SimpleAnchor, AnchorParseError> {
-  return ok({ key: `${type}:${body}` as AnchorKey, type, body });
+  const partial = WILDCARD_RE.test(body);
+  return ok({ key: `${type}:${body}` as AnchorKey, type, body, partial });
 }
 
 function makeErr(raw: string, reason: string): AnchorParseError {

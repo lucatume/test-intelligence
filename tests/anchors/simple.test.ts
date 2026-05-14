@@ -89,6 +89,28 @@ describe('parseAnchor — pass-through anchors', () => {
   }
 });
 
+describe('parseAnchor — wildcard marker {*}', () => {
+  it('marks a hook anchor as partial when body contains {*}', () => {
+    const r = parseAnchor('hook:woocommerce_{*}_x');
+    expect(r.kind).toBe('ok');
+    if (r.kind !== 'ok') return;
+    expect(r.value.type).toBe('hook');
+    expect((r.value as { partial?: boolean }).partial).toBe(true);
+  });
+
+  it('leaves a hook anchor partial:false when no {*}', () => {
+    const r = parseAnchor('hook:init');
+    if (r.kind !== 'ok') throw new Error('expected ok');
+    expect((r.value as { partial?: boolean }).partial ?? false).toBe(false);
+  });
+
+  it('marks an ajax anchor partial when body contains {*}', () => {
+    const r = parseAnchor('ajax:save_{*}');
+    if (r.kind !== 'ok') throw new Error('expected ok');
+    expect((r.value as { partial?: boolean }).partial).toBe(true);
+  });
+});
+
 describe('parseAnchor — rejection', () => {
   it('rejects unknown type', () => {
     const r = parseAnchor('nope:foo');
