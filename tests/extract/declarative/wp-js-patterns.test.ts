@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import ts from 'typescript';
 import { runDeclarativePatterns } from '../../../src/extract/declarative/engine.js';
 import { WP_JS_PATTERNS } from '../../../src/extract/declarative/wp-js-patterns.js';
+import { parseAnchor } from '../../../src/anchors/parse.js';
 
 function parse(rel: string, src: string): ts.SourceFile {
   return ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
@@ -34,5 +35,17 @@ describe('WP_JS_PATTERNS', () => {
     const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
     const rest = facts.find((f) => f.kind === 'rest-call-js');
     expect(rest?.anchors[0]?.key).toBe('rest:POST /wp-json/x/v1/items');
+  });
+
+  it('strips /wp-json/ prefix from a fetch literal URL', () => {
+    const sf = parse('src/a.ts', "fetch('/wp-json/wc/v3/products');");
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
+    const rc = facts.find((f) => f.kind === 'rest-call-js');
+    expect(rc).toBeDefined();
+    const raw = rc?.anchors[0]?.key ?? '';
+    const parsed = parseAnchor(raw);
+    expect(parsed.kind).toBe('ok');
+    if (parsed.kind !== 'ok') return;
+    expect(parsed.value.key).toBe('rest:GET /wc/v3/products');
   });
 });
