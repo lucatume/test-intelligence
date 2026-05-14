@@ -101,7 +101,7 @@ export function traverseTest(
     }
 
     // Walk outward through this fact's relations.
-    enqueueDownstream(graph, index, cur.fact, cur.depth, queue, enqueued, options, frameworkClass);
+    enqueueDownstream(graph, index, cur.fact, cur.depth, queue, enqueued, options, frameworkClass, evidence, testFact.fileId);
   }
 
   const edges: Edge[] = [];
@@ -130,6 +130,8 @@ function enqueueDownstream(
   enqueued: Set<number>,
   options: TraversalOptions,
   frameworkClass: 'unit' | 'e2e',
+  evidence: Map<number, EvidenceAgg>,
+  testFileId: number,
 ): void {
   // 1. import-edge / php-include: resolve directly to target file.
   if (fact.kind === 'import-edge') {
@@ -170,6 +172,15 @@ function enqueueDownstream(
   const links = index.linksByFact.get(fact.id) ?? [];
   for (const link of links) {
     for (const partner of complementaryFactsForRole(index, link.anchorKey, link.role, options.maxWildcardMatchesPerAnchor)) {
+      // Record bridge evidence for the partner's file even when the partner is
+      // already enqueued via another path. Without this, evidence kinds emitted
+      // via the bridge (hook-mediated, shortcode-render, …) are lost whenever a
+      // shorter-arrival kind (e.g. php-include) reaches the partner first.
+      const partnerFile = graph.files.get(partner.fileId);
+      if (partnerFile && partnerFile.id !== testFileId && !partnerFile.vendor) {
+        recordEvidence(evidence, partnerFile.id, bridgeKind, fact.id, fact.resolved);
+        recordEvidence(evidence, partnerFile.id, bridgeKind, partner.id, partner.resolved);
+      }
       if (enqueued.has(partner.id)) continue;
       enqueued.add(partner.id);
       queue.push({
