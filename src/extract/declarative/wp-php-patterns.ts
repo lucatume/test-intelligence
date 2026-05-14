@@ -68,6 +68,24 @@ export const WP_PHP_PATTERNS: readonly PhpPatternWithAnchor[] = [
     anchor: { template: 'script-handle:{handle}', role: 'subject' },
   },
   {
+    match: { lang: 'php', nodeKind: 'function-call', name: 'wp_enqueue_style' },
+    bind: {
+      handle: { arg: 0, type: 'string' },
+      src: { arg: 1, type: 'string', optional: true },
+    },
+    emit: 'enqueue-script',
+    anchor: { template: 'script-handle:{handle}', role: 'subject' },
+  },
+  {
+    match: { lang: 'php', nodeKind: 'function-call', name: 'wp_register_style' },
+    bind: {
+      handle: { arg: 0, type: 'string' },
+      src: { arg: 1, type: 'string', optional: true },
+    },
+    emit: 'enqueue-script',
+    anchor: { template: 'script-handle:{handle}', role: 'subject' },
+  },
+  {
     match: { lang: 'php', nodeKind: 'function-call', name: 'wp_localize_script' },
     bind: { handle: { arg: 0, type: 'string' } },
     emit: 'script-localize',

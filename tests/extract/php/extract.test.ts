@@ -452,4 +452,22 @@ ti_deletemeelephant_helper();
     expect(rest).toHaveLength(1);
     expect(rest[0]?.anchors[0]?.key).toBe('rest:GET /myplugin/v1/items');
   });
+
+  it('emits enqueue-script for wp_enqueue_style', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php wp_enqueue_style('my-style', '/css/x.css');");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const enq = facts.find((f) => f.kind === 'enqueue-script' && (f.payload as { handle?: string }).handle === 'my-style');
+    expect(enq).toBeDefined();
+    expect(enq?.anchors[0]?.key).toBe('script-handle:my-style');
+  });
+
+  it('emits enqueue-script for wp_register_style', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php wp_register_style('reg-style', '/css/r.css');");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const enq = facts.find((f) => f.kind === 'enqueue-script' && (f.payload as { handle?: string }).handle === 'reg-style');
+    expect(enq).toBeDefined();
+    expect(enq?.anchors[0]?.key).toBe('script-handle:reg-style');
+  });
 });
