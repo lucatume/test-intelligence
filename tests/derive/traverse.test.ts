@@ -184,4 +184,46 @@ describe('traverseTest — wildcard bridge', () => {
     });
     expect(r.edges.map((e) => e.source)).toEqual(['src/listener.php']);
   });
+
+  it('caps wildcard matches at maxWildcardMatchesPerAnchor', () => {
+    const tFile: FileRow = { id: 1, path: 'tests/x.php', language: 'php', vendor: false, framework: 'phpunit', frameworkClass: 'unit' };
+    const wildFire: FactRow = {
+      id: 9000, fileId: 1, kind: 'hook-fire', resolved: false,
+      startLine: 1, endLine: 1, payload: { kind: 'hook-fire', hook: 'hook_{*}' },
+    };
+    // Create 100 literal listeners across 100 distinct source files
+    const files = new Map<number, FileRow>();
+    files.set(1, tFile);
+    const facts = new Map<number, FactRow>();
+    facts.set(9000, wildFire);
+    const factsByFile = new Map<number, readonly FactRow[]>();
+    factsByFile.set(1, [wildFire]);
+    const anchorLinks: Array<{ factId: number; anchorKey: AnchorKey; role: 'subject' | 'target' | 'module' | 'callback' }> = [
+      { factId: 9000, anchorKey: k('hook:hook_{*}'), role: 'target' },
+    ];
+    for (let i = 0; i < 100; i++) {
+      const fid = 10000 + i;
+      const fileId = 1000 + i;
+      const suffix = String(i);
+      const file: FileRow = { id: fileId, path: `src/listener_${suffix}.php`, language: 'php', vendor: false, framework: null, frameworkClass: null };
+      files.set(fileId, file);
+      const fact: FactRow = {
+        id: fid, fileId, kind: 'hook-listener', resolved: true,
+        startLine: 1, endLine: 1, payload: { kind: 'hook-listener', hook: `hook_${suffix}` },
+      };
+      facts.set(fid, fact);
+      factsByFile.set(fileId, [fact]);
+      anchorLinks.push({ factId: fid, anchorKey: k(`hook:hook_${suffix}`), role: 'subject' });
+    }
+    const graph: Graph = { files, facts, factsByFile, anchorLinks, tests: [] };
+    const idx = buildAnchorIndex(graph);
+
+    const r = traverseTest(graph, idx, 9000, 'phpunit:tests/x.php::Foo::testIt', 'unit', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 7,
+    });
+    // The cap is per-fact: 7 wildcard-side matches → at most 7 source files
+    expect(r.edges.length).toBe(7);
+  });
 });
