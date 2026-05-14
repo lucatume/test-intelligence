@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { cpus } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Result } from '../result.js';
@@ -19,7 +20,8 @@ import { classifyFile } from '../discover/framework.js';
 import { matchesAny } from '../discover/glob.js';
 import { extractFile } from '../extract/index.js';
 import { CompilerOptionsResolver } from '../extract/ts/compiler.js';
-import { startPhpWorker, hasPhpAvailable, type PhpWorker } from '../extract/php/spawn.js';
+import { hasPhpAvailable, type PhpWorker } from '../extract/php/spawn.js';
+import { startPhpWorkerPool } from '../extract/php/pool.js';
 import { WP_PHP_PATTERNS } from '../extract/declarative/wp-php-patterns.js';
 import { parseProjectRelativePath } from '../paths.js';
 import { parseAnchor } from '../anchors/parse.js';
@@ -54,8 +56,9 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
 
     try {
       const repoRoot = opts.repoRoot ?? resolveRepoRoot();
+      const phpWorkers = resolvePhpWorkers(opts.config.concurrency.phpWorkers);
       if (mayHavePhp(opts) && hasPhpAvailable()) {
-        const wRes = startPhpWorker({ repoRoot });
+        const wRes = startPhpWorkerPool({ repoRoot, size: phpWorkers });
         if (wRes.kind === 'ok') {
           worker = wRes.value;
           await worker.registerPatterns(WP_PHP_PATTERNS);
@@ -70,82 +73,93 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       const source = opts.onlyPaths !== undefined
         ? listFromPaths(opts.onlyPaths, opts.projectRoot, opts.config, opts.stderr, verbosity)
         : walk(opts.projectRoot, opts.config);
+      const it = toAsyncIterator(source);
 
-      for await (const file of source) {
-        const text = await readFile(join(opts.projectRoot, file.path), 'utf8').catch(() => null);
-        if (text === null) {
-          if (verbosity === 'verbose') opts.stderr.write(`ti: skipped (read failed) ${file.path}\n`);
-          continue;
-        }
-        const contentHash = createHash('sha1').update(text).digest('hex');
-        const fileId = upsertFile(db, {
-          path: file.path,
-          language: file.language,
-          contentHash,
-          extractedAt: opts.clock.now(),
-          isTest: file.framework !== null,
-          framework: file.framework,
-          frameworkClass: file.frameworkClass,
-        });
+      // Lane count tracks pool size: each lane awaits a PHP extract on one
+      // slot, but ties up no slot during file read / TS extract. SQLite writes
+      // are synchronous and so naturally serialize between the lanes' awaits.
+      const laneCount = phpWorkers;
+      const lanes: Promise<void>[] = [];
+      for (let i = 0; i < laneCount; i++) {
+        lanes.push((async (): Promise<void> => {
+          for (;;) {
+            const next = await it.next();
+            if (next.done === true) return;
+            const file = next.value;
+            const text = await readFile(join(opts.projectRoot, file.path), 'utf8').catch(() => null);
+            if (text === null) {
+              if (verbosity === 'verbose') opts.stderr.write(`ti: skipped (read failed) ${file.path}\n`);
+              continue;
+            }
+            const contentHash = createHash('sha1').update(text).digest('hex');
+            const compilerOptions = compilerOptionsResolver.forFile(
+              join(opts.projectRoot, file.path),
+            );
+            const r = await extractFile({
+              projectRoot: opts.projectRoot,
+              path: file.path,
+              language: file.language,
+              framework: file.framework,
+              compilerOptions,
+              patterns: [],
+              ...(worker !== undefined ? { phpWorker: worker } : {}),
+            });
+            if (r.kind === 'err') {
+              if (verbosity !== 'quiet') {
+                opts.stderr.write(`ti: extract failed ${file.path}: ${r.error.message}\n`);
+              }
+              continue;
+            }
 
-        const compilerOptions = compilerOptionsResolver.forFile(
-          join(opts.projectRoot, file.path),
-        );
-        const r = await extractFile({
-          projectRoot: opts.projectRoot,
-          path: file.path,
-          language: file.language,
-          framework: file.framework,
-          compilerOptions,
-          patterns: [],
-          ...(worker !== undefined ? { phpWorker: worker } : {}),
-        });
-        if (r.kind === 'err') {
-          if (verbosity !== 'quiet') {
-            opts.stderr.write(`ti: extract failed ${file.path}: ${r.error.message}\n`);
-          }
-          continue;
-        }
-
-        filesExtracted++;
-        for (const f of r.value) {
-          const factId = insertFact(db, {
-            fileId,
-            kind: f.kind,
-            resolved: f.resolved,
-            startLine: f.location.startLine,
-            endLine: f.location.endLine,
-            payload: f.payload,
-          });
-          factsInserted++;
-          for (const a of f.anchors) {
-            const parsed = parseAnchor(a.key);
-            if (parsed.kind === 'err') continue;
-            const anchorId = upsertAnchor(db, { key: parsed.value.key, type: parsed.value.type });
-            insertFactAnchor(db, { factId, anchorId, role: a.role });
-          }
-          // Only register test-defs whose file the walker classified as a
-          // test. The PHP extractor emits test-defs for any class extending
-          // PHPUnit\TestCase, including vendor-shipped test suites — those
-          // should be indexed as sources, not as project tests.
-          if (f.kind === 'test-def' && file.framework !== null) {
-            const payload = f.payload as { testId?: unknown; framework?: unknown };
-            if (typeof payload.testId === 'string' && typeof payload.framework === 'string') {
-              insertTest(db, {
-                testId: payload.testId,
+            // From here down all DB calls are synchronous. Multiple lanes will
+            // interleave at `await` points only — never inside this block.
+            const fileId = upsertFile(db, {
+              path: file.path,
+              language: file.language,
+              contentHash,
+              extractedAt: opts.clock.now(),
+              isTest: file.framework !== null,
+              framework: file.framework,
+              frameworkClass: file.frameworkClass,
+            });
+            filesExtracted++;
+            for (const f of r.value) {
+              const factId = insertFact(db, {
                 fileId,
-                framework: payload.framework,
-                frameworkClass: file.frameworkClass ?? 'unit',
-                factId,
+                kind: f.kind,
+                resolved: f.resolved,
+                startLine: f.location.startLine,
+                endLine: f.location.endLine,
+                payload: f.payload,
               });
-              testsFound++;
+              factsInserted++;
+              for (const a of f.anchors) {
+                const parsed = parseAnchor(a.key);
+                if (parsed.kind === 'err') continue;
+                const anchorId = upsertAnchor(db, { key: parsed.value.key, type: parsed.value.type });
+                insertFactAnchor(db, { factId, anchorId, role: a.role });
+              }
+              if (f.kind === 'test-def' && file.framework !== null) {
+                const payload = f.payload as { testId?: unknown; framework?: unknown };
+                if (typeof payload.testId === 'string' && typeof payload.framework === 'string') {
+                  insertTest(db, {
+                    testId: payload.testId,
+                    fileId,
+                    framework: payload.framework,
+                    frameworkClass: file.frameworkClass ?? 'unit',
+                    factId,
+                  });
+                  testsFound++;
+                }
+              }
+            }
+            if (verbosity === 'verbose') {
+              opts.stderr.write(`ti: extracted ${file.path} (${String(r.value.length)} facts)\n`);
             }
           }
-        }
-        if (verbosity === 'verbose') {
-          opts.stderr.write(`ti: extracted ${file.path} (${String(r.value.length)} facts)\n`);
-        }
+        })());
       }
+      await Promise.all(lanes);
 
       const stopList = new Set<string>(HOOK_STOP_LIST_BUILTINS);
       for (const h of opts.config.hooks.stopList.add) stopList.add(h);
@@ -187,6 +201,30 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
   } finally {
     releaseLock(opts.projectRoot);
   }
+}
+
+function toAsyncIterator<T>(src: AsyncIterable<T> | Iterable<T>): AsyncIterator<T> {
+  if (Symbol.asyncIterator in src) {
+    return src[Symbol.asyncIterator]();
+  }
+  const sync = src[Symbol.iterator]();
+  const wrapped: AsyncIterator<T> = {
+    next(): Promise<IteratorResult<T>> {
+      return Promise.resolve(sync.next());
+    },
+  };
+  return wrapped;
+}
+
+// Resolve the PHP worker pool size. Default: cpus-2 clamped to [1,8] — most
+// developer laptops have 8-12 cores, leaving headroom for the main thread and
+// the OS. 0 / negative is treated as 1 so the single-worker fallback is always
+// available.
+function resolvePhpWorkers(configured: number | undefined): number {
+  if (configured === undefined) {
+    return Math.min(Math.max(cpus().length - 2, 1), 8);
+  }
+  return Math.max(configured, 1);
 }
 
 function* listFromPaths(

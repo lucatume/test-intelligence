@@ -113,6 +113,57 @@ class CartTest extends TestCase {
     } finally { sRes.value.close(); }
   });
 
+  it('produces identical totals across php worker pool sizes', async () => {
+    // Concurrency MUST be a performance lever, not a correctness one. Build the
+    // same fixture under phpWorkers=1 and phpWorkers=4 and require the four
+    // counters in BuildSummary to match exactly. If they ever drift, the
+    // parallel build is dropping work somewhere — silent and dangerous.
+    const root = getTmp();
+    for (let i = 0; i < 12; i++) {
+      const cls = `Cart${String(i)}`;
+      write(root, `src/${cls}.php`, `<?php
+namespace App;
+class ${cls} { public function run(): void {} }`);
+      write(root, `tests/${cls}Test.php`, `<?php
+namespace App\\Tests;
+use App\\${cls};
+use PHPUnit\\Framework\\TestCase;
+class ${cls}Test extends TestCase {
+  public function testRun(): void { (new ${cls}())->run(); }
+}`);
+    }
+
+    async function buildOnce(workers: number) {
+      // Each invocation runs against a fresh .test-intelligence so the
+      // upsert/insert path is exercised fully, not just touched.
+      const cfg = parseConfig({
+        concurrency: { phpWorkers: workers },
+        confidence: { threshold: 0 },
+      });
+      if (cfg.kind === 'err') throw new Error('cfg');
+      const r = await runBuild({
+        projectRoot: root,
+        config: cfg.value,
+        clock: systemClock,
+        stderr: { write: () => {} },
+        repoRoot,
+      });
+      if (r.kind !== 'ok') throw new Error('build failed');
+      return r.value;
+    }
+
+    const one = await buildOnce(1);
+    // wipe and rebuild
+    const fs = await import('node:fs/promises');
+    await fs.rm(join(root, '.test-intelligence'), { recursive: true, force: true });
+    const four = await buildOnce(4);
+
+    expect(four.filesExtracted).toBe(one.filesExtracted);
+    expect(four.factsInserted).toBe(one.factsInserted);
+    expect(four.testsFound).toBe(one.testsFound);
+    expect(four.edgesWritten).toBe(one.edgesWritten);
+  });
+
   it('does not emit edges into nested vendor directories', async () => {
     // Earlier `vendor` detection only matched top-level vendor/; monorepos
     // place vendor/ under every package, so phpunit edges leaked into
