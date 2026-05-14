@@ -51,4 +51,54 @@ export const WP_JS_PATTERNS: readonly UserPattern[] = [
     emit: 'ajax-call-js',
     anchor: { template: 'ajax:{action}', role: 'target' },
   },
+  // @wordpress/hooks named-import form
+  {
+    match: { lang: 'ts', nodeKind: 'function-call', name: 'addAction' },
+    bind: { hook: { arg: 0, type: 'string' } },
+    emit: 'hook-listener',
+    anchor: { template: 'hook:{hook}', role: 'subject' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'function-call', name: 'addFilter' },
+    bind: { hook: { arg: 0, type: 'string' } },
+    emit: 'hook-listener',
+    anchor: { template: 'hook:{hook}', role: 'subject' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'function-call', name: 'doAction' },
+    bind: { hook: { arg: 0, type: 'string' } },
+    emit: 'hook-fire',
+    anchor: { template: 'hook:{hook}', role: 'target' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'function-call', name: 'applyFilters' },
+    bind: { hook: { arg: 0, type: 'string' } },
+    emit: 'hook-fire',
+    anchor: { template: 'hook:{hook}', role: 'target' },
+  },
+  // hooks.* method-call form (also covers wp.hooks.* via two-segment receiver)
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'addAction', receiver: 'hooks' },
+    bind: { hook: { arg: 0, type: 'string' } },
+    emit: 'hook-listener',
+    anchor: { template: 'hook:{hook}', role: 'subject' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'addFilter', receiver: 'hooks' },
+    bind: { hook: { arg: 0, type: 'string' } },
+    emit: 'hook-listener',
+    anchor: { template: 'hook:{hook}', role: 'subject' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'doAction', receiver: 'hooks' },
+    bind: { hook: { arg: 0, type: 'string' } },
+    emit: 'hook-fire',
+    anchor: { template: 'hook:{hook}', role: 'target' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'applyFilters', receiver: 'hooks' },
+    bind: { hook: { arg: 0, type: 'string' } },
+    emit: 'hook-fire',
+    anchor: { template: 'hook:{hook}', role: 'target' },
+  },
 ];

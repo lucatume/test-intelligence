@@ -40,7 +40,14 @@ function matchNode(n: ts.Node): MatchedCall | null {
       return { node: n, name: n.expression.text, receiver: null };
     }
     if (ts.isPropertyAccessExpression(n.expression) && ts.isIdentifier(n.expression.name)) {
-      const recv = ts.isIdentifier(n.expression.expression) ? n.expression.expression.text : null;
+      const inner = n.expression.expression;
+      let recv: string | null = null;
+      if (ts.isIdentifier(inner)) {
+        recv = inner.text;
+      } else if (ts.isPropertyAccessExpression(inner) && ts.isIdentifier(inner.name)) {
+        // Two-segment chain: wp.hooks.addAction → receiver is 'hooks'
+        recv = inner.name.text;
+      }
       return { node: n, name: n.expression.name.text, receiver: recv };
     }
     return null;

@@ -48,4 +48,47 @@ describe('WP_JS_PATTERNS', () => {
     if (parsed.kind !== 'ok') return;
     expect(parsed.value.key).toBe('rest:GET /wc/v3/products');
   });
+
+  it('emits hook-listener for addAction(name, namespace, cb)', () => {
+    const sf = parse(
+      'src/a.ts',
+      "import { addAction } from '@wordpress/hooks'; addAction('my_event', 'my-ns', () => {});",
+    );
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
+    const list = facts.filter((f) => f.kind === 'hook-listener');
+    expect(list).toHaveLength(1);
+    expect(list[0]?.anchors[0]?.key).toBe('hook:my_event');
+  });
+
+  it('emits hook-fire for doAction("my_event")', () => {
+    const sf = parse(
+      'src/a.ts',
+      "import { doAction } from '@wordpress/hooks'; doAction('my_event', payload);",
+    );
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
+    const fire = facts.find((f) => f.kind === 'hook-fire');
+    expect(fire?.anchors[0]?.key).toBe('hook:my_event');
+  });
+
+  it('emits hook-fire for applyFilters', () => {
+    const sf = parse('src/a.ts', "applyFilters('the_value', x);");
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
+    const fire = facts.find((f) => f.kind === 'hook-fire');
+    expect(fire?.anchors[0]?.key).toBe('hook:the_value');
+  });
+
+  it('emits hook-listener for wp.hooks.addAction (two-segment receiver)', () => {
+    const sf = parse('src/a.ts', "wp.hooks.addAction('my_event', 'ns', cb);");
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
+    const list = facts.filter((f) => f.kind === 'hook-listener');
+    expect(list).toHaveLength(1);
+    expect(list[0]?.anchors[0]?.key).toBe('hook:my_event');
+  });
+
+  it('emits hook-listener for destructured hooks.addAction', () => {
+    const sf = parse('src/a.ts', "const { hooks } = wp; hooks.addAction('my_event', 'ns', cb);");
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
+    const list = facts.filter((f) => f.kind === 'hook-listener');
+    expect(list).toHaveLength(1);
+  });
 });
