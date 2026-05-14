@@ -30,6 +30,8 @@ final class Visitor extends NodeVisitorAbstract
     public bool $classIsPhpUnit = false;
     /** @var array<int, string> */
     public array $phpUnitBaseClasses = ['PHPUnit\\Framework\\TestCase'];
+    /** @var array<string, string> */
+    private array $defines = [];
 
     /** @var array<string, true> Static PHP language built-ins. */
     private const PHP_BUILTIN_CLASSES = [
@@ -446,7 +448,52 @@ final class Visitor extends NodeVisitorAbstract
             }
             return $out;
         }
+        if ($node instanceof Node\Expr\ConstFetch) {
+            $name = $node->name->toString();
+            if (isset($this->defines[$name])) return $this->defines[$name];
+            return null;
+        }
         return null;
+    }
+
+    /**
+     * Pre-pass walk to populate $defines from top-level `const` and `define()`
+     * calls before the main visitor walks the AST. Visits the SAME AST.
+     *
+     * @param array<int, Node> $ast
+     */
+    public function prePass(array $ast): void
+    {
+        $this->defines = [];
+        $traverser = new NodeTraverser();
+        $defines = &$this->defines;
+        $finder = new class($defines) extends NodeVisitorAbstract {
+            /** @param array<string, string> $defines */
+            public function __construct(private array &$defines) {}
+            public function enterNode(Node $node): void
+            {
+                if ($node instanceof Node\Stmt\Const_) {
+                    foreach ($node->consts as $c) {
+                        if ($c->value instanceof Node\Scalar\String_) {
+                            $this->defines[$c->name->name] = $c->value->value;
+                        }
+                    }
+                    return;
+                }
+                if ($node instanceof Node\Expr\FuncCall
+                    && $node->name instanceof Node\Name
+                    && strtolower($node->name->toString()) === 'define'
+                    && count($node->args) >= 2
+                    && $node->args[0] instanceof Node\Arg
+                    && $node->args[1] instanceof Node\Arg
+                    && $node->args[0]->value instanceof Node\Scalar\String_
+                    && $node->args[1]->value instanceof Node\Scalar\String_) {
+                    $this->defines[$node->args[0]->value->value] = $node->args[1]->value->value;
+                }
+            }
+        };
+        $traverser->addVisitor($finder);
+        $traverser->traverse($ast);
     }
 
     private function readLiteral(?Node $node, string $type): mixed
@@ -524,6 +571,7 @@ while (($line = fgets($stdin)) !== false) {
             if ($ast === null) { emit(['op' => 'facts', 'file' => $file, 'facts' => []]); continue; }
             $visitor = new Visitor($file, $relFile);
             $visitor->phpUnitBaseClasses = $req['phpUnitBaseClasses'] ?? ['PHPUnit\\Framework\\TestCase'];
+            $visitor->prePass($ast);
             $traverser = new NodeTraverser();
             $traverser->addVisitor($visitor);
             $traverser->traverse($ast);

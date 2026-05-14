@@ -219,6 +219,42 @@ class WC_Cart_Test extends WC_Unit_Test_Case {
     expect(fire?.resolved).toBe(false);
   });
 
+  it('resolves ConstFetch via per-file define() table', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+define('TI_HOOK_NAME', 'plugin_init');
+do_action(TI_HOOK_NAME);
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const fire = facts.find((f) => f.kind === 'hook-fire');
+    expect((fire?.payload as { hook?: string }).hook).toBe('plugin_init');
+    expect(fire?.resolved).toBe(true);
+    expect(fire?.anchors[0]?.key).toBe('hook:plugin_init');
+  });
+
+  it('resolves top-level const declarations', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+const TI_HOOK = 'plugin_boot';
+apply_filters(TI_HOOK, null);
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const fire = facts.find((f) => f.kind === 'hook-fire');
+    expect((fire?.payload as { hook?: string }).hook).toBe('plugin_boot');
+    expect(fire?.resolved).toBe(true);
+  });
+
+  it('resolves const declared after use (pre-pass works in both directions)', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+do_action(TI_LATE_HOOK);
+define('TI_LATE_HOOK', 'late_one');
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const fire = facts.find((f) => f.kind === 'hook-fire');
+    expect((fire?.payload as { hook?: string }).hook).toBe('late_one');
+  });
+
   it('test-def uses project-relative paths (not absolute) in testId + anchors', async () => {
     // JS tests use relative paths in their test_id (e.g. `jest:src/foo.test.ts::...`).
     // PHP must match so queries are symmetric and stable across machines.
