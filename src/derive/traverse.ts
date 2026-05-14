@@ -30,6 +30,13 @@ interface QueueItem {
   readonly arrivalResolved: boolean;
 }
 
+// Cadence for the wall-clock bound check inside the BFS hot loop. Checking
+// `now()` every iteration shows up at scale; checking every 1024 iterations
+// keeps overshoot at most ~1024 iterations of CPU work — well under the
+// 5000 ms budget. Overshoot can only *grow* a bounded test's edge set
+// (supersets are allowed under the correctness gate).
+const TIME_CHECK_INTERVAL = 1024;
+
 export function traverseTest(
   graph: Graph,
   index: AnchorIndex,
@@ -39,30 +46,37 @@ export function traverseTest(
   options: TraversalOptions,
 ): TraversalResult {
   const start = options.now();
-  const visitedFacts = new Set<number>();
-  const evidence = new Map<string, EvidenceAgg>();
+  const deadline = start + options.maxMillisPerTest;
+  const enqueued = new Set<number>();
+  // Keyed by file id, not file path — Map<number, X> hashes faster than
+  // Map<string, X> in v8, and the file id is what the BFS already has.
+  // The path is resolved once per source at materialization time below.
+  const evidence = new Map<number, EvidenceAgg>();
   const queue: QueueItem[] = [];
+  let head = 0;
   let bounded = false;
+  let iter = 0;
 
   const testFact = graph.facts.get(testFactId);
   if (!testFact) return { edges: [], bounded: false };
 
   // Seed: every fact in the test's file at depth 0. Test-file facts never
-  // contribute edges (the test file is not a "source").
+  // contribute edges (the test file is not a "source"). Mark them
+  // enqueued so anchor-link cycles can't push them back in.
   const testFileFacts = graph.factsByFile.get(testFact.fileId) ?? [];
   for (const f of testFileFacts) {
+    if (enqueued.has(f.id)) continue;
+    enqueued.add(f.id);
     queue.push({ fact: f, depth: 0, arrivalKind: null, arrivalFactId: null, arrivalResolved: true });
   }
 
-  while (queue.length > 0) {
-    if (options.now() - start > options.maxMillisPerTest) {
+  while (head < queue.length) {
+    if ((iter++ & (TIME_CHECK_INTERVAL - 1)) === 0 && options.now() > deadline) {
       bounded = true;
       break;
     }
-    const cur = queue.shift();
+    const cur = queue[head++];
     if (!cur) continue;
-    if (visitedFacts.has(cur.fact.id)) continue;
-    visitedFacts.add(cur.fact.id);
     if (cur.depth > options.maxDepth) {
       bounded = true;
       continue;
@@ -81,16 +95,18 @@ export function traverseTest(
     ) {
       // Credit the arriving fact (the one that produced the bridge) and this
       // fact (the destination) as evidence for the edge.
-      recordEvidence(evidence, file.path, cur.arrivalKind, cur.arrivalFactId, cur.arrivalResolved);
-      recordEvidence(evidence, file.path, cur.arrivalKind, cur.fact.id, cur.fact.resolved);
+      recordEvidence(evidence, file.id, cur.arrivalKind, cur.arrivalFactId, cur.arrivalResolved);
+      recordEvidence(evidence, file.id, cur.arrivalKind, cur.fact.id, cur.fact.resolved);
     }
 
     // Walk outward through this fact's relations.
-    enqueueDownstream(graph, index, cur.fact, cur.depth, queue, options, frameworkClass);
+    enqueueDownstream(graph, index, cur.fact, cur.depth, queue, enqueued, options, frameworkClass);
   }
 
   const edges: Edge[] = [];
-  for (const [source, agg] of evidence) {
+  for (const [fileId, agg] of evidence) {
+    const sourceFile = graph.files.get(fileId);
+    if (!sourceFile) continue;
     const kinds: Array<{ kind: EdgeKind; factIds: readonly number[] }> = [];
     const baseValues: number[] = [];
     for (const [kind, ids] of agg.kinds) {
@@ -99,7 +115,7 @@ export function traverseTest(
     }
     const confidence = combineConfidence(baseValues);
     if (confidence < options.threshold) continue;
-    edges.push({ testId, source, confidence, partial: agg.partial, evidence: kinds });
+    edges.push({ testId, source: sourceFile.path, confidence, partial: agg.partial, evidence: kinds });
   }
   return { edges, bounded };
 }
@@ -110,6 +126,7 @@ function enqueueDownstream(
   fact: FactRow,
   depth: number,
   queue: QueueItem[],
+  enqueued: Set<number>,
   options: TraversalOptions,
   frameworkClass: 'unit' | 'e2e',
 ): void {
@@ -117,10 +134,12 @@ function enqueueDownstream(
   if (fact.kind === 'import-edge') {
     const resolvedPath = (fact.payload as { resolvedPath?: unknown }).resolvedPath;
     if (typeof resolvedPath === 'string') {
-      const target = findFileByPath(graph, resolvedPath);
+      const target = index.filesByPath.get(resolvedPath);
       if (target) {
         const kind: EdgeKind = 'js-import';
         for (const f of graph.factsByFile.get(target.id) ?? []) {
+          if (enqueued.has(f.id)) continue;
+          enqueued.add(f.id);
           queue.push({ fact: f, depth: depth + 1, arrivalKind: kind, arrivalFactId: fact.id, arrivalResolved: fact.resolved });
         }
       }
@@ -130,10 +149,12 @@ function enqueueDownstream(
   if (fact.kind === 'php-include') {
     const target = (fact.payload as { target?: unknown }).target;
     if (typeof target === 'string') {
-      const file = findFileByPath(graph, target);
+      const file = index.filesByPath.get(target);
       if (file) {
         const kind: EdgeKind = 'php-include';
         for (const f of graph.factsByFile.get(file.id) ?? []) {
+          if (enqueued.has(f.id)) continue;
+          enqueued.add(f.id);
           queue.push({ fact: f, depth: depth + 1, arrivalKind: kind, arrivalFactId: fact.id, arrivalResolved: fact.resolved });
         }
       }
@@ -148,6 +169,8 @@ function enqueueDownstream(
   const links = index.linksByFact.get(fact.id) ?? [];
   for (const link of links) {
     for (const partner of complementaryFactsForRole(index, link.anchorKey, link.role)) {
+      if (enqueued.has(partner.id)) continue;
+      enqueued.add(partner.id);
       queue.push({
         fact: partner,
         depth: depth + 1,
@@ -200,16 +223,16 @@ function bridgeKindFor(
 }
 
 function recordEvidence(
-  store: Map<string, EvidenceAgg>,
-  source: string,
+  store: Map<number, EvidenceAgg>,
+  fileId: number,
   kind: EdgeKind,
   factId: number,
   resolved: boolean,
 ): void {
-  let entry = store.get(source);
+  let entry = store.get(fileId);
   if (!entry) {
     entry = { kinds: new Map(), partial: false };
-    store.set(source, entry);
+    store.set(fileId, entry);
   }
   let ids = entry.kinds.get(kind);
   if (!ids) {
@@ -218,11 +241,6 @@ function recordEvidence(
   }
   ids.add(factId);
   if (!resolved) entry.partial = true;
-}
-
-function findFileByPath(graph: Graph, path: string) {
-  for (const f of graph.files.values()) if (f.path === path) return f;
-  return undefined;
 }
 
 function complementaryFactsForRole(

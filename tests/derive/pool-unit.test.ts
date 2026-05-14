@@ -42,6 +42,7 @@ function tinyGraph(): { graph: Graph; index: AnchorIndex } {
     modulesByAnchor: new Map<AnchorKey, FactRow[]>(),
     callbacksByAnchor: new Map<AnchorKey, FactRow[]>(),
     linksByFact: new Map(),
+    filesByPath: new Map([[testFile.path, testFile], [srcFile.path, srcFile]]),
   };
   return { graph, index };
 }
