@@ -209,6 +209,16 @@ class WC_Cart_Test extends WC_Unit_Test_Case {
     expect(fire?.resolved).toBe(false);
   });
 
+  it('flattens encapsed (interpolated) hook names into a {*} skeleton', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php do_action(\"wp_ajax_{$action}_done\");");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const fire = facts.find((f) => f.kind === 'hook-fire');
+    expect((fire?.payload as { hook?: string }).hook).toBe('wp_ajax_{*}_done');
+    expect(fire?.anchors[0]?.key).toBe('hook:wp_ajax_{*}_done');
+    expect(fire?.resolved).toBe(false);
+  });
+
   it('test-def uses project-relative paths (not absolute) in testId + anchors', async () => {
     // JS tests use relative paths in their test_id (e.g. `jest:src/foo.test.ts::...`).
     // PHP must match so queries are symmetric and stable across machines.

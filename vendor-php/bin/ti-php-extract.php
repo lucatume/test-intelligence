@@ -435,6 +435,17 @@ final class Visitor extends NodeVisitorAbstract
             if ($left === null && $right === null) return '{*}';
             return ($left ?? '{*}') . ($right ?? '{*}');
         }
+        if ($node instanceof Node\Scalar\Encapsed) {
+            $out = '';
+            foreach ($node->parts as $part) {
+                if ($part instanceof Node\Scalar\EncapsedStringPart) {
+                    $out .= $part->value;
+                } else {
+                    $out .= '{*}';
+                }
+            }
+            return $out;
+        }
         return null;
     }
 
