@@ -26,17 +26,32 @@ export interface DeriveOptions {
   readonly workers?: number;
 }
 
+export interface DeriveTimings {
+  readonly loadGraphMs: number;
+  readonly buildIndexMs: number;
+  readonly traverseMs: number;
+  readonly writeMs: number;
+  readonly totalMs: number;
+}
+
 export interface DeriveSummary {
   readonly testsProcessed: number;
   readonly edgesWritten: number;
   readonly testsBounded: number;
+  readonly timings: DeriveTimings;
 }
 
 export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
+  const start = opts.clock.nowMillis();
+  const loadStart = start;
   const graph = loadGraph(opts.db);
+  const loadGraphMs = opts.clock.nowMillis() - loadStart;
+  const indexStart = opts.clock.nowMillis();
   const index = buildAnchorIndex(graph);
+  const buildIndexMs = opts.clock.nowMillis() - indexStart;
   const derivedAt = opts.clock.now();
   const workers = opts.workers ?? 0;
+  const traverseStart = opts.clock.nowMillis();
 
   // Index-keyed array so we can write edges back in graph.tests order even if
   // worker responses arrive out of order. Single-thread mode populates
@@ -87,7 +102,10 @@ export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
     }
   }
 
-  const tx = opts.db.transaction((): DeriveSummary => {
+  const traverseMs = opts.clock.nowMillis() - traverseStart;
+
+  const writeStart = opts.clock.nowMillis();
+  const tx = opts.db.transaction((): { testsProcessed: number; edgesWritten: number; testsBounded: number } => {
     clearAllEdges(opts.db);
 
     let testsProcessed = 0;
@@ -119,5 +137,12 @@ export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
     return { testsProcessed, edgesWritten, testsBounded };
   });
 
-  return tx();
+  const counts = tx();
+  const writeMs = opts.clock.nowMillis() - writeStart;
+  const totalMs = opts.clock.nowMillis() - start;
+
+  return {
+    ...counts,
+    timings: { loadGraphMs, buildIndexMs, traverseMs, writeMs, totalMs },
+  };
 }

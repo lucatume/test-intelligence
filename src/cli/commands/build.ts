@@ -1,12 +1,14 @@
 import type { Io } from '../io.js';
 import { runBuild } from '../../build/run.js';
 import { systemClock } from '../../clock.js';
+import type { TimingFlags } from '../parseArgv.js';
 import { loadEffectiveConfig } from './loadConfig.js';
 
 export interface BuildCommandArgs {
   readonly projectRoot: string;
   readonly io: Io;
   readonly verbosity: 'quiet' | 'normal' | 'verbose';
+  readonly timing?: TimingFlags;
   readonly repoRoot?: string;
 }
 
@@ -19,6 +21,7 @@ export async function buildCommand(args: BuildCommandArgs): Promise<number> {
     clock: systemClock,
     stderr: args.io.stderr,
     verbosity: args.verbosity,
+    ...(args.timing !== undefined ? { timing: { emit: args.timing.emit, topN: args.timing.topN } } : {}),
     ...(args.repoRoot !== undefined ? { repoRoot: args.repoRoot } : {}),
   });
   if (r.kind === 'err') {

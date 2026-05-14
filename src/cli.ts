@@ -27,6 +27,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         projectRoot: process.cwd(),
         io,
         verbosity: cmd.verbosity,
+        timing: cmd.timing,
       });
     case 'update':
       return (await import('./cli/commands/update.js')).updateCommand({
@@ -34,6 +35,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         io,
         verbosity: cmd.verbosity,
         paths: cmd.paths,
+        timing: cmd.timing,
       });
     case 'tests':
       return (await import('./cli/commands/tests.js')).testsCommand({

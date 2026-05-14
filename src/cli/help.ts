@@ -21,6 +21,8 @@ QUERY
 
 DEBUG / INTROSPECTION
   ti config                       Print effective merged config.
+  ti build|update --timing        Append a per-phase timing breakdown.
+  ti build|update --timing-top=N  Same, plus the N slowest extracted files.
   ti --help, -h
   ti --version, -V
 `;

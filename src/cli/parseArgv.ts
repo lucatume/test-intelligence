@@ -1,10 +1,20 @@
+export interface TimingFlags {
+  readonly emit: boolean;
+  readonly topN: number;
+}
+
 export type ParsedCommand =
   | { kind: 'help' }
   | { kind: 'version' }
   | { kind: 'init' }
   | { kind: 'config' }
-  | { kind: 'build'; verbosity: 'quiet' | 'normal' | 'verbose' }
-  | { kind: 'update'; paths: readonly string[]; verbosity: 'quiet' | 'normal' | 'verbose' }
+  | { kind: 'build'; verbosity: 'quiet' | 'normal' | 'verbose'; timing: TimingFlags }
+  | {
+      kind: 'update';
+      paths: readonly string[];
+      verbosity: 'quiet' | 'normal' | 'verbose';
+      timing: TimingFlags;
+    }
   | {
       kind: 'tests';
       sources: readonly string[];
@@ -36,12 +46,15 @@ export function parseArgv(argv: readonly string[]): ParsedCommand {
   if (first === '--version' || first === '-V') return { kind: 'version' };
   if (first === 'init') return { kind: 'init' };
   if (first === 'config') return { kind: 'config' };
-  if (first === 'build') return { kind: 'build', verbosity: pickVerbosity(rest) };
+  if (first === 'build') {
+    return { kind: 'build', verbosity: pickVerbosity(rest), timing: pickTiming(rest) };
+  }
   if (first === 'update') {
     return {
       kind: 'update',
       paths: rest.filter((a) => !a.startsWith('-')),
       verbosity: pickVerbosity(rest),
+      timing: pickTiming(rest),
     };
   }
   if (first === 'tests') return parseTestsCmd(rest);
@@ -99,6 +112,22 @@ function parseSourcesCmd(rest: readonly string[]): ParsedCommand {
     minConfidence: pickMinConfidence(rest),
     strict: rest.includes('--strict'),
   };
+}
+
+function pickTiming(args: readonly string[]): TimingFlags {
+  let emit = false;
+  let topN = 0;
+  for (const a of args) {
+    if (a === '--timing') emit = true;
+    else if (a.startsWith('--timing-top=')) {
+      const v = Number(a.slice('--timing-top='.length));
+      if (Number.isFinite(v) && v > 0) {
+        emit = true;
+        topN = Math.floor(v);
+      }
+    }
+  }
+  return { emit, topN };
 }
 
 function pickVerbosity(args: readonly string[]): 'quiet' | 'normal' | 'verbose' {

@@ -27,13 +27,21 @@ import { parseProjectRelativePath } from '../paths.js';
 import { parseAnchor } from '../anchors/parse.js';
 import { derive } from '../derive/derive.js';
 import { HOOK_STOP_LIST_BUILTINS, type ValidatedConfig } from '../config/parse.js';
-import type { BuildOptions, BuildSummary, BuildError } from './types.js';
+import type { BuildOptions, BuildSummary, BuildError, BuildTimings, SlowFile } from './types.js';
 import type { DiscoveredFile } from '../discover/types.js';
 
 export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary, BuildError>> {
   const startMs = opts.clock.nowMillis();
   const verbosity = opts.verbosity ?? 'normal';
+  const topN = Math.max(0, opts.timing?.topN ?? 0);
+  const emitTiming = opts.timing?.emit === true;
+  const slowest = new SlowestTracker(topN);
+  let extractTsMs = 0;
+  let extractPhpMs = 0;
+  let extractTsFiles = 0;
+  let extractPhpFiles = 0;
 
+  const lockStart = opts.clock.nowMillis();
   const sRes = openStore(opts.projectRoot);
   if (sRes.kind === 'err') return err({ kind: 'BuildError', message: sRes.error.message });
   const { db, close } = sRes.value;
@@ -46,6 +54,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
     close();
     return err({ kind: 'BuildError', message: `lock: ${lockRes.error.kind}` });
   }
+  const lockMs = opts.clock.nowMillis() - lockStart;
 
   try {
 
@@ -55,6 +64,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
     let worker: PhpWorker | undefined;
 
     try {
+      const setupStart = opts.clock.nowMillis();
       const repoRoot = opts.repoRoot ?? resolveRepoRoot();
       const phpWorkers = resolvePhpWorkers(opts.config.concurrency.phpWorkers);
       if (mayHavePhp(opts) && hasPhpAvailable()) {
@@ -68,6 +78,8 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
           );
         }
       }
+      const setupMs = opts.clock.nowMillis() - setupStart;
+      const extractPhaseStart = opts.clock.nowMillis();
 
       const compilerOptionsResolver = new CompilerOptionsResolver(opts.projectRoot);
       const source = opts.onlyPaths !== undefined
@@ -95,6 +107,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
             const compilerOptions = compilerOptionsResolver.forFile(
               join(opts.projectRoot, file.path),
             );
+            const extractStart = opts.clock.nowMillis();
             const r = await extractFile({
               projectRoot: opts.projectRoot,
               path: file.path,
@@ -104,6 +117,15 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
               patterns: [],
               ...(worker !== undefined ? { phpWorker: worker } : {}),
             });
+            const extractElapsed = opts.clock.nowMillis() - extractStart;
+            if (file.language === 'php') {
+              extractPhpMs += extractElapsed;
+              extractPhpFiles++;
+            } else {
+              extractTsMs += extractElapsed;
+              extractTsFiles++;
+            }
+            if (topN > 0) slowest.consider({ path: file.path, language: file.language, millis: extractElapsed });
             if (r.kind === 'err') {
               if (verbosity !== 'quiet') {
                 opts.stderr.write(`ti: extract failed ${file.path}: ${r.error.message}\n`);
@@ -160,11 +182,13 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
         })());
       }
       await Promise.all(lanes);
+      const extractPhaseMs = opts.clock.nowMillis() - extractPhaseStart;
 
       const stopList = new Set<string>(HOOK_STOP_LIST_BUILTINS);
       for (const h of opts.config.hooks.stopList.add) stopList.add(h);
       for (const h of opts.config.hooks.stopList.remove) stopList.delete(h);
 
+      const derivePhaseStart = opts.clock.nowMillis();
       const deriveSummary = await derive({
         db,
         clock: opts.clock,
@@ -176,8 +200,25 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
         },
         workers: resolveDeriveWorkers(opts.config.concurrency.deriveWorkers),
       });
+      const derivePhaseMs = opts.clock.nowMillis() - derivePhaseStart;
 
       const elapsedMillis = opts.clock.nowMillis() - startMs;
+      const timings: BuildTimings = {
+        lockMs,
+        setupMs,
+        extractPhaseMs,
+        extractTsMs,
+        extractPhpMs,
+        extractTsFiles,
+        extractPhpFiles,
+        derivePhaseMs,
+        deriveLoadGraphMs: deriveSummary.timings.loadGraphMs,
+        deriveBuildIndexMs: deriveSummary.timings.buildIndexMs,
+        deriveTraverseMs: deriveSummary.timings.traverseMs,
+        deriveWriteMs: deriveSummary.timings.writeMs,
+        totalMs: elapsedMillis,
+        slowestFiles: slowest.snapshot(),
+      };
       const summary: BuildSummary = {
         filesExtracted,
         factsInserted,
@@ -185,6 +226,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
         edgesWritten: deriveSummary.edgesWritten,
         testsBounded: deriveSummary.testsBounded,
         elapsedMillis,
+        timings,
       };
       if (verbosity !== 'quiet') {
         opts.stderr.write(
@@ -193,6 +235,9 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
           (deriveSummary.testsBounded > 0 ? ` (${String(deriveSummary.testsBounded)} bounded)` : '') +
           ` in ${String(elapsedMillis)}ms\n`,
         );
+        if (emitTiming) {
+          opts.stderr.write(formatTimings(timings));
+        }
       }
       return ok(summary);
     } finally {
@@ -202,6 +247,60 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
   } finally {
     releaseLock(opts.projectRoot);
   }
+}
+
+// Bounded "top N by millis" — small enough that a linear scan beats a heap.
+// Empty when capacity is 0, which is the default (collection opt-in).
+class SlowestTracker {
+  private readonly capacity: number;
+  private readonly items: SlowFile[] = [];
+
+  constructor(capacity: number) {
+    this.capacity = capacity;
+  }
+
+  consider(item: SlowFile): void {
+    if (this.capacity <= 0) return;
+    if (this.items.length < this.capacity) {
+      this.items.push(item);
+      return;
+    }
+    // Find the current minimum slot; replace it if the new item is slower.
+    let minIdx = 0;
+    let minMs = this.items[0]?.millis ?? 0;
+    for (let i = 1; i < this.items.length; i++) {
+      const m = this.items[i]?.millis ?? 0;
+      if (m < minMs) {
+        minMs = m;
+        minIdx = i;
+      }
+    }
+    if (item.millis > minMs) this.items[minIdx] = item;
+  }
+
+  snapshot(): readonly SlowFile[] {
+    return [...this.items].sort((a, b) => b.millis - a.millis);
+  }
+}
+
+function formatTimings(t: BuildTimings): string {
+  let out = `ti: timings — lock ${String(t.lockMs)}ms, setup ${String(t.setupMs)}ms, ` +
+    `extract ${String(t.extractPhaseMs)}ms ` +
+    `(ts ${String(t.extractTsMs)}ms/${String(t.extractTsFiles)} files, ` +
+    `php ${String(t.extractPhpMs)}ms/${String(t.extractPhpFiles)} files), ` +
+    `derive ${String(t.derivePhaseMs)}ms ` +
+    `(loadGraph ${String(t.deriveLoadGraphMs)}ms, ` +
+    `buildIndex ${String(t.deriveBuildIndexMs)}ms, ` +
+    `traverse ${String(t.deriveTraverseMs)}ms, ` +
+    `write ${String(t.deriveWriteMs)}ms), ` +
+    `total ${String(t.totalMs)}ms\n`;
+  if (t.slowestFiles.length > 0) {
+    out += `ti: slowest extracts (top ${String(t.slowestFiles.length)}):\n`;
+    for (const f of t.slowestFiles) {
+      out += `  ${f.path}\t${f.language}\t${String(f.millis)}ms\n`;
+    }
+  }
+  return out;
 }
 
 function toAsyncIterator<T>(src: AsyncIterable<T> | Iterable<T>): AsyncIterator<T> {
