@@ -255,6 +255,60 @@ define('TI_LATE_HOOK', 'late_one');
     expect((fire?.payload as { hook?: string }).hook).toBe('late_one');
   });
 
+  it('resolves self::CONST inside a class body', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+class TiPluginA {
+  const HOOK = 'plugin_init';
+  public function boot(): void {
+    add_action(self::HOOK, [$this, 'run']);
+  }
+  public function run(): void {}
+}
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const listener = facts.find((f) => f.kind === 'hook-listener');
+    expect((listener?.payload as { hook?: string }).hook).toBe('plugin_init');
+    expect(listener?.resolved).toBe(true);
+    expect(listener?.anchors[0]?.key).toBe('hook:plugin_init');
+  });
+
+  it('resolves Class::CONST when class is declared in the same file', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+namespace Acme;
+class HookNames {
+  const ORDER_SAVED = 'order_saved';
+}
+class PluginB {
+  public function boot(): void {
+    add_action(HookNames::ORDER_SAVED, [$this, 'onSaved']);
+  }
+  public function onSaved(): void {}
+}
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const listener = facts.find((f) => f.kind === 'hook-listener');
+    expect((listener?.payload as { hook?: string }).hook).toBe('order_saved');
+    expect(listener?.resolved).toBe(true);
+  });
+
+  it('leaves the fact unresolved when class const cannot be found', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+class PluginC {
+  public function boot(): void {
+    add_action(External::HOOK, [$this, 'run']);
+  }
+  public function run(): void {}
+}
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const listener = facts.find((f) => f.kind === 'hook-listener');
+    // External::HOOK is unknown -> readStringSkeleton returns null -> field absent, resolved=false
+    expect(listener?.resolved).toBe(false);
+  });
+
   it('test-def uses project-relative paths (not absolute) in testId + anchors', async () => {
     // JS tests use relative paths in their test_id (e.g. `jest:src/foo.test.ts::...`).
     // PHP must match so queries are symmetric and stable across machines.

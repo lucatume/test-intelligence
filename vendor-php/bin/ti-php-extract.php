@@ -32,6 +32,8 @@ final class Visitor extends NodeVisitorAbstract
     public array $phpUnitBaseClasses = ['PHPUnit\\Framework\\TestCase'];
     /** @var array<string, string> */
     private array $defines = [];
+    /** @var array<string, array<string, string>> */
+    private array $classConsts = [];
 
     /** @var array<string, true> Static PHP language built-ins. */
     private const PHP_BUILTIN_CLASSES = [
@@ -453,6 +455,30 @@ final class Visitor extends NodeVisitorAbstract
             if (isset($this->defines[$name])) return $this->defines[$name];
             return null;
         }
+        if ($node instanceof Node\Expr\ClassConstFetch) {
+            if (!$node->name instanceof Node\Identifier) return null;
+            $constName = $node->name->name;
+            if (!($node->class instanceof Node\Name)) return null;
+            $raw = $node->class->toString();
+            $lower = strtolower($raw);
+            // self/static: resolve against current class stack lexically.
+            // resolveClassName would (wrongly) prepend the namespace, so
+            // short-circuit here before any normalization.
+            if (!$node->class->isFullyQualified() && ($lower === 'self' || $lower === 'static')) {
+                $current = end($this->classStack);
+                if ($current !== false && isset($this->classConsts[$current][$constName])) {
+                    return $this->classConsts[$current][$constName];
+                }
+                return null;
+            }
+            // parent::CONST not handled in v1; would need a parent-class index.
+            if (!$node->class->isFullyQualified() && $lower === 'parent') return null;
+            $className = $this->resolveClassName($node->class);
+            if (isset($this->classConsts[$className][$constName])) {
+                return $this->classConsts[$className][$constName];
+            }
+            return null;
+        }
         return null;
     }
 
@@ -465,13 +491,43 @@ final class Visitor extends NodeVisitorAbstract
     public function prePass(array $ast): void
     {
         $this->defines = [];
+        $this->classConsts = [];
         $traverser = new NodeTraverser();
         $defines = &$this->defines;
-        $finder = new class($defines) extends NodeVisitorAbstract {
-            /** @param array<string, string> $defines */
-            public function __construct(private array &$defines) {}
+        $classConsts = &$this->classConsts;
+        $finder = new class($defines, $classConsts) extends NodeVisitorAbstract {
+            private ?string $ns = null;
+            /** @var list<string> */
+            private array $stack = [];
+
+            /**
+             * @param array<string, string> $defines
+             * @param array<string, array<string, string>> $classConsts
+             */
+            public function __construct(private array &$defines, private array &$classConsts) {}
             public function enterNode(Node $node): void
             {
+                if ($node instanceof Node\Stmt\Namespace_) {
+                    $this->ns = $node->name?->toString();
+                    return;
+                }
+                if ($node instanceof Node\Stmt\ClassLike && $node->name !== null) {
+                    $fqn = $this->ns !== null ? $this->ns . '\\' . $node->name->name : $node->name->name;
+                    $this->stack[] = $fqn;
+                    $this->classConsts[$fqn] ??= [];
+                    return;
+                }
+                if ($node instanceof Node\Stmt\ClassConst) {
+                    $current = end($this->stack);
+                    if ($current !== false) {
+                        foreach ($node->consts as $c) {
+                            if ($c->value instanceof Node\Scalar\String_) {
+                                $this->classConsts[$current][$c->name->name] = $c->value->value;
+                            }
+                        }
+                    }
+                    return;
+                }
                 if ($node instanceof Node\Stmt\Const_) {
                     foreach ($node->consts as $c) {
                         if ($c->value instanceof Node\Scalar\String_) {
@@ -490,6 +546,12 @@ final class Visitor extends NodeVisitorAbstract
                     && $node->args[1]->value instanceof Node\Scalar\String_) {
                     $this->defines[$node->args[0]->value->value] = $node->args[1]->value->value;
                 }
+            }
+
+            public function leaveNode(Node $node): void
+            {
+                if ($node instanceof Node\Stmt\Namespace_) $this->ns = null;
+                if ($node instanceof Node\Stmt\ClassLike) array_pop($this->stack);
             }
         };
         $traverser->addVisitor($finder);
