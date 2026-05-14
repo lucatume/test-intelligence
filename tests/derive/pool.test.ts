@@ -21,6 +21,7 @@ import { parseAnchor } from '../../src/anchors/parse.js';
 import { derive } from '../../src/derive/derive.js';
 import { systemClock } from '../../src/clock.js';
 import { useTmpDir } from '../helpers/tmpDir.js';
+import type { Database as BetterDatabase } from 'better-sqlite3';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
@@ -30,43 +31,42 @@ function write(root: string, rel: string, body: string): void {
   writeFileSync(full, body);
 }
 
-describe.skipIf(!hasPhpAvailable())('derive end-to-end', () => {
-  const getTmp = useTmpDir('ti-derive-');
-  let worker: PhpWorker;
+interface EdgeRow {
+  test_id: string;
+  source: string;
+  confidence: number;
+  partial: number;
+}
+
+function snapshotEdges(db: BetterDatabase): EdgeRow[] {
+  const rows = db
+    .prepare('SELECT test_id, source, confidence, partial FROM edge ORDER BY test_id, source')
+    .all() as EdgeRow[];
+  return rows;
+}
+
+describe.skipIf(!hasPhpAvailable())('derive worker pool — byte equality', () => {
+  const getTmp = useTmpDir('ti-derive-pool-');
+  let phpWorker: PhpWorker;
 
   beforeAll(async () => {
     const r = startPhpWorker({ repoRoot });
     if (r.kind !== 'ok') throw new Error(r.error.message);
-    worker = r.value;
-    await worker.registerPatterns(WP_PHP_PATTERNS);
+    phpWorker = r.value;
+    await phpWorker.registerPatterns(WP_PHP_PATTERNS);
   });
-  afterAll(async () => { await worker.shutdown(); });
+  afterAll(async () => { await phpWorker.shutdown(); });
 
-  it('produces test→source edges across WP boundaries', async () => {
-    const root = getTmp();
-    write(root, 'plugin.php', `<?php
-add_action('wp_ajax_get_cart', 'handle_get_cart');
-function handle_get_cart() {}
-`);
-    write(root, 'src/client.ts', `
-import { sendRequest } from './shared';
-jQuery.ajax({ url: ajaxurl, data: { action: 'get_cart' } });
-export function clientFn() { sendRequest(); }
-`);
-    write(root, 'src/shared.ts', `export function sendRequest() {}`);
-    write(root, 'tests/cart.e2e.spec.ts', `
-import { clientFn } from '../src/client';
-import { test } from '@playwright/test';
-test('cart flow', async () => { clientFn(); });
-`);
-
+  // Helper that builds the same fixture, then runs derive twice (once
+  // in-process, once with N workers) on an isolated copy of the data, and
+  // returns both edge snapshots for direct comparison.
+  async function buildAndDerive(workers: number, root: string): Promise<EdgeRow[]> {
     const cfgRes = parseConfig({
       tests: { playwright: { fileGlobs: ['tests/**/*.e2e.spec.ts'] } },
       confidence: { threshold: 0 },
     });
     if (cfgRes.kind === 'err') throw new Error('config');
     const cfg = cfgRes.value;
-
     const opts = synthesizeCompilerOptions(root);
     const sRes = openStore(root);
     if (sRes.kind === 'err') throw new Error(sRes.error.message);
@@ -91,7 +91,7 @@ test('cart flow', async () => { clientFn(); });
           framework: file.framework,
           compilerOptions: opts,
           patterns: [],
-          phpWorker: worker,
+          phpWorker,
         });
         if (r.kind !== 'ok') continue;
         for (const f of r.value) {
@@ -121,11 +121,10 @@ test('cart flow', async () => { clientFn(); });
           }
         }
       }
-
       const stopList = new Set<string>(HOOK_STOP_LIST_BUILTINS);
       for (const h of cfg.hooks.stopList.add) stopList.add(h);
       for (const h of cfg.hooks.stopList.remove) stopList.delete(h);
-      const summary = await derive({
+      await derive({
         db,
         params: {
           maxDepth: cfg.traversal.maxDepth,
@@ -134,16 +133,54 @@ test('cart flow', async () => { clientFn(); });
           hookStopList: stopList,
         },
         clock: systemClock,
+        workers,
       });
-      expect(summary.testsProcessed).toBeGreaterThan(0);
-      expect(summary.edgesWritten).toBeGreaterThan(0);
-
-      const sources = (db.prepare('SELECT DISTINCT source FROM edge').all() as Array<{ source: string }>)
-        .map((r) => r.source)
-        .sort();
-      expect(sources).toContain('src/client.ts');
-      expect(sources).toContain('src/shared.ts');
-      expect(sources).toContain('plugin.php');
+      return snapshotEdges(db);
     } finally { close(); }
+  }
+
+  it('produces identical edges with workers=0 and workers=2', async () => {
+    // Synthetic project that exercises php-include, JS imports, hook bridges,
+    // ajax bridges, REST bridges + multi-test traversal. Same project is
+    // built twice from scratch, then derive runs in-process vs with 2 workers.
+    function fixture(root: string): void {
+      write(root, 'plugin.php', `<?php
+add_action('wp_ajax_get_cart', 'handle_get_cart');
+function handle_get_cart() {}
+register_rest_route('p/v1', '/items', array());
+`);
+      write(root, 'src/client.ts', `
+import { sendRequest } from './shared';
+jQuery.ajax({ url: ajaxurl, data: { action: 'get_cart' } });
+fetch('/wp-json/p/v1/items');
+export function clientFn() { sendRequest(); }
+`);
+      write(root, 'src/shared.ts', `export function sendRequest() {}`);
+      for (let i = 0; i < 6; i++) {
+        write(root, `tests/cart${String(i)}.e2e.spec.ts`, `
+import { clientFn } from '../src/client';
+import { test } from '@playwright/test';
+test('flow ${String(i)}', async () => { clientFn(); });
+`);
+      }
+    }
+
+    const rootA = getTmp();
+    fixture(rootA);
+    const baseline = await buildAndDerive(0, rootA);
+    expect(baseline.length).toBeGreaterThan(0);
+
+    // Re-build a fresh copy so the two runs do not share .test-intelligence
+    // state and both populate the store identically before running derive.
+    const fs = await import('node:fs/promises');
+    const os = await import('node:os');
+    const rootB = await fs.mkdtemp(join(os.tmpdir(), 'ti-derive-pool-b-'));
+    try {
+      fixture(rootB);
+      const parallel = await buildAndDerive(2, rootB);
+      expect(parallel).toEqual(baseline);
+    } finally {
+      await fs.rm(rootB, { recursive: true, force: true });
+    }
   });
 });

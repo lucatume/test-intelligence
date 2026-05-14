@@ -165,7 +165,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       for (const h of opts.config.hooks.stopList.add) stopList.add(h);
       for (const h of opts.config.hooks.stopList.remove) stopList.delete(h);
 
-      const deriveSummary = derive({
+      const deriveSummary = await derive({
         db,
         clock: opts.clock,
         params: {
@@ -174,6 +174,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
           threshold: opts.config.confidence.threshold,
           hookStopList: stopList,
         },
+        workers: resolveDeriveWorkers(opts.config.concurrency.deriveWorkers),
       });
 
       const elapsedMillis = opts.clock.nowMillis() - startMs;
@@ -225,6 +226,17 @@ function resolvePhpWorkers(configured: number | undefined): number {
     return Math.min(Math.max(cpus().length - 2, 1), 8);
   }
   return Math.max(configured, 1);
+}
+
+// Resolve the derive worker_threads pool size. Default: cpus-2 clamped to
+// [0,8]. 0 disables workers and runs traversal in-process — that is the right
+// default for tiny projects where worker startup + structured-clone of the
+// graph dominates BFS time.
+function resolveDeriveWorkers(configured: number | undefined): number {
+  if (configured === undefined) {
+    return Math.min(Math.max(cpus().length - 2, 0), 8);
+  }
+  return Math.max(configured, 0);
 }
 
 function* listFromPaths(
