@@ -56,6 +56,19 @@ export interface ConcurrencyConfig {
   readonly deriveWorkers?: number;
 }
 
+// Per-bundle toggles for the built-in ignore defaults. Each defaults to true
+// — disabling a bundle removes its globs from the effective ignore list.
+// The baseline (node_modules, .git, dist, build) is unconditional and cannot
+// be disabled here; a user who really wants to scan node_modules can add a
+// custom `ignore` entry layout, but the safe default is non-negotiable.
+export interface IgnoreDefaultsConfig {
+  readonly agenticWorktrees: boolean;
+  readonly toolDirs: boolean;
+  readonly testArtifacts: boolean;
+  readonly buildCaches: boolean;
+  readonly minified: boolean;
+}
+
 // Extractor entries are kept as opaque values in Plan A; Plan C tightens the schema.
 export type ExtractorEntry = unknown;
 
@@ -67,6 +80,7 @@ export interface ValidatedConfig {
   readonly traversal: TraversalConfig;
   readonly concurrency: ConcurrencyConfig;
   readonly ignore: readonly string[];
+  readonly ignoreDefaults: IgnoreDefaultsConfig;
   readonly vendor: readonly string[];
   readonly allowSymlinkTargets: readonly string[];
 }
@@ -82,6 +96,7 @@ export type UserConfig = Partial<{
   traversal: unknown;
   concurrency: unknown;
   ignore: readonly string[];
+  ignoreDefaults: Partial<IgnoreDefaultsConfig>;
   vendor: readonly string[];
   allowSymlinkTargets: readonly string[];
 }>;
@@ -94,18 +109,94 @@ const DEFAULT_JEST_FILE_GLOBS: readonly string[] = [
 ];
 // Patterns are doubled (`**/X` + `**/X/**`) so the walker prunes the directory
 // entry itself (no recursion) and also filters any descendant that slips through.
-// Monorepos (pnpm/Yarn workspaces) put node_modules under every package, so
-// anchoring at the project root is not enough.
-const DEFAULT_IGNORE: readonly string[] = [
-  '**/node_modules',
-  '**/node_modules/**',
-  '**/dist',
-  '**/dist/**',
-  '**/build',
-  '**/build/**',
-  '**/.git',
-  '**/.git/**',
+// Monorepos (pnpm/Yarn workspaces) put dependency / build dirs under every
+// package, so anchoring at the project root is not enough.
+function dirGlobs(name: string): readonly string[] {
+  return [`**/${name}`, `**/${name}/**`];
+}
+
+// Unconditional defaults — present regardless of ignoreDefaults toggles.
+const IGNORE_BASELINE: readonly string[] = [
+  ...dirGlobs('node_modules'),
+  ...dirGlobs('dist'),
+  ...dirGlobs('build'),
+  ...dirGlobs('.git'),
 ];
+
+// Bundle: agentic worktrees. Claude Code defaults to `.claude/worktrees`;
+// obra/superpowers uses `.worktrees`; Codex / generic guides recommend a
+// sibling `worktrees/` dir. All three live inside the repo and confuse
+// extraction because they contain a complete duplicate of the codebase.
+const IGNORE_AGENTIC_WORKTREES: readonly string[] = [
+  '**/.claude/worktrees',
+  '**/.claude/worktrees/**',
+  ...dirGlobs('.worktrees'),
+  ...dirGlobs('worktrees'),
+];
+
+// Bundle: vendored tool dirs (JS toolchain).
+// .yarn/{cache,releases,unplugged,sdks} — Yarn Berry zero-installs + binary.
+// .pnp.* — Yarn PnP loader files (cjs/mjs/data.json).
+// .bun, .pnpm-store — bun cache, pnpm content-addressable store.
+const IGNORE_TOOL_DIRS: readonly string[] = [
+  ...dirGlobs('.yarn/cache'),
+  ...dirGlobs('.yarn/releases'),
+  ...dirGlobs('.yarn/unplugged'),
+  ...dirGlobs('.yarn/sdks'),
+  '**/.yarn/install-state.gz',
+  '**/.yarn/build-state.yml',
+  '**/.pnp.*',
+  ...dirGlobs('.bun'),
+  ...dirGlobs('.pnpm-store'),
+];
+
+// Bundle: test artifacts emitted by playwright / cypress / coverage tools.
+const IGNORE_TEST_ARTIFACTS: readonly string[] = [
+  ...dirGlobs('playwright-report'),
+  ...dirGlobs('test-results'),
+  ...dirGlobs('blob-report'),
+  ...dirGlobs('playwright/.cache'),
+  ...dirGlobs('cypress/videos'),
+  ...dirGlobs('cypress/screenshots'),
+  ...dirGlobs('cypress/downloads'),
+  ...dirGlobs('coverage'),
+  ...dirGlobs('.nyc_output'),
+];
+
+// Bundle: framework build/cache dirs that hold generated code or assets.
+const IGNORE_BUILD_CACHES: readonly string[] = [
+  ...dirGlobs('.next'),
+  ...dirGlobs('.nuxt'),
+  ...dirGlobs('.svelte-kit'),
+  ...dirGlobs('.turbo'),
+  ...dirGlobs('.parcel-cache'),
+  ...dirGlobs('.vercel'),
+  ...dirGlobs('.netlify'),
+  ...dirGlobs('.cache'),
+  ...dirGlobs('.angular'),
+];
+
+// Bundle: minified bundles. Parsing them is slow and they rarely contribute
+// useful test↔source edges. Disable via ignoreDefaults.minified=false if you
+// genuinely need them indexed.
+const IGNORE_MINIFIED: readonly string[] = [
+  '**/*.min.js',
+  '**/*.min.mjs',
+  '**/*.min.cjs',
+  '**/*.min.jsx',
+  '**/*.min.ts',
+  '**/*.min.tsx',
+  '**/*.min.css',
+];
+
+const DEFAULT_IGNORE_TOGGLES: IgnoreDefaultsConfig = {
+  agenticWorktrees: true,
+  toolDirs: true,
+  testArtifacts: true,
+  buildCaches: true,
+  minified: true,
+};
+
 const DEFAULT_VENDOR: readonly string[] = ['**/vendor', '**/vendor/**'];
 const DEFAULT_MAX_DEPTH = 25;
 const DEFAULT_MAX_MILLIS_PER_TEST = 5000;
@@ -214,6 +305,17 @@ const concurrencySchema = P.object(
   { strict: true },
 );
 
+const ignoreDefaultsSchema = P.object(
+  {
+    agenticWorktrees: P.optional(P.boolean),
+    toolDirs: P.optional(P.boolean),
+    testArtifacts: P.optional(P.boolean),
+    buildCaches: P.optional(P.boolean),
+    minified: P.optional(P.boolean),
+  },
+  { strict: true },
+);
+
 const rootSchema = P.object(
   {
     tests: P.optional(testsSchema),
@@ -223,6 +325,7 @@ const rootSchema = P.object(
     traversal: P.optional(traversalSchema),
     concurrency: P.optional(concurrencySchema),
     ignore: P.optional(P.array(P.string)),
+    ignoreDefaults: P.optional(ignoreDefaultsSchema),
     vendor: P.optional(P.array(P.string)),
     allowSymlinkTargets: P.optional(P.array(P.string)),
   },
@@ -291,9 +394,43 @@ export function parseConfig(raw: unknown): ParseResult<ValidatedConfig> {
       maxMillisPerTest: r.traversal?.maxMillisPerTest ?? DEFAULT_MAX_MILLIS_PER_TEST,
     },
     concurrency,
-    ignore: r.ignore ?? DEFAULT_IGNORE,
+    ignore: computeEffectiveIgnore(r.ignore, r.ignoreDefaults),
+    ignoreDefaults: resolveIgnoreDefaults(r.ignoreDefaults),
     vendor: r.vendor ?? DEFAULT_VENDOR,
     allowSymlinkTargets: r.allowSymlinkTargets ?? [],
   };
   return ok(value);
+}
+
+interface RawToggles {
+  readonly agenticWorktrees?: boolean | undefined;
+  readonly toolDirs?: boolean | undefined;
+  readonly testArtifacts?: boolean | undefined;
+  readonly buildCaches?: boolean | undefined;
+  readonly minified?: boolean | undefined;
+}
+
+function resolveIgnoreDefaults(raw: RawToggles | undefined): IgnoreDefaultsConfig {
+  return {
+    agenticWorktrees: raw?.agenticWorktrees ?? DEFAULT_IGNORE_TOGGLES.agenticWorktrees,
+    toolDirs: raw?.toolDirs ?? DEFAULT_IGNORE_TOGGLES.toolDirs,
+    testArtifacts: raw?.testArtifacts ?? DEFAULT_IGNORE_TOGGLES.testArtifacts,
+    buildCaches: raw?.buildCaches ?? DEFAULT_IGNORE_TOGGLES.buildCaches,
+    minified: raw?.minified ?? DEFAULT_IGNORE_TOGGLES.minified,
+  };
+}
+
+function computeEffectiveIgnore(
+  userAdditions: readonly string[] | undefined,
+  rawToggles: RawToggles | undefined,
+): readonly string[] {
+  const toggles = resolveIgnoreDefaults(rawToggles);
+  const out: string[] = [...IGNORE_BASELINE];
+  if (toggles.agenticWorktrees) out.push(...IGNORE_AGENTIC_WORKTREES);
+  if (toggles.toolDirs) out.push(...IGNORE_TOOL_DIRS);
+  if (toggles.testArtifacts) out.push(...IGNORE_TEST_ARTIFACTS);
+  if (toggles.buildCaches) out.push(...IGNORE_BUILD_CACHES);
+  if (toggles.minified) out.push(...IGNORE_MINIFIED);
+  if (userAdditions !== undefined) out.push(...userAdditions);
+  return out;
 }

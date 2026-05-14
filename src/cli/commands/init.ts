@@ -223,7 +223,10 @@ ${testsBlock}
   // confidence: { weights: {}, threshold: 0.0 },
   // traversal: { maxDepth: 25, maxMillisPerTest: 5000 },
   // concurrency: { phpWorkers: undefined, tsWorkers: undefined, deriveWorkers: undefined },
-  // ignore: ['**/node_modules', '**/node_modules/**', '**/dist', '**/dist/**', '**/build', '**/build/**', '**/.git', '**/.git/**'],
+  // ignore extends the built-in default ignore bundles. Toggle individual
+  // bundles with ignoreDefaults (each defaults to true).
+  // ignore: ['**/my-output', '**/my-output/**'],
+  // ignoreDefaults: { agenticWorktrees: true, toolDirs: true, testArtifacts: true, buildCaches: true, minified: true },
   // vendor: ['**/vendor', '**/vendor/**'],
 };
 `;

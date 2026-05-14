@@ -22,16 +22,29 @@ describe('parseConfig — empty object', () => {
     expect(c.traversal.maxDepth).toBe(25);
     expect(c.traversal.maxMillisPerTest).toBe(5000);
     expect(c.concurrency.phpWorkers).toBeUndefined();
-    expect(c.ignore).toEqual([
-      '**/node_modules',
-      '**/node_modules/**',
-      '**/dist',
-      '**/dist/**',
-      '**/build',
-      '**/build/**',
-      '**/.git',
-      '**/.git/**',
-    ]);
+    // The default ignore list now ships several bundles (worktrees, tool dirs,
+    // test artifacts, build caches, minified). The full enumeration lives in
+    // tests/config/parse-ignore.test.ts; here we only pin the always-on
+    // baseline so future bundle changes don't churn this test.
+    expect(c.ignore).toEqual(
+      expect.arrayContaining([
+        '**/node_modules',
+        '**/node_modules/**',
+        '**/dist',
+        '**/dist/**',
+        '**/build',
+        '**/build/**',
+        '**/.git',
+        '**/.git/**',
+      ]),
+    );
+    expect(c.ignoreDefaults).toEqual({
+      agenticWorktrees: true,
+      toolDirs: true,
+      testArtifacts: true,
+      buildCaches: true,
+      minified: true,
+    });
     expect(c.vendor).toEqual(['**/vendor', '**/vendor/**']);
     expect(c.allowSymlinkTargets).toEqual([]);
   });
