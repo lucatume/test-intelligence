@@ -14,7 +14,7 @@ describe('configCommand', () => {
     const code = await configCommand({ projectRoot: root, io: t.io });
     expect(code).toBe(0);
     const parsed = JSON.parse(t.out) as Record<string, unknown>;
-    expect((parsed.traversal as { maxDepth: number }).maxDepth).toBe(25);
+    expect((parsed.traversal as { maxDepth: number }).maxDepth).toBe(100);
     expect(t.err).toContain('from-defaults');
   });
 

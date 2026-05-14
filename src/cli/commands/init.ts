@@ -221,7 +221,7 @@ ${testsBlock}
   // hooks: { stopList: { add: [], remove: [] } },
   // extractors: [],
   // confidence: { weights: {}, threshold: 0.0 },
-  // traversal: { maxDepth: 25, maxMillisPerTest: 5000 },
+  // traversal: { maxDepth: 100, maxMillisPerTest: 5000 },
   // concurrency: { phpWorkers: undefined, tsWorkers: undefined, deriveWorkers: undefined },
   // ignore extends the built-in default ignore bundles. Toggle individual
   // bundles with ignoreDefaults (each defaults to true).

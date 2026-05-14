@@ -198,7 +198,7 @@ const DEFAULT_IGNORE_TOGGLES: IgnoreDefaultsConfig = {
 };
 
 const DEFAULT_VENDOR: readonly string[] = ['**/vendor', '**/vendor/**'];
-const DEFAULT_MAX_DEPTH = 25;
+const DEFAULT_MAX_DEPTH = 100;
 const DEFAULT_MAX_MILLIS_PER_TEST = 5000;
 
 // HOOK_STOP_LIST_BUILTINS is the default set of WP hooks that fire on every
