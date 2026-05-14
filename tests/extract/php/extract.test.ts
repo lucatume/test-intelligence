@@ -365,4 +365,44 @@ class CartTest extends TestCase {
     expect((inc?.payload as { target?: string }).target).toMatch(/\{\*\}.*version\.php/);
     expect(inc?.resolved).toBe(false);
   });
+
+  it('emits symbol-use for top-level FuncCall to a named function', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+function ti_deletemeelephant_helper() { return 1; }
+ti_deletemeelephant_helper();
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const uses = facts
+      .filter((f) => f.kind === 'symbol-use')
+      .map((f) => (f.payload as { name?: string }).name);
+    expect(uses).toContain('ti_deletemeelephant_helper');
+    const use = facts.find(
+      (f) => f.kind === 'symbol-use' && (f.payload as { name?: string }).name === 'ti_deletemeelephant_helper',
+    );
+    expect(use?.anchors[0]?.key).toBe('php-symbol:ti_deletemeelephant_helper');
+    expect(use?.anchors[0]?.role).toBe('target');
+  });
+
+  it('still emits symbol-use for FuncCall when a declarative pattern also matched', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php add_action('init', 'cb');");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const listenerCount = facts.filter((f) => f.kind === 'hook-listener').length;
+    expect(listenerCount).toBe(1);
+    const symUseAddAction = facts.find(
+      (f) => f.kind === 'symbol-use' && (f.payload as { name?: string }).name === 'add_action',
+    );
+    // add_action is a built-in; emitting symbol-use is fine — anchor will have no symbol-def partner.
+    expect(symUseAddAction).toBeDefined();
+  });
+
+  it('does not emit symbol-use for variable callable like $cb()', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php $cb = 'foo'; $cb();");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const uses = facts.filter((f) => f.kind === 'symbol-use');
+    // Only class-related uses (none here) — no top-level FuncCall symbol-use because callee isn't a Node\Name
+    expect(uses).toEqual([]);
+  });
 });

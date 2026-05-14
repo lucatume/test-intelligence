@@ -220,7 +220,18 @@ final class Visitor extends NodeVisitorAbstract
             return;
         }
         if ($node instanceof Node\Expr\FuncCall) {
-            $this->tryEmitDeclarative('function-call', $node, $this->funcName($node), null);
+            $name = $this->funcName($node);
+            $this->tryEmitDeclarative('function-call', $node, $name, null);
+            if ($name !== null) {
+                $resolved = $this->resolveName($name);
+                $this->facts[] = [
+                    'kind' => 'symbol-use',
+                    'resolved' => true,
+                    'location' => $this->loc($node),
+                    'anchors' => [['key' => 'php-symbol:' . $resolved, 'role' => 'target']],
+                    'payload' => ['kind' => 'symbol-use', 'name' => $resolved],
+                ];
+            }
             return;
         }
         if ($node instanceof Node\Expr\MethodCall) {
