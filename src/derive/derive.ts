@@ -29,7 +29,13 @@ export interface DeriveOptions {
 export interface DeriveTimings {
   readonly loadGraphMs: number;
   readonly buildIndexMs: number;
+  // Wall time from traversal start to the last worker reply absorbed on the
+  // main thread. With streaming writes this overlaps with `writeMs` — bulk
+  // inserts run between successive worker replies.
   readonly traverseMs: number;
+  // Sum of wall time spent inside bulk-insert calls (interleaved with
+  // traversal under the worker path). Does not include time waiting on
+  // workers.
   readonly writeMs: number;
   readonly totalMs: number;
 }
@@ -40,6 +46,11 @@ export interface DeriveSummary {
   readonly testsBounded: number;
   readonly timings: DeriveTimings;
 }
+
+// Flush threshold: large enough to amortise JS↔native crossing cost across
+// many rows, small enough to let multiple flushes overlap traversal latency.
+// `insertEdgesBulk` chunks further to stay under MAX_VARIABLE_NUMBER (32766).
+const EDGE_FLUSH_THRESHOLD = 4000;
 
 interface PragmaSnapshot {
   readonly synchronous: number;
@@ -80,106 +91,135 @@ export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
   const buildIndexMs = opts.clock.nowMillis() - indexStart;
   const derivedAt = opts.clock.now();
   const workers = opts.workers ?? 0;
-  const traverseStart = opts.clock.nowMillis();
-
-  // Index-keyed array so we can write edges back in graph.tests order even if
-  // worker responses arrive out of order. Single-thread mode populates
-  // sequentially and gets the same final ordering as the parallel path.
-  const results: TraversalResult[] = new Array<TraversalResult>(graph.tests.length);
 
   // Spinning up workers + cloning the graph costs more than running BFS for
   // a handful of tests. Stay in-process when there's little work to spread.
   const useWorkers = workers > 0 && graph.tests.length > workers;
-  if (!useWorkers) {
-    for (let i = 0; i < graph.tests.length; i++) {
-      const t = graph.tests[i];
-      if (!t) continue;
-      results[i] = traverseTest(graph, index, t.factId, t.testId, t.frameworkClass, {
-        maxDepth: opts.params.maxDepth,
-        maxMillisPerTest: opts.params.maxMillisPerTest,
-        threshold: opts.params.threshold,
-        hookStopList: opts.params.hookStopList,
-        now: () => opts.clock.nowMillis(),
-      });
-    }
-  } else {
-    const pool = startDeriveWorkerPool({ graph, index, params: opts.params, size: workers });
-    try {
-      // Lane count = workers — one in-flight request per worker keeps the slot
-      // utilised without piling messages onto a single thread's queue.
-      const laneCount = workers;
-      let nextIdx = 0;
-      const lanes: Promise<void>[] = [];
-      for (let l = 0; l < laneCount; l++) {
-        lanes.push((async (): Promise<void> => {
-          for (;;) {
-            const idx = nextIdx++;
-            if (idx >= graph.tests.length) return;
-            const t = graph.tests[idx];
-            if (!t) continue;
-            results[idx] = await pool.derive({
-              testFactId: t.factId,
-              testId: t.testId,
-              frameworkClass: t.frameworkClass,
-            });
-          }
-        })());
+
+  // Streaming write context. `edgeBuf` accumulates across traversal results
+  // and flushes whenever the threshold trips. `writeMs` sums only the time
+  // spent inside `insertEdgesBulk`; queue-wait time is attributed to
+  // `traverseMs` (which spans the whole traversal phase).
+  const edgeBuf: EdgeInsert[] = [];
+  let testsProcessed = 0;
+  let edgesWritten = 0;
+  let testsBounded = 0;
+  let writeMs = 0;
+
+  const traverseStart = opts.clock.nowMillis();
+
+  const priorPragmas = snapshotPragmas(opts.db);
+  applyBulkPragmas(opts.db);
+  // Raw BEGIN/COMMIT instead of db.transaction(fn) so the body can await
+  // worker replies between flushes. better-sqlite3 transactions are sync.
+  opts.db.exec('BEGIN');
+  let committed = false;
+  try {
+    clearAllEdges(opts.db);
+    // Drop the secondary index for the duration of the write so each bulk
+    // INSERT avoids per-row B-tree updates. Recreate after the final flush.
+    opts.db.exec('DROP INDEX IF EXISTS edge_source_idx');
+
+    const flushEdges = (): void => {
+      if (edgeBuf.length === 0) return;
+      const t0 = opts.clock.nowMillis();
+      insertEdgesBulk(opts.db, edgeBuf);
+      writeMs += opts.clock.nowMillis() - t0;
+      edgeBuf.length = 0;
+    };
+
+    const absorb = (r: TraversalResult): void => {
+      testsProcessed++;
+      if (r.bounded) testsBounded++;
+      for (const e of r.edges) {
+        // Aggregate the per-edge provenance fact-ids (dedup + sorted
+        // ascending) so the on-disk JSON array is stable regardless of
+        // arrival order.
+        const ids = new Set<number>();
+        for (const piece of e.evidence) {
+          for (const fid of piece.factIds) ids.add(fid);
+        }
+        const provenance: number[] = Array.from(ids).sort((a, b) => a - b);
+        edgeBuf.push({
+          testId: e.testId,
+          source: e.source,
+          confidence: e.confidence,
+          partial: e.partial,
+          evidence: e.evidence,
+          derivedAt,
+          provenance,
+        });
+        edgesWritten++;
       }
-      await Promise.all(lanes);
-    } finally {
-      await pool.shutdown();
+      if (edgeBuf.length >= EDGE_FLUSH_THRESHOLD) flushEdges();
+    };
+
+    if (!useWorkers) {
+      // No overlap to gain when traversal is sync on the main thread; the
+      // streaming buffer + flushes still apply but degenerate into one
+      // final flush for small fixtures.
+      for (let i = 0; i < graph.tests.length; i++) {
+        const t = graph.tests[i];
+        if (!t) continue;
+        const r = traverseTest(graph, index, t.factId, t.testId, t.frameworkClass, {
+          maxDepth: opts.params.maxDepth,
+          maxMillisPerTest: opts.params.maxMillisPerTest,
+          threshold: opts.params.threshold,
+          hookStopList: opts.params.hookStopList,
+          now: () => opts.clock.nowMillis(),
+        });
+        absorb(r);
+      }
+    } else {
+      const pool = startDeriveWorkerPool({ graph, index, params: opts.params, size: workers });
+      try {
+        // Lane count = workers — one in-flight request per worker keeps the
+        // slot utilised. Results are absorbed as soon as each lane's await
+        // settles, so bulk inserts on the main thread interleave with
+        // further traversal in the worker threads.
+        const laneCount = workers;
+        let nextIdx = 0;
+        const lanes: Promise<void>[] = [];
+        for (let l = 0; l < laneCount; l++) {
+          lanes.push((async (): Promise<void> => {
+            for (;;) {
+              const idx = nextIdx++;
+              if (idx >= graph.tests.length) return;
+              const t = graph.tests[idx];
+              if (!t) continue;
+              const r = await pool.derive({
+                testFactId: t.factId,
+                testId: t.testId,
+                frameworkClass: t.frameworkClass,
+              });
+              absorb(r);
+            }
+          })());
+        }
+        await Promise.all(lanes);
+      } finally {
+        await pool.shutdown();
+      }
     }
+
+    // Drain residual buffer before recreating the index + committing.
+    flushEdges();
+
+    // Recreate the dropped index inside the same tx so subsequent reads
+    // (query/ commands) still hit it. CREATE INDEX inside an open tx is
+    // fine for better-sqlite3.
+    opts.db.exec('CREATE INDEX edge_source_idx ON edge(source)');
+
+    opts.db.exec('COMMIT');
+    committed = true;
+  } finally {
+    if (!committed) {
+      try { opts.db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
+    }
+    restorePragmas(opts.db, priorPragmas);
   }
 
   const traverseMs = opts.clock.nowMillis() - traverseStart;
-
-  // Materialize the full edge buffer in JS — one trip through `results` to
-  // count + aggregate provenance fact ids per edge, deduplicated and sorted
-  // ascending for a stable on-disk representation.
-  const buffered: EdgeInsert[] = [];
-  let testsProcessed = 0;
-  let testsBounded = 0;
-  for (let i = 0; i < graph.tests.length; i++) {
-    const r = results[i];
-    if (!r) continue;
-    testsProcessed++;
-    if (r.bounded) testsBounded++;
-    for (const e of r.edges) {
-      const ids = new Set<number>();
-      for (const piece of e.evidence) {
-        for (const fid of piece.factIds) ids.add(fid);
-      }
-      const provenance: number[] = Array.from(ids).sort((a, b) => a - b);
-      buffered.push({
-        testId: e.testId,
-        source: e.source,
-        confidence: e.confidence,
-        partial: e.partial,
-        evidence: e.evidence,
-        derivedAt,
-        provenance,
-      });
-    }
-  }
-  const edgesWritten = buffered.length;
-
-  const writeStart = opts.clock.nowMillis();
-  const priorPragmas = snapshotPragmas(opts.db);
-  applyBulkPragmas(opts.db);
-  try {
-    const tx = opts.db.transaction((): void => {
-      clearAllEdges(opts.db);
-      // Drop the non-PK secondary index before bulk-inserting; rebuild after.
-      // Avoids per-row B-tree updates during the hot path.
-      opts.db.exec('DROP INDEX IF EXISTS edge_source_idx');
-      insertEdgesBulk(opts.db, buffered);
-      opts.db.exec('CREATE INDEX IF NOT EXISTS edge_source_idx ON edge(source)');
-    });
-    tx();
-  } finally {
-    restorePragmas(opts.db, priorPragmas);
-  }
-  const writeMs = opts.clock.nowMillis() - writeStart;
   const totalMs = opts.clock.nowMillis() - start;
 
   return {
