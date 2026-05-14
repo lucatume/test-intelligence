@@ -405,4 +405,51 @@ ti_deletemeelephant_helper();
     // Only class-related uses (none here) — no top-level FuncCall symbol-use because callee isn't a Node\Name
     expect(uses).toEqual([]);
   });
+
+  it('normalizes a REST regex route segment to {*}', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wc/v3', '/products/(?P<id>\\\\d+)', []);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest).toBeDefined();
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /wc/v3/products/{*}');
+    expect((rest?.payload as { route?: string }).route).toBe('/products/(?P<id>\\d+)');
+    // anchor body contains {*} → partial fact
+    expect(rest?.resolved).toBe(false);
+  });
+
+  it('emits one rest-endpoint per HTTP method when methods is an array', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wc/v3', '/items', ['methods' => ['GET', 'POST']]);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.filter((f) => f.kind === 'rest-endpoint');
+    const keys = rest.map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual(['rest:GET /wc/v3/items', 'rest:POST /wc/v3/items']);
+  });
+
+  it('emits a single rest-endpoint with methods string (comma-separated)', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wc/v3', '/items', ['methods' => 'POST, DELETE']);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.filter((f) => f.kind === 'rest-endpoint');
+    const keys = rest.map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual(['rest:DELETE /wc/v3/items', 'rest:POST /wc/v3/items']);
+  });
+
+  it('strips trailing namespace slash and leading route slash to avoid doubles', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wc/v3/', '/items/', []);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /wc/v3/items');
+  });
+
+  it('defaults to GET when methods is omitted', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('myplugin/v1', '/items', []);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.filter((f) => f.kind === 'rest-endpoint');
+    expect(rest).toHaveLength(1);
+    expect(rest[0]?.anchors[0]?.key).toBe('rest:GET /myplugin/v1/items');
+  });
 });

@@ -435,6 +435,10 @@ final class Visitor extends NodeVisitorAbstract
                     if (is_string($v) && str_contains($v, '{*}')) $resolved = false;
                 }
             }
+            if (($p['transform'] ?? null) === 'rest-route') {
+                $this->emitRestRouteFacts($n, $payload);
+                return;
+            }
             $anchors = [];
             $anchorRule = $p['anchor'] ?? null;
             if (is_array($anchorRule)) {
@@ -450,6 +454,84 @@ final class Visitor extends NodeVisitorAbstract
                 'payload' => $payload,
             ];
         }
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function emitRestRouteFacts(Node $n, array $payload): void
+    {
+        $namespace = $payload['namespace'] ?? null;
+        $route = $payload['route'] ?? null;
+        if (!is_string($namespace) || !is_string($route)) {
+            $this->facts[] = [
+                'kind' => 'rest-endpoint',
+                'resolved' => false,
+                'location' => $this->loc($n),
+                'anchors' => [],
+                'payload' => array_merge($payload, ['kind' => 'rest-endpoint']),
+            ];
+            return;
+        }
+        $ns = rtrim($namespace, '/');
+        $rt = ltrim($route, '/');
+        $rt = rtrim($rt, '/');
+        $joined = '/' . $ns . ($rt === '' ? '' : '/' . $rt);
+        // Regex segments like (?P<name>\d+) → {*}
+        $anchorBody = preg_replace('/\(\?P<[^>]+>[^)]+\)/', '{*}', $joined) ?? $joined;
+        // If either input carried {*} from the skeleton machinery, the result has it too.
+        $hasWildcard = str_contains($anchorBody, '{*}');
+
+        $methods = $this->extractRestMethods($n);
+        if ($methods === []) $methods = ['GET'];
+
+        foreach ($methods as $method) {
+            $this->facts[] = [
+                'kind' => 'rest-endpoint',
+                'resolved' => !$hasWildcard,
+                'location' => $this->loc($n),
+                'anchors' => [['key' => "rest:{$method} {$anchorBody}", 'role' => 'subject']],
+                'payload' => [
+                    'kind' => 'rest-endpoint',
+                    'method' => $method,
+                    'route' => $route,
+                    'namespace' => $namespace,
+                ],
+            ];
+        }
+    }
+
+    /** @return list<string> */
+    private function extractRestMethods(Node $n): array
+    {
+        $args = $this->extractArgs($n);
+        $argsNode = $args[2] ?? null;
+        if (!$argsNode instanceof Node\Expr\Array_) return [];
+        foreach ($argsNode->items as $item) {
+            if (!$item instanceof Node\ArrayItem) continue;
+            if (!$item->key instanceof Node\Scalar\String_) continue;
+            if (strtolower($item->key->value) !== 'methods') continue;
+            $val = $item->value;
+            if ($val instanceof Node\Scalar\String_) {
+                return $this->splitMethods($val->value);
+            }
+            if ($val instanceof Node\Expr\Array_) {
+                $out = [];
+                foreach ($val->items as $m) {
+                    if ($m instanceof Node\ArrayItem && $m->value instanceof Node\Scalar\String_) {
+                        $out = array_merge($out, $this->splitMethods($m->value->value));
+                    }
+                }
+                return $out;
+            }
+            return [];
+        }
+        return [];
+    }
+
+    /** @return list<string> */
+    private function splitMethods(string $raw): array
+    {
+        $parts = preg_split('/\s*,\s*/', strtoupper(trim($raw))) ?: [];
+        return array_values(array_filter($parts, fn ($p) => $p !== ''));
     }
 
     /** @return array<int, Node> */

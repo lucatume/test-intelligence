@@ -47,6 +47,7 @@ export const WP_PHP_PATTERNS: readonly PhpPatternWithAnchor[] = [
     },
     emit: 'rest-endpoint',
     anchor: { template: 'rest:GET /{namespace}{route}', role: 'subject' },
+    transform: 'rest-route',
   },
   {
     match: { lang: 'php', nodeKind: 'function-call', name: 'wp_enqueue_script' },
