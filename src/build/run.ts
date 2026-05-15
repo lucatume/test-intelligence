@@ -31,6 +31,14 @@ import { HOOK_STOP_LIST_BUILTINS, type ValidatedConfig } from '../config/parse.j
 import type { BuildOptions, BuildSummary, BuildError, BuildTimings, SlowFile } from './types.js';
 import type { DiscoveredFile } from '../discover/types.js';
 
+// Files per BEGIN/COMMIT in the extract write loop. The store is opened in
+// WAL mode, so without batching every per-file statement (upsertFile,
+// clearFactsForFile DELETE, insertFact, …) is its own transaction with its
+// own fsync — a re-build over a populated store pays one fsync per delete.
+// Grouping ~500 files per COMMIT makes each file's DELETE ride the same
+// fsync as its inserts. Matches the design spec's "chunks of 500 files".
+const EXTRACT_BATCH_SIZE = 500;
+
 export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary, BuildError>> {
   const startMs = opts.clock.nowMillis();
   const verbosity = opts.verbosity ?? 'normal';
@@ -87,6 +95,15 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
         ? listFromPaths(opts.onlyPaths, opts.projectRoot, opts.config, opts.stderr, verbosity)
         : walk(opts.projectRoot, opts.config);
       const it = toAsyncIterator(source);
+
+      // Batched writes: open one BEGIN, COMMIT every EXTRACT_BATCH_SIZE files,
+      // final COMMIT after the lanes drain. Raw BEGIN/COMMIT (not
+      // db.transaction) because lanes await between files; mirrors derive.ts.
+      // Lanes interleave only at `await` points, never inside a file's
+      // synchronous write block, so `filesSinceCommit` is race-free.
+      let filesSinceCommit = 0;
+      db.exec('BEGIN');
+      let extractCommitted = false;
 
       // Lane count tracks pool size: each lane awaits a PHP extract on one
       // slot, but ties up no slot during file read / TS extract. SQLite writes
@@ -183,10 +200,26 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
             if (verbosity === 'verbose') {
               opts.stderr.write(`ti: extracted ${file.path} (${String(r.value.length)} facts)\n`);
             }
+            // Rotate the batch transaction. Safe here: this runs inside the
+            // synchronous write block, so no other lane can interleave.
+            filesSinceCommit++;
+            if (filesSinceCommit >= EXTRACT_BATCH_SIZE) {
+              db.exec('COMMIT');
+              db.exec('BEGIN');
+              filesSinceCommit = 0;
+            }
           }
         })());
       }
-      await Promise.all(lanes);
+      try {
+        await Promise.all(lanes);
+        db.exec('COMMIT');
+        extractCommitted = true;
+      } finally {
+        if (!extractCommitted) {
+          try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
+        }
+      }
       const extractPhaseMs = opts.clock.nowMillis() - extractPhaseStart;
 
       const stopList = new Set<string>(HOOK_STOP_LIST_BUILTINS);

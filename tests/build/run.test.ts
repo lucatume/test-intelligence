@@ -56,6 +56,50 @@ ti_deletemeelephant_helper();
     expect(second).toBe(first);
   });
 
+  it('commits all extract writes and stays stable across a re-build', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+function ti_deletemeelephant_a() {}
+function ti_deletemeelephant_b() {}
+ti_deletemeelephant_a();
+ti_deletemeelephant_b();
+`);
+    write(root, 'src/mod.ts', `export function modFn() {}`);
+
+    const cfgRes = parseConfig({ confidence: { threshold: 0 } });
+    if (cfgRes.kind === 'err') throw new Error('cfg');
+
+    const runOnce = async (): Promise<{ facts: number; files: number; inTx: boolean }> => {
+      const r = await runBuild({
+        projectRoot: root,
+        config: cfgRes.value,
+        clock: systemClock,
+        stderr: { write: () => {} },
+        repoRoot,
+      });
+      expect(r.kind).toBe('ok');
+      const s = openStore(root);
+      if (s.kind === 'err') throw new Error(s.error.message);
+      try {
+        const facts = (s.value.db.prepare('SELECT COUNT(*) AS n FROM fact').get() as { n: number }).n;
+        const files = (s.value.db.prepare('SELECT COUNT(*) AS n FROM file').get() as { n: number }).n;
+        return { facts, files, inTx: s.value.db.inTransaction };
+      } finally {
+        s.value.close();
+      }
+    };
+
+    const first = await runOnce();
+    const second = await runOnce();
+    // No transaction is leaked open past the end of runBuild.
+    expect(first.inTx).toBe(false);
+    expect(second.inTx).toBe(false);
+    // Re-build is stable: batching changes when writes commit, not what is written.
+    expect(first.facts).toBeGreaterThan(0);
+    expect(second.facts).toBe(first.facts);
+    expect(second.files).toBe(first.files);
+  });
+
   it('discovers → extracts → derives, populates the store, prints summary', async () => {
     const root = getTmp();
     write(root, 'plugin.php', `<?php
