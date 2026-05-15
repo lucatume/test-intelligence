@@ -200,6 +200,49 @@ class CartTest extends TestCase {
     } finally { sRes.value.close(); }
   });
 
+  it('resolves an inherited REST namespace across files', async () => {
+    // A leaf controller registers a route with $this->namespace; the property
+    // is declared in a parent class in another file. The cross-file resolver
+    // must fill it and re-point the rest-endpoint anchor.
+    const root = getTmp();
+    write(root, 'src/BaseController.php', `<?php
+class Ti_BaseController {
+  protected $namespace = 'wp/v2';
+}`);
+    write(root, 'src/ItemsController.php', `<?php
+class Ti_ItemsController extends Ti_BaseController {
+  public function register() {
+    register_rest_route($this->namespace, '/items', []);
+  }
+}`);
+    const cfgRes = parseConfig({ confidence: { threshold: 0 } });
+    if (cfgRes.kind === 'err') throw new Error('cfg');
+    const r = await runBuild({
+      projectRoot: root,
+      config: cfgRes.value,
+      clock: systemClock,
+      stderr: { write: () => {} },
+      repoRoot,
+    });
+    expect(r.kind).toBe('ok');
+
+    const sRes = openStore(root);
+    if (sRes.kind !== 'ok') throw new Error('store');
+    try {
+      const restRow = sRes.value.db
+        .prepare(`SELECT resolved FROM fact WHERE kind = 'rest-endpoint'`)
+        .get() as { resolved: number } | undefined;
+      expect(restRow?.resolved).toBe(1);
+      const anchor = sRes.value.db
+        .prepare(`SELECT a.key FROM fact f
+                  JOIN fact_anchor fa ON fa.fact_id = f.id
+                  JOIN anchor a ON a.id = fa.anchor_id
+                  WHERE f.kind = 'rest-endpoint'`)
+        .get() as { key: string } | undefined;
+      expect(anchor?.key).toBe('rest:GET /wp/v2/items');
+    } finally { sRes.value.close(); }
+  });
+
   it('produces identical totals across php worker pool sizes', async () => {
     // Concurrency MUST be a performance lever, not a correctness one. Build the
     // same fixture under phpWorkers=1 and phpWorkers=4 and require the four
