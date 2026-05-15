@@ -599,4 +599,91 @@ ti_deletemeelephant_helper();
     const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
     expect(keys).toEqual(['rest:GET /ns-a/v1/x', 'rest:GET /ns-b/v1/y']);
   });
+
+  it('resolves a constructor-assigned property used in a REST route', async () => {
+    const root = getTmp();
+    write(
+      root,
+      'controller.php',
+      "<?php\nclass Ti_Ctor {\n  protected $namespace;\n  protected $rest_base;\n  public function __construct() {\n    $this->namespace = 'ctor/v1';\n    $this->rest_base = 'widgets';\n  }\n  public function register() {\n    register_rest_route($this->namespace, '/' . $this->rest_base, []);\n  }\n}\n",
+    );
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'controller.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /ctor/v1/widgets');
+    expect(rest?.resolved).toBe(true);
+  });
+
+  it('lets a constructor assignment override a literal default', async () => {
+    const root = getTmp();
+    write(
+      root,
+      'controller.php',
+      "<?php\nclass Ti_Override {\n  protected $namespace = 'old/v1';\n  public function __construct() {\n    $this->namespace = 'new/v2';\n  }\n  public function register() {\n    register_rest_route($this->namespace, '/items', []);\n  }\n}\n",
+    );
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'controller.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /new/v2/items');
+  });
+
+  it('does not record a $this->prop assignment nested inside a conditional', async () => {
+    const root = getTmp();
+    write(
+      root,
+      'controller.php',
+      "<?php\nclass Ti_Cond {\n  protected $namespace;\n  public function __construct() {\n    if (true) { $this->namespace = 'cond/v1'; }\n  }\n  public function register() {\n    register_rest_route($this->namespace, '/items', []);\n  }\n}\n",
+    );
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'controller.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /{*}/items');
+    expect(rest?.resolved).toBe(false);
+  });
+
+  it('leaves a property unresolved when two top-level assignments disagree', async () => {
+    const root = getTmp();
+    write(
+      root,
+      'controller.php',
+      "<?php\nclass Ti_Ambig {\n  protected $namespace;\n  public function __construct() {\n    $this->namespace = 'a/v1';\n    $this->namespace = 'b/v2';\n  }\n  public function register() {\n    register_rest_route($this->namespace, '/items', []);\n  }\n}\n",
+    );
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'controller.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /{*}/items');
+    expect(rest?.resolved).toBe(false);
+  });
+
+  it('honors a property assigned in a non-constructor method', async () => {
+    const root = getTmp();
+    write(
+      root,
+      'controller.php',
+      "<?php\nclass Ti_InitMethod {\n  protected $namespace;\n  public function init() {\n    $this->namespace = 'init/v1';\n  }\n  public function register() {\n    register_rest_route($this->namespace, '/items', []);\n  }\n}\n",
+    );
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'controller.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /init/v1/items');
+  });
+
+  it('resolves a self::CONST property assignment via the class-const table', async () => {
+    const root = getTmp();
+    write(
+      root,
+      'controller.php',
+      "<?php\nclass Ti_ConstRhs {\n  const NS = 'const/v3';\n  protected $namespace;\n  public function __construct() {\n    $this->namespace = self::NS;\n  }\n  public function register() {\n    register_rest_route($this->namespace, '/items', []);\n  }\n}\n",
+    );
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'controller.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /const/v3/items');
+  });
+
+  it('keeps two same-file classes constructor-assigned tables separate', async () => {
+    const root = getTmp();
+    write(
+      root,
+      'controllers.php',
+      "<?php\nclass Ti_CtorA {\n  protected $namespace;\n  public function __construct() { $this->namespace = 'ctor-a/v1'; }\n  public function r() { register_rest_route($this->namespace, '/x', []); }\n}\nclass Ti_CtorB {\n  protected $namespace;\n  public function __construct() { $this->namespace = 'ctor-b/v1'; }\n  public function r() { register_rest_route($this->namespace, '/y', []); }\n}\n",
+    );
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'controllers.php', worker });
+    const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual(['rest:GET /ctor-a/v1/x', 'rest:GET /ctor-b/v1/y']);
+  });
 });

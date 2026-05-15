@@ -802,6 +802,31 @@ final class Visitor extends NodeVisitorAbstract
             private ?string $ns = null;
             /** @var list<string> */
             private array $stack = [];
+            /** Whether the walk is currently inside a class-method body. */
+            private bool $inMethod = false;
+            /** Nesting depth inside if/loop/closure/etc. within the current method. */
+            private int $nesting = 0;
+            /**
+             * Per-property provenance, prePass-local. 'default' = declared default,
+             * 'assign' = method/constructor assignment. An assignment never loses to
+             * a default; a default never overwrites an assignment.
+             * @var array<string, array<string, string>>
+             */
+            private array $origin = [];
+            /**
+             * Properties that received two differing assignment literals. Their
+             * $classProps entry is removed so readStringSkeleton falls back to {*}.
+             * @var array<string, array<string, true>>
+             */
+            private array $ambiguous = [];
+            /** Statement node kinds that introduce conditional / scoped nesting. */
+            private const NESTING_NODES = [
+                Node\Stmt\If_::class, Node\Stmt\ElseIf_::class, Node\Stmt\Else_::class,
+                Node\Stmt\For_::class, Node\Stmt\Foreach_::class, Node\Stmt\While_::class,
+                Node\Stmt\Do_::class, Node\Stmt\Switch_::class, Node\Stmt\TryCatch::class,
+                Node\Stmt\Catch_::class, Node\Expr\Closure::class,
+                Node\Expr\ArrowFunction::class, Node\Expr\Match_::class,
+            ];
 
             /**
              * @param array<string, string> $defines
@@ -826,6 +851,15 @@ final class Visitor extends NodeVisitorAbstract
                     $this->classProps[$fqn] ??= [];
                     return;
                 }
+                if ($node instanceof Node\Stmt\ClassMethod) {
+                    $this->inMethod = true;
+                    $this->nesting = 0;
+                    return;
+                }
+                if ($this->inMethod && in_array(get_class($node), self::NESTING_NODES, true)) {
+                    $this->nesting++;
+                    return;
+                }
                 if ($node instanceof Node\Stmt\ClassConst) {
                     $current = end($this->stack);
                     if ($current !== false) {
@@ -841,10 +875,26 @@ final class Visitor extends NodeVisitorAbstract
                     $current = end($this->stack);
                     if ($current !== false) {
                         foreach ($node->props as $p) {
-                            if ($p->default instanceof Node\Scalar\String_) {
-                                $this->classProps[$current][$p->name->name] = $p->default->value;
-                            }
+                            if (!$p->default instanceof Node\Scalar\String_) continue;
+                            $name = $p->name->name;
+                            // A default never overwrites an assignment-sourced entry.
+                            if (($this->origin[$current][$name] ?? null) === 'assign') continue;
+                            $this->classProps[$current][$name] = $p->default->value;
+                            $this->origin[$current][$name] = 'default';
                         }
+                    }
+                    return;
+                }
+                if ($node instanceof Node\Expr\Assign
+                    && $this->inMethod
+                    && $this->nesting === 0
+                    && $node->var instanceof Node\Expr\PropertyFetch
+                    && $node->var->var instanceof Node\Expr\Variable
+                    && $node->var->var->name === 'this'
+                    && $node->var->name instanceof Node\Identifier) {
+                    $current = end($this->stack);
+                    if ($current !== false) {
+                        $this->recordPropAssign($current, $node->var->name->name, $node->expr);
                     }
                     return;
                 }
@@ -872,6 +922,60 @@ final class Visitor extends NodeVisitorAbstract
             {
                 if ($node instanceof Node\Stmt\Namespace_) $this->ns = null;
                 if ($node instanceof Node\Stmt\ClassLike) array_pop($this->stack);
+                if ($node instanceof Node\Stmt\ClassMethod) {
+                    $this->inMethod = false;
+                    $this->nesting = 0;
+                    return;
+                }
+                if ($this->inMethod && $this->nesting > 0
+                    && in_array(get_class($node), self::NESTING_NODES, true)) {
+                    $this->nesting--;
+                }
+            }
+
+            /** Record a top-level $this->prop = <rhs> assignment, honoring ambiguity. */
+            private function recordPropAssign(string $fqcn, string $prop, Node $rhs): void
+            {
+                if (isset($this->ambiguous[$fqcn][$prop])) return;
+                $literal = $this->readPrePassLiteral($rhs);
+                if ($literal === null) return;
+                $existing = $this->classProps[$fqcn][$prop] ?? null;
+                $existingOrigin = $this->origin[$fqcn][$prop] ?? null;
+                if ($existing !== null && $existingOrigin === 'assign' && $existing !== $literal) {
+                    // Two differing assignment literals — indeterminate at the use site.
+                    $this->ambiguous[$fqcn][$prop] = true;
+                    unset($this->classProps[$fqcn][$prop]);
+                    return;
+                }
+                $this->classProps[$fqcn][$prop] = $literal;
+                $this->origin[$fqcn][$prop] = 'assign';
+            }
+
+            /** Resolve an assignment RHS to a plain string, or null if not statically known. */
+            private function readPrePassLiteral(Node $rhs): ?string
+            {
+                if ($rhs instanceof Node\Scalar\String_) return $rhs->value;
+                if ($rhs instanceof Node\Expr\ConstFetch) {
+                    return $this->defines[$rhs->name->toString()] ?? null;
+                }
+                if ($rhs instanceof Node\Expr\ClassConstFetch
+                    && $rhs->name instanceof Node\Identifier
+                    && $rhs->class instanceof Node\Name) {
+                    $constName = $rhs->name->name;
+                    $raw = $rhs->class->toString();
+                    $lower = strtolower($raw);
+                    if (!$rhs->class->isFullyQualified() && ($lower === 'self' || $lower === 'static')) {
+                        $current = end($this->stack);
+                        if ($current === false) return null;
+                        return $this->classConsts[$current][$constName] ?? null;
+                    }
+                    if (!$rhs->class->isFullyQualified() && $lower === 'parent') return null;
+                    $className = $rhs->class->isFullyQualified()
+                        ? ltrim($raw, '\\')
+                        : ($this->ns !== null ? $this->ns . '\\' . $raw : $raw);
+                    return $this->classConsts[$className][$constName] ?? null;
+                }
+                return null;
             }
         };
         $traverser->addVisitor($finder);
