@@ -25,6 +25,17 @@ export function extractSymbols(sf: ts.SourceFile, relPath: string): Fact[] {
       add(stmt.name.text, stmt, e);
     } else if (ts.isClassDeclaration(stmt) && stmt.name) {
       add(stmt.name.text, stmt, e);
+      const className = stmt.name.text;
+      for (const member of stmt.members) {
+        if (
+          (ts.isMethodDeclaration(member) ||
+            ts.isGetAccessorDeclaration(member) ||
+            ts.isSetAccessorDeclaration(member)) &&
+          ts.isIdentifier(member.name)
+        ) {
+          add(`${className}#${member.name.text}`, member, false);
+        }
+      }
     } else if (ts.isInterfaceDeclaration(stmt)) {
       add(stmt.name.text, stmt, e);
     } else if (ts.isTypeAliasDeclaration(stmt)) {
@@ -95,44 +106,75 @@ export function extractSymbolUses(
   options: ts.CompilerOptions,
 ): Fact[] {
   const localNames = collectTopLevelNames(sf);
-  const importMap = buildImportMap(sf, projectRoot, options);
+  const { names: importMap, namespaces: namespaceMap } = buildImportMap(sf, projectRoot, options);
+  const classMethods = collectClassMethods(sf);
+  const classStack: string[] = [];
   const emitted = new Map<string, { name: string; location: FactLocation }>();
 
-  const recordUse = (name: string, node: ts.Node): void => {
-    let anchorBody: string;
-    let resolvedName: string;
-    const imp = importMap.get(name);
-    if (imp) {
-      anchorBody = `${imp.resolvedFile}:${imp.importedName}`;
-      resolvedName = imp.importedName;
-    } else if (localNames.has(name)) {
-      anchorBody = `${relPath}:${name}`;
-      resolvedName = name;
-    } else {
-      return;
-    }
+  const recordUseAnchored = (anchorBody: string, name: string, node: ts.Node): void => {
     const key = `js-symbol:${anchorBody}`;
     if (emitted.has(key)) return;
     const start = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
     const end = sf.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
     emitted.set(key, {
-      name: resolvedName,
+      name,
       location: { file: relPath as FactLocation['file'], startLine: start, endLine: end },
     });
   };
 
-  const walk = (n: ts.Node): void => {
-    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
-      recordUse(n.expression.text, n);
-    } else if (ts.isNewExpression(n) && ts.isIdentifier(n.expression)) {
-      recordUse(n.expression.text, n);
-    } else if (
-      (ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n)) &&
-      ts.isIdentifier(n.tagName)
-    ) {
-      recordUse(n.tagName.text, n);
+  const recordUse = (name: string, node: ts.Node): void => {
+    const imp = importMap.get(name);
+    if (imp) {
+      recordUseAnchored(`${imp.resolvedFile}:${imp.importedName}`, imp.importedName, node);
+    } else if (localNames.has(name)) {
+      recordUseAnchored(`${relPath}:${name}`, name, node);
     }
+  };
+
+  const tryNamespaceMember = (expr: ts.Expression, node: ts.Node): void => {
+    if (!ts.isPropertyAccessExpression(expr)) return;
+    if (!ts.isIdentifier(expr.expression)) return;
+    const resolvedFile = namespaceMap.get(expr.expression.text);
+    if (resolvedFile === undefined) return;
+    const member = expr.name.text;
+    recordUseAnchored(`${resolvedFile}:${member}`, member, node);
+  };
+
+  const walk = (n: ts.Node): void => {
+    const className = ts.isClassDeclaration(n) && n.name ? n.name.text : undefined;
+    if (className !== undefined) classStack.push(className);
+
+    if (ts.isCallExpression(n)) {
+      if (ts.isIdentifier(n.expression)) {
+        recordUse(n.expression.text, n);
+      } else if (
+        ts.isPropertyAccessExpression(n.expression) &&
+        n.expression.expression.kind === ts.SyntaxKind.ThisKeyword
+      ) {
+        const method = n.expression.name.text;
+        const enclosing = classStack[classStack.length - 1];
+        if (enclosing !== undefined && classMethods.get(enclosing)?.has(method)) {
+          recordUseAnchored(`${relPath}:${enclosing}#${method}`, `${enclosing}#${method}`, n);
+        }
+      } else {
+        tryNamespaceMember(n.expression, n);
+      }
+    } else if (ts.isNewExpression(n)) {
+      if (ts.isIdentifier(n.expression)) {
+        recordUse(n.expression.text, n);
+      } else {
+        tryNamespaceMember(n.expression, n);
+      }
+    } else if (ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n)) {
+      if (ts.isIdentifier(n.tagName)) {
+        recordUse(n.tagName.text, n);
+      } else if (ts.isPropertyAccessExpression(n.tagName)) {
+        tryNamespaceMember(n.tagName, n);
+      }
+    }
+
     ts.forEachChild(n, walk);
+    if (className !== undefined) classStack.pop();
   };
   walk(sf);
 
@@ -164,12 +206,36 @@ function collectTopLevelNames(sf: ts.SourceFile): Set<string> {
   return names;
 }
 
+function collectClassMethods(sf: ts.SourceFile): Map<string, Set<string>> {
+  const map = new Map<string, Set<string>>();
+  const walk = (n: ts.Node): void => {
+    if (ts.isClassDeclaration(n) && n.name) {
+      const names = new Set<string>();
+      for (const member of n.members) {
+        if (
+          (ts.isMethodDeclaration(member) ||
+            ts.isGetAccessorDeclaration(member) ||
+            ts.isSetAccessorDeclaration(member)) &&
+          ts.isIdentifier(member.name)
+        ) {
+          names.add(member.name.text);
+        }
+      }
+      map.set(n.name.text, names);
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(sf);
+  return map;
+}
+
 function buildImportMap(
   sf: ts.SourceFile,
   projectRoot: string,
   options: ts.CompilerOptions,
-): Map<string, ResolvedImport> {
+): { names: Map<string, ResolvedImport>; namespaces: Map<string, string> } {
   const map = new Map<string, ResolvedImport>();
+  const namespaces = new Map<string, string>();
   const host = ts.createCompilerHost(options, true);
 
   const resolveSpecifier = (specifier: string): string | undefined => {
@@ -196,10 +262,11 @@ function buildImportMap(
         map.set(el.name.text, { resolvedFile, importedName });
       }
     }
-    // Namespace imports (import * as ns) are skipped: member access through
-    // them is out of scope per the spec.
+    if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+      namespaces.set(clause.namedBindings.name.text, resolvedFile);
+    }
   }
-  return map;
+  return { names: map, namespaces };
 }
 
 function toPosix(p: string): string {

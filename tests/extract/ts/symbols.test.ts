@@ -59,6 +59,40 @@ describe('extractSymbols', () => {
     const names = facts.map((f) => (f.payload as { name: string }).name).sort();
     expect(names).toEqual(['Cart', 'Item']);
   });
+
+  it('emits a symbol-def per class method', () => {
+    const sf = parse('src/cart.ts', 'export class Cart {\n  addItem() {}\n  removeItem() {}\n}\n');
+    const facts = extractSymbols(sf, 'src/cart.ts');
+    const keys = facts.map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual([
+      'js-symbol:src/cart.ts:Cart',
+      'js-symbol:src/cart.ts:Cart#addItem',
+      'js-symbol:src/cart.ts:Cart#removeItem',
+    ]);
+    const method = facts.find((f) => f.anchors[0]?.key === 'js-symbol:src/cart.ts:Cart#addItem');
+    expect(method?.payload).toMatchObject({ kind: 'symbol-def', name: 'Cart#addItem', exported: false });
+    expect(method?.anchors[0]?.role).toBe('subject');
+  });
+
+  it('skips the constructor and computed-name methods', () => {
+    const src = 'class Cart {\n  constructor() {}\n  ["dynamic"]() {}\n  real() {}\n}\n';
+    const sf = parse('src/cart.ts', src);
+    const facts = extractSymbols(sf, 'src/cart.ts');
+    const keys = facts.map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual(['js-symbol:src/cart.ts:Cart', 'js-symbol:src/cart.ts:Cart#real']);
+  });
+
+  it('emits get/set accessors and static methods as method symbol-defs', () => {
+    const src = 'class Cart {\n  static make() {}\n  get total() { return 0; }\n}\n';
+    const sf = parse('src/cart.ts', src);
+    const facts = extractSymbols(sf, 'src/cart.ts');
+    const keys = facts.map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual([
+      'js-symbol:src/cart.ts:Cart',
+      'js-symbol:src/cart.ts:Cart#make',
+      'js-symbol:src/cart.ts:Cart#total',
+    ]);
+  });
 });
 
 describe('extractSymbolUses', () => {
@@ -139,5 +173,77 @@ describe('extractSymbolUses', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it('resolves this.method() to a same-file method symbol-def', () => {
+    const facts = uses(
+      'class Cart {\n  doThing() { this.helper(); }\n  helper() {}\n}\n',
+    );
+    expect(facts.map((f) => f.anchors[0]?.key)).toContain('js-symbol:a.ts:Cart#helper');
+    const use = facts.find((f) => f.anchors[0]?.key === 'js-symbol:a.ts:Cart#helper');
+    expect(use?.anchors[0]?.role).toBe('target');
+    expect(use?.resolved).toBe(true);
+  });
+
+  it('skips this.method() when the method is not declared on the class', () => {
+    const facts = uses('class Cart {\n  doThing() { this.inherited(); }\n}\n');
+    expect(facts.map((f) => f.anchors[0]?.key)).not.toContain('js-symbol:a.ts:Cart#inherited');
+    expect(facts).toHaveLength(0);
+  });
+
+  it('dedups repeated this.method() calls', () => {
+    const facts = uses(
+      'class Cart {\n  doThing() { this.helper(); this.helper(); }\n  helper() {}\n}\n',
+    );
+    expect(facts.filter((f) => f.anchors[0]?.key === 'js-symbol:a.ts:Cart#helper')).toHaveLength(1);
+  });
+
+  it('resolves a namespace-import member call to the imported file', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ti_deletemeelephant_su_'));
+    try {
+      writeFileSync(join(root, 'mod.ts'), 'export function foo() {}\n');
+      const src = "import * as mod from './mod';\nmod.foo();\n";
+      writeFileSync(join(root, 'a.ts'), src);
+      const sf = ts.createSourceFile(join(root, 'a.ts'), src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const facts = extractSymbolUses(sf, 'a.ts', root, { allowJs: true }).filter((f) => f.kind === 'symbol-use');
+      expect(facts.map((f) => f.anchors[0]?.key)).toContain('js-symbol:mod.ts:foo');
+      const use = facts.find((f) => f.anchors[0]?.key === 'js-symbol:mod.ts:foo');
+      expect(use?.anchors[0]?.role).toBe('target');
+      expect(use?.resolved).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves new mod.Thing() through a namespace import', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ti_deletemeelephant_su_'));
+    try {
+      writeFileSync(join(root, 'mod.ts'), 'export class Thing {}\n');
+      const src = "import * as mod from './mod';\nnew mod.Thing();\n";
+      writeFileSync(join(root, 'a.ts'), src);
+      const sf = ts.createSourceFile(join(root, 'a.ts'), src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const facts = extractSymbolUses(sf, 'a.ts', root, { allowJs: true }).filter((f) => f.kind === 'symbol-use');
+      expect(facts.map((f) => f.anchors[0]?.key)).toContain('js-symbol:mod.ts:Thing');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not emit for a namespace member call when the module is unresolved', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ti_deletemeelephant_su_'));
+    try {
+      const src = "import * as lib from 'some-bare-package';\nlib.doThing();\n";
+      writeFileSync(join(root, 'a.ts'), src);
+      const sf = ts.createSourceFile(join(root, 'a.ts'), src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+      const facts = extractSymbolUses(sf, 'a.ts', root, { allowJs: true }).filter((f) => f.kind === 'symbol-use');
+      expect(facts).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not emit for member access on an arbitrary local variable', () => {
+    const facts = uses('function make() { return {}; }\nconst obj = make();\nobj.foo();');
+    expect(facts.map((f) => f.anchors[0]?.key)).not.toContain('js-symbol:a.ts:foo');
   });
 });
