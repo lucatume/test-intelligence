@@ -13,6 +13,7 @@ export {
   insertEdgesBulk,
   clearEdgesForTest,
   clearAllEdges,
+  clearFactsForFile,
 } from './writers.js';
 export type {
   FileInsert,

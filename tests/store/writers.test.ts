@@ -6,6 +6,7 @@ import {
   upsertAnchor,
   insertFactAnchor,
   insertTest,
+  clearFactsForFile,
 } from '../../src/store/writers.js';
 import { useTmpDir } from '../helpers/tmpDir.js';
 
@@ -81,6 +82,32 @@ describe('store writers', () => {
       });
       const t = db.prepare('SELECT test_id FROM test').get() as { test_id: string };
       expect(t.test_id).toBe('jest:tests/cart.test.ts::adds items');
+    } finally { close(); }
+  });
+
+  it('clearFactsForFile deletes all fact rows for the given file id only', () => {
+    const s = openStore(getTmp());
+    if (s.kind === 'err') throw new Error(s.error.message);
+    const { db, close } = s.value;
+    try {
+      const fileA = upsertFile(db, {
+        path: 'ti_deletemeelephant_a.php', language: 'php', contentHash: 'h1',
+        extractedAt: '2026-05-15T00:00:00.000Z', isTest: false, framework: null, frameworkClass: null,
+      });
+      const fileB = upsertFile(db, {
+        path: 'ti_deletemeelephant_b.php', language: 'php', contentHash: 'h2',
+        extractedAt: '2026-05-15T00:00:00.000Z', isTest: false, framework: null, frameworkClass: null,
+      });
+      insertFact(db, { fileId: fileA, kind: 'symbol-def', resolved: true, startLine: 1, endLine: 1, payload: {} });
+      insertFact(db, { fileId: fileA, kind: 'symbol-def', resolved: true, startLine: 2, endLine: 2, payload: {} });
+      insertFact(db, { fileId: fileB, kind: 'symbol-def', resolved: true, startLine: 1, endLine: 1, payload: {} });
+
+      clearFactsForFile(db, fileA);
+
+      const a = db.prepare('SELECT COUNT(*) AS n FROM fact WHERE file_id = ?').get(fileA) as { n: number };
+      const b = db.prepare('SELECT COUNT(*) AS n FROM fact WHERE file_id = ?').get(fileB) as { n: number };
+      expect(a.n).toBe(0);
+      expect(b.n).toBe(1);
     } finally { close(); }
   });
 });

@@ -184,3 +184,11 @@ export function clearEdgesForTest(db: Database.Database, testId: string): void {
 export function clearAllEdges(db: Database.Database): void {
   db.prepare('DELETE FROM edge').run();
 }
+
+// Delete every fact row for one file. fact_anchor rows cascade via
+// ON DELETE CASCADE; anchor rows are keyed on `key` and shared across files,
+// so they are intentionally left in place. Used per file in runBuild so a
+// re-build replaces a file's facts instead of appending to them.
+export function clearFactsForFile(db: Database.Database, fileId: number): void {
+  db.prepare('DELETE FROM fact WHERE file_id = ?').run(fileId);
+}
