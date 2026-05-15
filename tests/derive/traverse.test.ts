@@ -141,6 +141,20 @@ describe('traverseTest', () => {
     expect(unit.edges.some((e) => e.source === 'src/endpoint.php')).toBe(false);
   });
 
+  it('structural import edges keep BASE_CONFIDENCE (characterization — must not change)', () => {
+    const g = tinyGraph();
+    const idx = buildAnchorIndex(g);
+    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    // a.php is reached by a js-import edge (BASE_CONFIDENCE 0.95).
+    const aEdge = r.edges.find((e) => e.source === 'a.php');
+    expect(aEdge).toBeDefined();
+    expect(aEdge?.confidence).toBeCloseTo(0.95);
+  });
+
   it('rest-endpoint resolved flag does not change the REST edge kind', () => {
     // Regression lock for Item 1: flipping a route-param rest-endpoint fact's
     // `resolved` false→true must NOT upgrade the edge. The REST edge kind is
@@ -181,6 +195,136 @@ describe('traverseTest', () => {
     expect(kindsOf(rResolved)).toEqual(kindsOf(rUnresolved));
     // The bridging rest-call-js is resolved → the kind is rest-mediated.
     expect(kindsOf(rResolved)).toContain('rest-mediated');
+  });
+});
+
+function broadWildcardGraph(): Graph {
+  // test (file 1) -> imports app.ts (file 2) which apiFetches /wp/v2/things
+  // file 3 (broad.php) registers rest:GET /{*}/{*} (unresolved namespace).
+  const f1: FileRow = { id: 1, path: 'tests/app.test.ts', language: 'ts', vendor: false, framework: 'jest', frameworkClass: 'unit' };
+  const f2: FileRow = { id: 2, path: 'app.ts', language: 'ts', vendor: false, framework: null, frameworkClass: null };
+  const f3: FileRow = { id: 3, path: 'broad.php', language: 'php', vendor: false, framework: null, frameworkClass: null };
+
+  const testDef: FactRow = {
+    id: 100, fileId: 1, kind: 'test-def', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'test-def', framework: 'jest', testId: 't1' },
+  };
+  const importToApp: FactRow = {
+    id: 101, fileId: 1, kind: 'import-edge', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'import-edge', specifier: './app', resolved: true, resolvedPath: 'app.ts' },
+  };
+  const restCall: FactRow = {
+    id: 200, fileId: 2, kind: 'rest-call-js', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'rest-call-js', method: 'GET', path: '/wp/v2/things' },
+  };
+  const endpoint: FactRow = {
+    id: 300, fileId: 3, kind: 'rest-endpoint', resolved: false, startLine: 1, endLine: 1,
+    payload: { kind: 'rest-endpoint', method: 'GET', route: '/{*}/{*}' },
+  };
+
+  const facts = new Map<number, FactRow>([
+    [100, testDef], [101, importToApp], [200, restCall], [300, endpoint],
+  ]);
+  const factsByFile = new Map<number, FactRow[]>([
+    [1, [testDef, importToApp]], [2, [restCall]], [3, [endpoint]],
+  ]);
+  const anchorLinks = [
+    { factId: 101, anchorKey: k('js-module:app.ts'), role: 'module' as const },
+    { factId: 200, anchorKey: k('rest:GET /wp/v2/things'), role: 'subject' as const },
+    { factId: 300, anchorKey: k('rest:GET /{*}/{*}'), role: 'target' as const },
+  ];
+  return {
+    files: new Map([[1, f1], [2, f2], [3, f3]]),
+    facts, factsByFile, anchorLinks,
+    tests: [{ testId: 't1', fileId: 1, framework: 'jest', frameworkClass: 'unit', factId: 100 }],
+  };
+}
+
+describe('traverseTest — confidence tiering', () => {
+  it('prices a broad-wildcard REST bridge well below an exact match', () => {
+    const g = broadWildcardGraph();
+    const idx = buildAnchorIndex(g);
+    // frameworkClass 'e2e' so the rest-call-js bridge is not e2e-gated out.
+    const r = traverseTest(g, idx, 100, 't1', 'e2e', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    const broadEdge = r.edges.find((e) => e.source === 'broad.php');
+    expect(broadEdge).toBeDefined();
+    // rest-call-js fact reached at depth 1 (via js-import); endpoint partner at
+    // depth 2. rest-mediated 0.85 * wildcardBroad 0.25 * 0.92**2 (0.8464).
+    expect(broadEdge?.confidence).toBeCloseTo(0.17985);
+    expect(broadEdge?.confidence).toBeLessThan(0.4);
+  });
+
+  it('prices an exact REST bridge high', () => {
+    const g = broadWildcardGraph();
+    // Swap the endpoint's anchor to an exact match of the apiFetch path.
+    const exactLinks = g.anchorLinks.map((l) =>
+      l.factId === 300 ? { ...l, anchorKey: k('rest:GET /wp/v2/things') } : l,
+    );
+    const g2: Graph = { ...g, anchorLinks: exactLinks };
+    const idx = buildAnchorIndex(g2);
+    const r = traverseTest(g2, idx, 100, 't1', 'e2e', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    const edge = r.edges.find((e) => e.source === 'broad.php');
+    expect(edge).toBeDefined();
+    // rest-mediated 0.85 * exact 1 * 0.92**2 (0.8464) = 0.71944.
+    expect(edge?.confidence).toBeCloseTo(0.71944);
+    expect(edge?.confidence).toBeGreaterThan(0.7);
+  });
+
+  it('attenuates a bridge edge reached through a deeper import chain', () => {
+    // Chain the import: test -> mid.ts -> app.ts(rest-call) -> broad.php.
+    const g = broadWildcardGraph();
+    const fMid: FileRow = { id: 4, path: 'mid.ts', language: 'ts', vendor: false, framework: null, frameworkClass: null };
+    const importToMid: FactRow = {
+      id: 102, fileId: 1, kind: 'import-edge', resolved: true, startLine: 1, endLine: 1,
+      payload: { kind: 'import-edge', specifier: './mid', resolved: true, resolvedPath: 'mid.ts' },
+    };
+    const midImportApp: FactRow = {
+      id: 103, fileId: 4, kind: 'import-edge', resolved: true, startLine: 1, endLine: 1,
+      payload: { kind: 'import-edge', specifier: './app', resolved: true, resolvedPath: 'app.ts' },
+    };
+    // Replace file-1's import (101 -> mid) and remove the direct test->app import.
+    const files = new Map(g.files);
+    files.set(4, fMid);
+    const facts = new Map(g.facts);
+    const testDef = facts.get(100);
+    const restCall = facts.get(200);
+    const endpoint = facts.get(300);
+    if (!testDef || !restCall || !endpoint) throw new Error('fixture');
+    facts.delete(101);
+    facts.set(102, importToMid);
+    facts.set(103, midImportApp);
+    const factsByFile = new Map<number, FactRow[]>([
+      [1, [testDef, importToMid]],
+      [2, [restCall]],
+      [3, [endpoint]],
+      [4, [midImportApp]],
+    ]);
+    const anchorLinks = [
+      { factId: 102, anchorKey: k('js-module:mid.ts'), role: 'module' as const },
+      { factId: 103, anchorKey: k('js-module:app.ts'), role: 'module' as const },
+      { factId: 200, anchorKey: k('rest:GET /wp/v2/things'), role: 'subject' as const },
+      { factId: 300, anchorKey: k('rest:GET /{*}/{*}'), role: 'target' as const },
+    ];
+    const g2: Graph = { files, facts, factsByFile, anchorLinks, tests: g.tests };
+    const idx = buildAnchorIndex(g2);
+    const r = traverseTest(g2, idx, 100, 't1', 'e2e', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    const edge = r.edges.find((e) => e.source === 'broad.php');
+    expect(edge).toBeDefined();
+    // rest-call-js now at depth 2, endpoint partner at depth 3.
+    // 0.85 * wildcardBroad 0.25 * 0.92**3 (0.778688) = 0.16550...
+    expect(edge?.confidence).toBeCloseTo(0.16550);
   });
 });
 

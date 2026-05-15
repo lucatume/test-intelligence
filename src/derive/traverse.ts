@@ -1,8 +1,8 @@
 import type { AnchorKey, FactKind } from '../types.js';
 import type { AnchorRole } from '../facts/types.js';
 import type { Edge, EdgeKind, FactRow, Graph } from './types.js';
-import { wildcardKeyToRegex, type AnchorIndex, type WildcardAnchorEntry } from './anchor-index.js';
-import { BASE_CONFIDENCE, combineConfidence } from './confidence.js';
+import { wildcardKeyToRegex, wildcardBreadth, type AnchorIndex, type WildcardAnchorEntry } from './anchor-index.js';
+import { combineConfidence, evidenceConfidence, type MatchPrecision } from './confidence.js';
 
 export interface TraversalOptions {
   readonly maxDepth: number;
@@ -19,7 +19,9 @@ export interface TraversalResult {
 }
 
 interface EvidenceAgg {
-  readonly kinds: Map<EdgeKind, Set<number>>;
+  // kind -> contributing fact ids + the attenuated confidence of each
+  // contributing path. combineConfidence consumes `values` directly.
+  readonly kinds: Map<EdgeKind, { ids: Set<number>; values: number[] }>;
 }
 
 interface QueueItem {
@@ -27,6 +29,17 @@ interface QueueItem {
   readonly depth: number;
   readonly arrivalKind: EdgeKind | null;
   readonly arrivalFactId: number | null;
+  // Match precision of the edge that reached this fact. `exact` for the seed
+  // facts and for structural arrivals; the matched tier for bridge arrivals.
+  readonly arrivalPrecision: keyof MatchPrecision;
+  // True iff `arrivalKind` is a bridge kind (distance decay applies).
+  readonly arrivalIsBridge: boolean;
+}
+
+/** A partner fact found by the anchor join, tagged with how precise the match was. */
+interface MatchedPartner {
+  readonly fact: FactRow;
+  readonly precision: keyof MatchPrecision;
 }
 
 // Cadence for the wall-clock bound check inside the BFS hot loop. Checking
@@ -66,7 +79,10 @@ export function traverseTest(
   for (const f of testFileFacts) {
     if (enqueued.has(f.id)) continue;
     enqueued.add(f.id);
-    queue.push({ fact: f, depth: 0, arrivalKind: null, arrivalFactId: null });
+    queue.push({
+      fact: f, depth: 0, arrivalKind: null, arrivalFactId: null,
+      arrivalPrecision: 'exact', arrivalIsBridge: false,
+    });
   }
 
   while (head < queue.length) {
@@ -92,10 +108,17 @@ export function traverseTest(
       cur.arrivalKind !== null &&
       cur.arrivalFactId !== null
     ) {
-      // Credit the arriving fact (the one that produced the bridge) and this
-      // fact (the destination) as evidence for the edge.
-      recordEvidence(evidence, file.id, cur.arrivalKind, cur.arrivalFactId);
-      recordEvidence(evidence, file.id, cur.arrivalKind, cur.fact.id);
+      // Structural and bridge arrivals both land here. Distance decay applies
+      // to bridge kinds only; `arrivalIsBridge` is set when the arriving kind
+      // is a cross-language / hook bridge. `arrivalPrecision` is `exact` for
+      // structural arrivals and carries the match tier for bridge arrivals.
+      const c = evidenceConfidence(
+        cur.arrivalKind,
+        cur.arrivalPrecision,
+        cur.depth,
+        cur.arrivalIsBridge,
+      );
+      recordEvidence(evidence, file.id, cur.arrivalKind, cur.arrivalFactId, cur.fact.id, c);
     }
 
     // Walk outward through this fact's relations.
@@ -107,16 +130,17 @@ export function traverseTest(
     const sourceFile = graph.files.get(fileId);
     if (!sourceFile) continue;
     const kinds: Array<{ kind: EdgeKind; factIds: readonly number[] }> = [];
-    const baseValues: number[] = [];
-    for (const [kind, ids] of agg.kinds) {
-      kinds.push({ kind, factIds: [...ids] });
-      baseValues.push(BASE_CONFIDENCE[kind]);
+    const pathValues: number[] = [];
+    for (const [kind, slot] of agg.kinds) {
+      kinds.push({ kind, factIds: [...slot.ids] });
+      // Each recorded path is an independent observation — feed every
+      // attenuated value into the combination formula.
+      for (const v of slot.values) pathValues.push(v);
     }
-    const confidence = combineConfidence(baseValues);
+    const confidence = combineConfidence(pathValues);
     if (confidence < options.threshold) continue;
-    // partial reflects evidence quality: true iff at least one evidence kind
-    // is an *-uncertain / *-partial variant. It is NOT contaminated by the
-    // resolved flag of destination facts that never produced a bridge kind.
+    // `partial` reflects evidence KIND quality (an *-uncertain / *-partial
+    // variant), independent of the numeric attenuation applied to confidence.
     const partial = kinds.some(
       (kk) => kk.kind.endsWith('-uncertain') || kk.kind.endsWith('-partial'),
     );
@@ -147,7 +171,10 @@ function enqueueDownstream(
         for (const f of graph.factsByFile.get(target.id) ?? []) {
           if (enqueued.has(f.id)) continue;
           enqueued.add(f.id);
-          queue.push({ fact: f, depth: depth + 1, arrivalKind: kind, arrivalFactId: fact.id });
+          queue.push({
+            fact: f, depth: depth + 1, arrivalKind: kind, arrivalFactId: fact.id,
+            arrivalPrecision: 'exact', arrivalIsBridge: false,
+          });
         }
       }
     }
@@ -162,7 +189,10 @@ function enqueueDownstream(
         for (const f of graph.factsByFile.get(file.id) ?? []) {
           if (enqueued.has(f.id)) continue;
           enqueued.add(f.id);
-          queue.push({ fact: f, depth: depth + 1, arrivalKind: kind, arrivalFactId: fact.id });
+          queue.push({
+            fact: f, depth: depth + 1, arrivalKind: kind, arrivalFactId: fact.id,
+            arrivalPrecision: 'exact', arrivalIsBridge: false,
+          });
         }
       }
     }
@@ -176,22 +206,26 @@ function enqueueDownstream(
   const links = index.linksByFact.get(fact.id) ?? [];
   for (const link of links) {
     for (const partner of complementaryFactsForRole(index, link.anchorKey, link.role, options.maxWildcardMatchesPerAnchor)) {
+      const partnerDepth = depth + 1;
+      // Attenuate: precision tier from the match, distance from BFS depth.
+      const c = evidenceConfidence(bridgeKind, partner.precision, partnerDepth, true);
       // Record bridge evidence for the partner's file even when the partner is
       // already enqueued via another path. Without this, evidence kinds emitted
       // via the bridge (hook-mediated, shortcode-render, …) are lost whenever a
       // shorter-arrival kind (e.g. php-include) reaches the partner first.
-      const partnerFile = graph.files.get(partner.fileId);
+      const partnerFile = graph.files.get(partner.fact.fileId);
       if (partnerFile && partnerFile.id !== testFileId && !partnerFile.vendor) {
-        recordEvidence(evidence, partnerFile.id, bridgeKind, fact.id);
-        recordEvidence(evidence, partnerFile.id, bridgeKind, partner.id);
+        recordEvidence(evidence, partnerFile.id, bridgeKind, fact.id, partner.fact.id, c);
       }
-      if (enqueued.has(partner.id)) continue;
-      enqueued.add(partner.id);
+      if (enqueued.has(partner.fact.id)) continue;
+      enqueued.add(partner.fact.id);
       queue.push({
-        fact: partner,
-        depth: depth + 1,
+        fact: partner.fact,
+        depth: partnerDepth,
         arrivalKind: bridgeKind,
         arrivalFactId: fact.id,
+        arrivalPrecision: partner.precision,
+        arrivalIsBridge: true,
       });
     }
   }
@@ -237,23 +271,44 @@ function bridgeKindFor(
   }
 }
 
-function recordEvidence(
+function evidenceSlot(
   store: Map<number, EvidenceAgg>,
   fileId: number,
   kind: EdgeKind,
-  factId: number,
-): void {
+): { ids: Set<number>; values: number[] } {
   let entry = store.get(fileId);
   if (!entry) {
     entry = { kinds: new Map() };
     store.set(fileId, entry);
   }
-  let ids = entry.kinds.get(kind);
-  if (!ids) {
-    ids = new Set();
-    entry.kinds.set(kind, ids);
+  let slot = entry.kinds.get(kind);
+  if (!slot) {
+    slot = { ids: new Set(), values: [] };
+    entry.kinds.set(kind, slot);
   }
-  ids.add(factId);
+  return slot;
+}
+
+/**
+ * Record one bridge/structural arrival as evidence: the two endpoint fact ids
+ * (arriving fact + destination fact) go into the provenance set, and the
+ * attenuated confidence of the path is pushed ONCE — one arrival is one
+ * independent observation, not two. Re-recording the same arriving fact does
+ * not re-push the value: the same path arriving again is the same observation.
+ */
+function recordEvidence(
+  store: Map<number, EvidenceAgg>,
+  fileId: number,
+  kind: EdgeKind,
+  arrivalFactId: number,
+  destFactId: number,
+  confidence: number,
+): void {
+  const slot = evidenceSlot(store, fileId, kind);
+  const fresh = !slot.ids.has(arrivalFactId);
+  slot.ids.add(arrivalFactId);
+  slot.ids.add(destFactId);
+  if (fresh) slot.values.push(confidence);
 }
 
 function complementaryFactsForRole(
@@ -261,7 +316,7 @@ function complementaryFactsForRole(
   key: AnchorKey,
   role: AnchorRole,
   cap: number,
-): readonly FactRow[] {
+): readonly MatchedPartner[] {
   const isWild = key.includes('{*}');
   // Pick the complementary side's exact map and wildcard list.
   let exactMap: ReadonlyMap<AnchorKey, readonly FactRow[]>;
@@ -286,27 +341,34 @@ function complementaryFactsForRole(
   }
 
   if (!isWild) {
-    // Literal-side: exact lookup + wildcard scan.
-    const exact = exactMap.get(key) ?? [];
-    if (wildList.length === 0) return exact;
-    const wildMatches: FactRow[] = [];
-    outer: for (const entry of wildList) {
-      if (entry.regex.test(key)) {
-        for (const f of entry.facts) {
-          wildMatches.push(f);
-          if (wildMatches.length >= cap) break outer;
+    // Literal incoming key: exact lookup (precision exact) + wildcard scan
+    // (precision from the matched wildcard entry's precomputed breadth).
+    const out: MatchedPartner[] = [];
+    for (const f of exactMap.get(key) ?? []) {
+      out.push({ fact: f, precision: 'exact' });
+    }
+    if (wildList.length > 0) {
+      let wildCount = 0;
+      outer: for (const entry of wildList) {
+        if (entry.regex.test(key)) {
+          for (const f of entry.facts) {
+            out.push({ fact: f, precision: entry.breadth });
+            if (++wildCount >= cap) break outer;
+          }
         }
       }
     }
-    return wildMatches.length === 0 ? exact : [...exact, ...wildMatches];
+    return out;
   } else {
-    // Wildcard-side: scan exact map's keys via regex.
+    // Wildcard incoming key: scan the exact map's keys via regex. Precision is
+    // this incoming key's own breadth.
+    const incomingBreadth = wildcardBreadth(key);
     const regex = wildcardKeyToRegex(key);
-    const out: FactRow[] = [];
+    const out: MatchedPartner[] = [];
     outer: for (const [candidateKey, facts] of exactMap) {
       if (!regex.test(candidateKey)) continue;
       for (const f of facts) {
-        out.push(f);
+        out.push({ fact: f, precision: incomingBreadth });
         if (out.length >= cap) break outer;
       }
     }
