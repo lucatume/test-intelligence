@@ -1117,6 +1117,16 @@ while (($line = fgets($stdin)) !== false) {
 /** @param array<string, mixed> $msg */
 function emit(array $msg): void
 {
-    fwrite(STDOUT, json_encode($msg, JSON_UNESCAPED_SLASHES) . "\n");
+    // JSON_INVALID_UTF8_SUBSTITUTE: source string literals can carry binary
+    // escapes (e.g. MaxMind's "\xab\xcd\xefMaxMind.com") that the parser turns
+    // into invalid-UTF-8 byte strings. Without the flag json_encode returns
+    // false, emit writes a bare "\n", and the host protocol — which drops empty
+    // lines — leaves its request promise unresolved until the worker is reaped.
+    // Substituting U+FFFD keeps the response well-formed.
+    $json = json_encode($msg, JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+    if ($json === false) {
+        $json = json_encode(['op' => 'error', 'message' => 'json_encode failed: ' . json_last_error_msg()]);
+    }
+    fwrite(STDOUT, $json . "\n");
     fflush(STDOUT);
 }

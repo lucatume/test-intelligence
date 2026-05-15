@@ -110,6 +110,30 @@ class CartTest extends BaseTest {
     expect(cartUse?.anchors[0]?.key).toBe('php-symbol:App\\Cart');
   });
 
+  it('returns facts when a string literal holds invalid UTF-8 bytes', async () => {
+    // A class property default with a binary-marker escape (e.g. MaxMind's
+    // "\xab\xcd\xefMaxMind.com") becomes an invalid-UTF-8 byte string in the
+    // AST. The worker captures it into meta.props; json_encode of the facts
+    // must not fail — a failed encode would emit a bare newline and hang the
+    // protocol until the worker is reaped.
+    const root = getTmp();
+    write(root, 'src/Reader.php', `<?php
+namespace App;
+class Reader {
+  private $marker = "\\xab\\xcd\\xefMaxMind.com";
+  public function name() { return 'reader'; }
+}`);
+    const facts = await extractPhpFile({
+      projectRoot: root,
+      relPath: 'src/Reader.php',
+      worker,
+    });
+    const def = facts.find(
+      (f) => f.kind === 'symbol-def' && (f.payload as { name?: string }).name === 'App\\Reader',
+    );
+    expect(def).toBeDefined();
+  });
+
   it('emits symbol-use for fully-qualified names (leading backslash)', async () => {
     const root = getTmp();
     write(root, 'tests/Foo.php', `<?php
