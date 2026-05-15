@@ -140,6 +140,48 @@ describe('traverseTest', () => {
     const unit = traverseTest(g, idx, 1, 't2', 'unit', { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32 });
     expect(unit.edges.some((e) => e.source === 'src/endpoint.php')).toBe(false);
   });
+
+  it('rest-endpoint resolved flag does not change the REST edge kind', () => {
+    // Regression lock for Item 1: flipping a route-param rest-endpoint fact's
+    // `resolved` false→true must NOT upgrade the edge. The REST edge kind is
+    // chosen from the bridging rest-call-js fact's `resolved` (bridgeKindFor
+    // has no rest-endpoint case); the rest-endpoint is only a wildcard-matched
+    // partner. The endpoint anchor carries {*} (a route param). The edge kind
+    // must be identical regardless of the endpoint fact's resolved flag.
+    const build = (endpointResolved: boolean): Graph => {
+      const f1: FileRow = { id: 1, path: 'tests/e2e.spec.ts', language: 'ts', vendor: false, framework: 'playwright', frameworkClass: 'e2e' };
+      const f2: FileRow = { id: 2, path: 'src/endpoint.php', language: 'php', vendor: false, framework: null, frameworkClass: null };
+      const td: FactRow = { id: 1, fileId: 1, kind: 'test-def', resolved: true, startLine: 1, endLine: 1, payload: {} };
+      // rest-call-js: a literal apiFetch path — resolved=true.
+      const rcj: FactRow = { id: 2, fileId: 1, kind: 'rest-call-js', resolved: true, startLine: 1, endLine: 1, payload: {} };
+      // rest-endpoint: a parameterized route — anchor carries {*}.
+      const endpoint: FactRow = { id: 3, fileId: 2, kind: 'rest-endpoint', resolved: endpointResolved, startLine: 1, endLine: 1, payload: {} };
+      return {
+        files: new Map([[1, f1], [2, f2]]),
+        facts: new Map([[1, td], [2, rcj], [3, endpoint]]),
+        factsByFile: new Map([[1, [td, rcj]], [2, [endpoint]]]),
+        anchorLinks: [
+          { factId: 2, anchorKey: k('rest:GET /wp/v2/comments/123'), role: 'target' },
+          { factId: 3, anchorKey: k('rest:GET /wp/v2/comments/{*}'), role: 'subject' },
+        ],
+        tests: [],
+      };
+    };
+    const opts = { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set<string>(), now: (): number => 0, maxWildcardMatchesPerAnchor: 32 };
+
+    const gUnresolved = build(false);
+    const rUnresolved = traverseTest(gUnresolved, buildAnchorIndex(gUnresolved), 1, 't1', 'e2e', opts);
+    const gResolved = build(true);
+    const rResolved = traverseTest(gResolved, buildAnchorIndex(gResolved), 1, 't1', 'e2e', opts);
+
+    const kindsOf = (r: ReturnType<typeof traverseTest>): string[] =>
+      (r.edges.find((e) => e.source === 'src/endpoint.php')?.evidence.map((e) => e.kind) ?? []).sort();
+
+    // The edge exists in both, and the evidence kinds are identical.
+    expect(kindsOf(rResolved)).toEqual(kindsOf(rUnresolved));
+    // The bridging rest-call-js is resolved → the kind is rest-mediated.
+    expect(kindsOf(rResolved)).toContain('rest-mediated');
+  });
 });
 
 describe('traverseTest — wildcard bridge', () => {
