@@ -5,6 +5,8 @@ export interface WildcardAnchorEntry {
   readonly regex: RegExp;
   readonly originalKey: AnchorKey;
   readonly facts: readonly FactRow[];
+  /** Precomputed once at index-build time so the BFS never re-classifies. */
+  readonly breadth: 'wildcardBroad' | 'wildcardPrefixed';
 }
 
 export interface AnchorIndex {
@@ -34,6 +36,34 @@ export function wildcardKeyToRegex(key: AnchorKey): RegExp {
   const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const pattern = escaped.replace(/\\\{\\\*\\\}/g, '[^\\s]+');
   return new RegExp('^' + pattern + '$');
+}
+
+/**
+ * A wildcard anchor key is BROAD when, after the `<type>:` prefix, every
+ * path/identifier segment is exactly `{*}` — there is no literal segment to
+ * constrain the match, so it matches everything of that anchor type. Otherwise
+ * it is PREFIXED (it has at least one literal segment).
+ *
+ * The leading `<METHOD>` token of a `rest:` key (e.g. the `GET` in
+ * `rest:GET /{*}/{*}`) is part of the type-tag area, not the route — the route
+ * is what fans out — so it does not count as a constraining literal segment.
+ *
+ * broad   : `rest:GET /{*}/{*}`, `hook:{*}`, `ajax:{*}`
+ * prefixed: `rest:GET /wp/v2/comments/{*}`, `hook:wp_ajax_{*}`, `ajax:save_{*}`
+ */
+export function wildcardBreadth(key: AnchorKey): 'wildcardBroad' | 'wildcardPrefixed' {
+  const colon = key.indexOf(':');
+  // Body after `<type>:`. For `rest:` keys the body is `<METHOD> <route>`;
+  // drop the leading method token so only the route is inspected.
+  let body = colon >= 0 ? key.slice(colon + 1) : key;
+  const space = body.indexOf(' ');
+  if (space >= 0) body = body.slice(space + 1);
+  // Segments: split on `/`, drop empties.
+  const segments = body.split('/').filter((s) => s.length > 0);
+  if (segments.length === 0) return 'wildcardBroad';
+  // Broad iff EVERY segment is exactly the wildcard token.
+  const allWild = segments.every((s) => s === WILDCARD_TOKEN);
+  return allWild ? 'wildcardBroad' : 'wildcardPrefixed';
 }
 
 export function buildAnchorIndex(graph: Graph): AnchorIndex {
@@ -84,7 +114,12 @@ export function buildAnchorIndex(graph: Graph): AnchorIndex {
   const bucketToEntries = (b: Map<AnchorKey, FactRow[]>): WildcardAnchorEntry[] => {
     const out: WildcardAnchorEntry[] = [];
     for (const [key, facts] of b) {
-      out.push({ regex: wildcardKeyToRegex(key), originalKey: key, facts });
+      out.push({
+        regex: wildcardKeyToRegex(key),
+        originalKey: key,
+        facts,
+        breadth: wildcardBreadth(key),
+      });
     }
     return out;
   };

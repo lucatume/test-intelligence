@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildAnchorIndex } from '../../src/derive/anchor-index.js';
+import { buildAnchorIndex, wildcardBreadth } from '../../src/derive/anchor-index.js';
 import type { WildcardAnchorEntry } from '../../src/derive/anchor-index.js';
 import type { Graph, FactRow, FileRow } from '../../src/derive/types.js';
 import { unsafeCoerce } from '../helpers/unsafeCoerce.js';
@@ -29,6 +29,24 @@ const graph: Graph = {
   ],
   tests: [],
 };
+
+describe('wildcardBreadth', () => {
+  it('classifies an all-wildcard route as broad', () => {
+    expect(wildcardBreadth(k('rest:GET /{*}/{*}'))).toBe('wildcardBroad');
+  });
+  it('classifies a single-segment all-wildcard hook as broad', () => {
+    expect(wildcardBreadth(k('hook:{*}'))).toBe('wildcardBroad');
+  });
+  it('classifies a wildcard route with a literal segment as prefixed', () => {
+    expect(wildcardBreadth(k('rest:GET /wp/v2/comments/{*}'))).toBe('wildcardPrefixed');
+  });
+  it('classifies a wildcard hook with a literal prefix as prefixed', () => {
+    expect(wildcardBreadth(k('hook:wp_ajax_{*}'))).toBe('wildcardPrefixed');
+  });
+  it('classifies a wildcard ajax action with a literal as prefixed', () => {
+    expect(wildcardBreadth(k('ajax:save_{*}'))).toBe('wildcardPrefixed');
+  });
+});
 
 describe('buildAnchorIndex', () => {
   it('groups facts by anchor + role', () => {
