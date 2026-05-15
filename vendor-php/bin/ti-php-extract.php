@@ -36,6 +36,8 @@ final class Visitor extends NodeVisitorAbstract
     private array $classConsts = [];
     /** @var array<string, array<string, string>> */
     private array $classProps = [];
+    /** @var list<string> Property names hit as $this->prop misses during the current arg-binding cycle. */
+    private array $unresolvedThisProps = [];
 
     /** @var array<string, true> Static PHP language built-ins. */
     private const PHP_BUILTIN_CLASSES = [
@@ -262,7 +264,7 @@ final class Visitor extends NodeVisitorAbstract
             $this->classStack[] = $name;
             $isPhpUnit = false;
             if ($node instanceof Node\Stmt\Class_ && $node->extends !== null) {
-                $this->emitClassUse($node, $node->extends);
+                $this->emitClassUse($node, $node->extends, 'extends');
                 $extends = $this->resolveClassName($node->extends);
                 if (in_array($extends, $this->phpUnitBaseClasses, true)) {
                     $isPhpUnit = true;
@@ -286,7 +288,12 @@ final class Visitor extends NodeVisitorAbstract
                 }
             }
             $this->classIsPhpUnit = $isPhpUnit;
-            $this->facts[] = $this->factSymbolDef($node, $name, true);
+            $def = $this->factSymbolDef($node, $name, true);
+            $props = $this->classProps[$name] ?? [];
+            if ($props !== []) {
+                $def['payload']['meta'] = ['props' => $props];
+            }
+            $this->facts[] = $def;
             return;
         }
         if ($node instanceof Node\Stmt\Function_) {
@@ -456,7 +463,7 @@ final class Visitor extends NodeVisitorAbstract
         return $raw;
     }
 
-    private function emitClassUse(Node $where, ?Node\Name $cls): void
+    private function emitClassUse(Node $where, ?Node\Name $cls, ?string $rel = null): void
     {
         if ($cls === null) return;
         // self / static / parent are pseudo-classes referring to the current
@@ -475,12 +482,17 @@ final class Visitor extends NodeVisitorAbstract
         // on the TS side. PHP class names are case-insensitive — match on
         // lowercase so `imagick` and `Imagick` both hit.
         if (self::isPhpBuiltinClass($resolved)) return;
+        // $rel tags the kind of class reference. Only `extends` is tagged, so
+        // the cross-file resolver can isolate inheritance edges from the
+        // implements / new / static-call uses that also flow through here.
+        $payload = ['kind' => 'symbol-use', 'name' => $resolved];
+        if ($rel !== null) $payload['meta'] = ['rel' => $rel];
         $this->facts[] = [
             'kind' => 'symbol-use',
             'resolved' => true,
             'location' => $this->loc($where),
             'anchors' => [['key' => 'php-symbol:' . $resolved, 'role' => 'subject']],
-            'payload' => ['kind' => 'symbol-use', 'name' => $resolved],
+            'payload' => $payload,
         ];
     }
 
@@ -535,6 +547,7 @@ final class Visitor extends NodeVisitorAbstract
             $args = $this->extractArgs($n);
             $payload = ['kind' => $p['emit']];
             $resolved = true;
+            $this->unresolvedThisProps = [];
             foreach (($p['bind'] ?? []) as $field => $b) {
                 $i = $b['arg'];
                 $v = $this->readLiteral($args[$i] ?? null, $b['type']);
@@ -586,26 +599,42 @@ final class Visitor extends NodeVisitorAbstract
         $joined = '/' . $ns . ($rt === '' ? '' : '/' . $rt);
         // Collapse any run of slashes — empty namespace/route would yield // or ///.
         $joined = preg_replace('#/+#', '/', $joined) ?? $joined;
-        // Regex segments like (?P<name>\d+) or (?<slug>...) → {*}
-        $anchorBody = $this->collapseRouteParams($joined);
-        // If either input carried {*} from the skeleton machinery, the result has it too.
-        $hasWildcard = str_contains($anchorBody, '{*}');
+        // {*} present BEFORE route-param collapse means an unresolved namespace
+        // or route base (skeleton) — a genuine failure. {*} that appears only
+        // AFTER collapse is a normalized regex route param — extracted correctly.
+        $skeletonWild = str_contains($joined, '{*}');
+        $anchorBody   = $this->collapseRouteParams($joined);
+        $routeParam   = !$skeletonWild && str_contains($anchorBody, '{*}');
+        $resolved     = !$skeletonWild;
 
         $methods = $this->extractRestMethods($n);
         if ($methods === []) $methods = ['GET'];
 
+        // A $this->prop miss left a {*} in the joined input — record which
+        // properties so the cross-file resolver knows what to fill.
+        $unresolved = null;
+        if ($skeletonWild && $this->unresolvedThisProps !== []) {
+            $unresolved = [
+                'class'  => (end($this->classStack) ?: null),
+                'fields' => array_values(array_unique($this->unresolvedThisProps)),
+            ];
+        }
+
         foreach ($methods as $method) {
+            $payload = [
+                'kind' => 'rest-endpoint',
+                'method' => $method,
+                'route' => $route,
+                'namespace' => $namespace,
+            ];
+            if ($routeParam) $payload['routeParam'] = true;
+            if ($unresolved !== null) $payload['unresolved'] = $unresolved;
             $this->facts[] = [
                 'kind' => 'rest-endpoint',
-                'resolved' => !$hasWildcard,
+                'resolved' => $resolved,
                 'location' => $this->loc($n),
                 'anchors' => [['key' => "rest:{$method} {$anchorBody}", 'role' => 'subject']],
-                'payload' => [
-                    'kind' => 'rest-endpoint',
-                    'method' => $method,
-                    'route' => $route,
-                    'namespace' => $namespace,
-                ],
+                'payload' => $payload,
             ];
         }
     }
@@ -778,6 +807,9 @@ final class Visitor extends NodeVisitorAbstract
             }
             // Known to be a $this->prop fragment but its default is not a
             // string literal — skeletonize rather than drop the whole fact.
+            // Record the property name so the cross-file resolver can fill it
+            // from an inherited declaration.
+            $this->unresolvedThisProps[] = $node->name->name;
             return '{*}';
         }
         return null;

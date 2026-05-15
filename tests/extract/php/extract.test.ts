@@ -427,8 +427,37 @@ ti_deletemeelephant_helper();
     expect(rest).toBeDefined();
     expect(rest?.anchors[0]?.key).toBe('rest:GET /wc/v3/products/{*}');
     expect((rest?.payload as { route?: string }).route).toBe('/products/(?P<id>\\d+)');
-    // anchor body contains {*} → partial fact
+    // {*} came from a route param, not a skeleton → the fact is resolved.
+    expect(rest?.resolved).toBe(true);
+  });
+
+  it('marks a route-param-only rest-endpoint resolved with routeParam set', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wp/v2', '/comments/(?P<id>\\\\d+)', []);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /wp/v2/comments/{*}');
+    expect(rest?.resolved).toBe(true);
+    expect((rest?.payload as { routeParam?: boolean }).routeParam).toBe(true);
+  });
+
+  it('keeps a skeleton-namespace rest-endpoint unresolved without routeParam', async () => {
+    const root = getTmp();
+    // $x is not statically known → readStringSkeleton yields {*}.
+    write(root, 'plugin.php', "<?php function f($x){ register_rest_route($x, '/items', []); }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
     expect(rest?.resolved).toBe(false);
+    expect((rest?.payload as { routeParam?: boolean }).routeParam).toBeUndefined();
+  });
+
+  it('keeps a fully-literal rest-endpoint resolved with no routeParam', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wp/v2', '/items', []);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.resolved).toBe(true);
+    expect((rest?.payload as { routeParam?: boolean }).routeParam).toBeUndefined();
   });
 
   it('emits one rest-endpoint per HTTP method when methods is an array', async () => {
@@ -685,5 +714,54 @@ ti_deletemeelephant_helper();
     const facts = await extractPhpFile({ projectRoot: root, relPath: 'controllers.php', worker });
     const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
     expect(keys).toEqual(['rest:GET /ctor-a/v1/x', 'rest:GET /ctor-b/v1/y']);
+  });
+
+  it('emits class symbol-def with meta.props for string-literal properties', async () => {
+    const root = getTmp();
+    write(root, 'controller.php', "<?php class C { protected $namespace = 'wp/v2'; protected $rest_base = 'items'; }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'controller.php', worker });
+    const def = facts.find((f) => f.kind === 'symbol-def' && (f.payload as { name?: string }).name === 'C');
+    expect(def).toBeDefined();
+    const props = (def?.payload as { meta?: { props?: Record<string, string> } }).meta?.props;
+    expect(props).toEqual({ namespace: 'wp/v2', rest_base: 'items' });
+  });
+
+  it('omits meta.props when a class has no string-literal properties', async () => {
+    const root = getTmp();
+    write(root, 'plain.php', '<?php class Plain { protected $count = 0; }');
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plain.php', worker });
+    const def = facts.find((f) => f.kind === 'symbol-def' && (f.payload as { name?: string }).name === 'Plain');
+    expect((def?.payload as { meta?: unknown }).meta).toBeUndefined();
+  });
+
+  it('tags the extends symbol-use with meta.rel=extends, untagged for implements', async () => {
+    const root = getTmp();
+    write(root, 'child.php', '<?php interface I {} class Base {} class Child extends Base implements I {}');
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'child.php', worker });
+    const uses = facts.filter((f) => f.kind === 'symbol-use');
+    const baseUse = uses.find((f) => (f.payload as { name?: string }).name === 'Base');
+    const ifaceUse = uses.find((f) => (f.payload as { name?: string }).name === 'I');
+    expect((baseUse?.payload as { meta?: { rel?: string } }).meta?.rel).toBe('extends');
+    expect((ifaceUse?.payload as { meta?: unknown }).meta).toBeUndefined();
+  });
+
+  it('annotates rest-endpoint with unresolved class/fields when namespace is a $this->prop miss', async () => {
+    const root = getTmp();
+    write(root, 'ctl.php', "<?php class Ctl { public function reg(){ register_rest_route($this->namespace, '/items', []); } }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'ctl.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.resolved).toBe(false);
+    const u = (rest?.payload as { unresolved?: { class?: string; fields?: string[] } }).unresolved;
+    expect(u?.class).toBe('Ctl');
+    expect(u?.fields).toEqual(['namespace']);
+  });
+
+  it('does not annotate unresolved for a non-property concat skeleton', async () => {
+    const root = getTmp();
+    write(root, 'ns.php', "<?php function f($x){ register_rest_route('wp/v2', '/' . $x, []); }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'ns.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.resolved).toBe(false);
+    expect((rest?.payload as { unresolved?: unknown }).unresolved).toBeUndefined();
   });
 });
