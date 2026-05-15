@@ -31,6 +31,23 @@ describe('extractTsFile', () => {
     expect(kinds).toEqual(['import-edge', 'symbol-def']);
   });
 
+  it('emits symbol-use facts for imported call sites', async () => {
+    const root = getTmp();
+    write(root, 'src/bar.ts', 'export function foo() {}\n');
+    write(root, 'src/a.ts', "import { foo } from './bar';\nfoo();\n");
+    const opts = synthesizeCompilerOptions(root);
+    const facts = await extractTsFile({
+      projectRoot: root,
+      relPath: 'src/a.ts',
+      language: 'ts',
+      framework: null,
+      compilerOptions: opts,
+      patterns: [],
+    });
+    const su = facts.filter((f) => f.kind === 'symbol-use');
+    expect(su.map((f) => f.anchors[0]?.key)).toContain('js-symbol:src/bar.ts:foo');
+  });
+
   it('emits test-def when framework is set', async () => {
     const root = getTmp();
     write(root, 'tests/a.test.ts', "it('x', () => {});");

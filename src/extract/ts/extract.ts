@@ -5,7 +5,7 @@ import type { Fact, FactLocation } from '../../facts/types.js';
 import type { FrameworkName, Language } from '../../types.js';
 import type { UserPattern } from '../declarative/pattern.js';
 import { extractImports } from './imports.js';
-import { extractSymbols } from './symbols.js';
+import { extractSymbols, extractSymbolUses } from './symbols.js';
 import { extractTestDefs } from './tests.js';
 import { runDeclarativePatterns } from '../declarative/engine.js';
 
@@ -31,6 +31,7 @@ export async function extractTsFile(input: ExtractTsInput): Promise<Fact[]> {
   const facts: Fact[] = [];
   facts.push(...extractImports(sf, input.relPath, input.projectRoot, input.compilerOptions));
   facts.push(...extractSymbols(sf, input.relPath));
+  facts.push(...extractSymbolUses(sf, input.relPath, input.projectRoot, input.compilerOptions));
   facts.push(...extractTestDefs(sf, input.relPath, input.framework));
   facts.push(...runDeclarativePatterns(sf, input.relPath, input.patterns));
 

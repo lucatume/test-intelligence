@@ -1,5 +1,6 @@
+import { relative, sep } from 'node:path';
 import ts from 'typescript';
-import type { Fact, FactLocation, SymbolDefPayload } from '../../facts/types.js';
+import type { Fact, FactLocation, SymbolDefPayload, SymbolUsePayload } from '../../facts/types.js';
 import type { AnchorKey } from '../../types.js';
 
 interface SymbolEntry {
@@ -75,6 +76,134 @@ export function extractSymbols(sf: ts.SourceFile, relPath: string): Fact[] {
     });
   }
   return facts;
+}
+
+interface ResolvedImport {
+  readonly resolvedFile: string;
+  readonly importedName: string;
+}
+
+// Emits `symbol-use` facts (role `target`) for call/new/JSX-component sites
+// whose callee is an identifier resolvable to a `symbol-def` — either an
+// import of a project file or a same-file top-level declaration. Unresolvable
+// identifiers (globals, bare-package imports) produce no fact: there is no
+// `symbol-def` to bridge to, so the fact would be pure noise.
+export function extractSymbolUses(
+  sf: ts.SourceFile,
+  relPath: string,
+  projectRoot: string,
+  options: ts.CompilerOptions,
+): Fact[] {
+  const localNames = collectTopLevelNames(sf);
+  const importMap = buildImportMap(sf, projectRoot, options);
+  const emitted = new Map<string, { name: string; location: FactLocation }>();
+
+  const recordUse = (name: string, node: ts.Node): void => {
+    let anchorBody: string;
+    let resolvedName: string;
+    const imp = importMap.get(name);
+    if (imp) {
+      anchorBody = `${imp.resolvedFile}:${imp.importedName}`;
+      resolvedName = imp.importedName;
+    } else if (localNames.has(name)) {
+      anchorBody = `${relPath}:${name}`;
+      resolvedName = name;
+    } else {
+      return;
+    }
+    const key = `js-symbol:${anchorBody}`;
+    if (emitted.has(key)) return;
+    const start = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+    const end = sf.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
+    emitted.set(key, {
+      name: resolvedName,
+      location: { file: relPath as FactLocation['file'], startLine: start, endLine: end },
+    });
+  };
+
+  const walk = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression)) {
+      recordUse(n.expression.text, n);
+    } else if (ts.isNewExpression(n) && ts.isIdentifier(n.expression)) {
+      recordUse(n.expression.text, n);
+    } else if (
+      (ts.isJsxOpeningElement(n) || ts.isJsxSelfClosingElement(n)) &&
+      ts.isIdentifier(n.tagName)
+    ) {
+      recordUse(n.tagName.text, n);
+    }
+    ts.forEachChild(n, walk);
+  };
+  walk(sf);
+
+  const facts: Fact[] = [];
+  for (const [key, { name, location }] of emitted) {
+    const payload: SymbolUsePayload = { kind: 'symbol-use', name };
+    facts.push({
+      kind: 'symbol-use',
+      resolved: true,
+      location,
+      anchors: [{ key: key as AnchorKey, role: 'target' }],
+      payload,
+    });
+  }
+  return facts;
+}
+
+function collectTopLevelNames(sf: ts.SourceFile): Set<string> {
+  const names = new Set<string>();
+  for (const stmt of sf.statements) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name) names.add(stmt.name.text);
+    else if (ts.isClassDeclaration(stmt) && stmt.name) names.add(stmt.name.text);
+    else if (ts.isVariableStatement(stmt)) {
+      for (const d of stmt.declarationList.declarations) {
+        if (ts.isIdentifier(d.name)) names.add(d.name.text);
+      }
+    }
+  }
+  return names;
+}
+
+function buildImportMap(
+  sf: ts.SourceFile,
+  projectRoot: string,
+  options: ts.CompilerOptions,
+): Map<string, ResolvedImport> {
+  const map = new Map<string, ResolvedImport>();
+  const host = ts.createCompilerHost(options, true);
+
+  const resolveSpecifier = (specifier: string): string | undefined => {
+    const resolved = ts.resolveModuleName(specifier, sf.fileName, options, host);
+    if (!resolved.resolvedModule) return undefined;
+    const rel = toPosix(relative(projectRoot, resolved.resolvedModule.resolvedFileName));
+    if (rel.startsWith('..') || rel.startsWith('/')) return undefined;
+    return rel;
+  };
+
+  for (const stmt of sf.statements) {
+    if (!ts.isImportDeclaration(stmt)) continue;
+    if (!ts.isStringLiteral(stmt.moduleSpecifier)) continue;
+    const clause = stmt.importClause;
+    if (!clause) continue;
+    const resolvedFile = resolveSpecifier(stmt.moduleSpecifier.text);
+    if (resolvedFile === undefined) continue;
+    if (clause.name) {
+      map.set(clause.name.text, { resolvedFile, importedName: 'default' });
+    }
+    if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+      for (const el of clause.namedBindings.elements) {
+        const importedName = el.propertyName?.text ?? el.name.text;
+        map.set(el.name.text, { resolvedFile, importedName });
+      }
+    }
+    // Namespace imports (import * as ns) are skipped: member access through
+    // them is out of scope per the spec.
+  }
+  return map;
+}
+
+function toPosix(p: string): string {
+  return sep === '/' ? p : p.split(sep).join('/');
 }
 
 function isExport(n: ts.Node): boolean {
