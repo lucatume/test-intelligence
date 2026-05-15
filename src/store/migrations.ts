@@ -5,7 +5,7 @@ import type Database from 'better-sqlite3';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-export const CURRENT_SCHEMA_VERSION = 2;
+export const CURRENT_SCHEMA_VERSION = 3;
 
 export function readCurrentSchema(): string {
   return readFileSync(join(here, 'schema.sql'), 'utf8');
@@ -51,10 +51,14 @@ export function migrateToCurrent(db: Database.Database): void {
   if (current > CURRENT_SCHEMA_VERSION) {
     throw new Error(`migrateToCurrent: schema v${String(current)} newer than supported v${String(CURRENT_SCHEMA_VERSION)}`);
   }
-  if (current === 1) {
-    migrateV1ToV2(db);
-  } else {
+  if (current < 1) {
     throw new Error(`migrateToCurrent: no migration path from v${String(current)}`);
+  }
+  if (current < 2) {
+    migrateV1ToV2(db);
+  }
+  if (current < 3) {
+    migrateV2ToV3(db);
   }
 }
 
@@ -69,6 +73,21 @@ function migrateV1ToV2(db: Database.Database): void {
     db.exec('DROP INDEX IF EXISTS edge_prov_fact_idx');
     db.exec('DROP TABLE IF EXISTS edge_provenance');
     db.prepare('UPDATE schema_version SET version = ?').run(2);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+function migrateV2ToV3(db: Database.Database): void {
+  db.exec('BEGIN');
+  try {
+    // Index test(fact_id) so the fact->test ON DELETE CASCADE is
+    // index-resolved. Without it, clearFactsForFile's per-fact DELETE
+    // forces a full SCAN of `test` to enforce the cascade.
+    db.exec('CREATE INDEX IF NOT EXISTS test_fact_idx ON test(fact_id)');
+    db.prepare('UPDATE schema_version SET version = ?').run(3);
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');

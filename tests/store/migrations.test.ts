@@ -96,7 +96,7 @@ describe('migrateToCurrent v1 -> v2', () => {
       expect(getSchemaVersion(db)).toBe(1);
       migrateToCurrent(db);
       expect(getSchemaVersion(db)).toBe(CURRENT_SCHEMA_VERSION);
-      expect(CURRENT_SCHEMA_VERSION).toBe(2);
+      expect(CURRENT_SCHEMA_VERSION).toBe(3);
     } finally { db.close(); }
   });
 
@@ -151,13 +151,43 @@ describe('migrateToCurrent v1 -> v2', () => {
     } finally { db.close(); }
   });
 
-  it('is a no-op on v2', () => {
+  it('is a no-op on the current version', () => {
     const db = makeV1Store(getTmp());
     try {
       migrateToCurrent(db);
-      expect(getSchemaVersion(db)).toBe(2);
+      expect(getSchemaVersion(db)).toBe(3);
       migrateToCurrent(db);
-      expect(getSchemaVersion(db)).toBe(2);
+      expect(getSchemaVersion(db)).toBe(3);
+    } finally { db.close(); }
+  });
+});
+
+describe('migrateToCurrent v2 -> v3', () => {
+  const getTmp = useTmpDir('ti-migrate-v2v3-');
+
+  it('adds the test_fact_idx index and bumps schema_version to 3', () => {
+    // A v1 store migrated forward must reach v3 with the index present.
+    const db = makeV1Store(getTmp());
+    try {
+      migrateToCurrent(db);
+      expect(getSchemaVersion(db)).toBe(3);
+      const indexes = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='index'")
+        .all() as Array<{ name: string }>;
+      expect(indexes.map((i) => i.name)).toContain('test_fact_idx');
+    } finally { db.close(); }
+  });
+
+  it('test_fact_idx resolves the fact-delete cascade without a table scan', () => {
+    const db = makeV1Store(getTmp());
+    try {
+      migrateToCurrent(db);
+      const plan = db
+        .prepare('EXPLAIN QUERY PLAN DELETE FROM test WHERE fact_id = ?')
+        .all(1) as Array<{ detail: string }>;
+      const detail = plan.map((r) => r.detail).join(' ');
+      expect(detail).toContain('test_fact_idx');
+      expect(detail).not.toContain('SCAN test');
     } finally { db.close(); }
   });
 });

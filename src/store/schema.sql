@@ -53,6 +53,10 @@ CREATE TABLE test (
   framework_class  TEXT NOT NULL,
   fact_id          INTEGER NOT NULL REFERENCES fact(id) ON DELETE CASCADE
 );
+-- Index test(fact_id) so the fact->test ON DELETE CASCADE is index-resolved.
+-- Without it, clearFactsForFile's per-fact DELETE forces a full SCAN of
+-- `test` to enforce the cascade — the dominant cost of a re-build.
+CREATE INDEX test_fact_idx ON test(fact_id);
 
 -- edge intentionally has no REFERENCES — it is rebuilt by the derive phase
 -- and tolerates brief dangling rows during rebuild. `provenance` is a JSON
