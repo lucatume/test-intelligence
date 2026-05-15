@@ -20,7 +20,6 @@ export interface TraversalResult {
 
 interface EvidenceAgg {
   readonly kinds: Map<EdgeKind, Set<number>>;
-  partial: boolean;
 }
 
 interface QueueItem {
@@ -28,7 +27,6 @@ interface QueueItem {
   readonly depth: number;
   readonly arrivalKind: EdgeKind | null;
   readonly arrivalFactId: number | null;
-  readonly arrivalResolved: boolean;
 }
 
 // Cadence for the wall-clock bound check inside the BFS hot loop. Checking
@@ -68,7 +66,7 @@ export function traverseTest(
   for (const f of testFileFacts) {
     if (enqueued.has(f.id)) continue;
     enqueued.add(f.id);
-    queue.push({ fact: f, depth: 0, arrivalKind: null, arrivalFactId: null, arrivalResolved: true });
+    queue.push({ fact: f, depth: 0, arrivalKind: null, arrivalFactId: null });
   }
 
   while (head < queue.length) {
@@ -96,8 +94,8 @@ export function traverseTest(
     ) {
       // Credit the arriving fact (the one that produced the bridge) and this
       // fact (the destination) as evidence for the edge.
-      recordEvidence(evidence, file.id, cur.arrivalKind, cur.arrivalFactId, cur.arrivalResolved);
-      recordEvidence(evidence, file.id, cur.arrivalKind, cur.fact.id, cur.fact.resolved);
+      recordEvidence(evidence, file.id, cur.arrivalKind, cur.arrivalFactId);
+      recordEvidence(evidence, file.id, cur.arrivalKind, cur.fact.id);
     }
 
     // Walk outward through this fact's relations.
@@ -116,7 +114,13 @@ export function traverseTest(
     }
     const confidence = combineConfidence(baseValues);
     if (confidence < options.threshold) continue;
-    edges.push({ testId, source: sourceFile.path, confidence, partial: agg.partial, evidence: kinds });
+    // partial reflects evidence quality: true iff at least one evidence kind
+    // is an *-uncertain / *-partial variant. It is NOT contaminated by the
+    // resolved flag of destination facts that never produced a bridge kind.
+    const partial = kinds.some(
+      (kk) => kk.kind.endsWith('-uncertain') || kk.kind.endsWith('-partial'),
+    );
+    edges.push({ testId, source: sourceFile.path, confidence, partial, evidence: kinds });
   }
   return { edges, bounded };
 }
@@ -143,7 +147,7 @@ function enqueueDownstream(
         for (const f of graph.factsByFile.get(target.id) ?? []) {
           if (enqueued.has(f.id)) continue;
           enqueued.add(f.id);
-          queue.push({ fact: f, depth: depth + 1, arrivalKind: kind, arrivalFactId: fact.id, arrivalResolved: fact.resolved });
+          queue.push({ fact: f, depth: depth + 1, arrivalKind: kind, arrivalFactId: fact.id });
         }
       }
     }
@@ -158,7 +162,7 @@ function enqueueDownstream(
         for (const f of graph.factsByFile.get(file.id) ?? []) {
           if (enqueued.has(f.id)) continue;
           enqueued.add(f.id);
-          queue.push({ fact: f, depth: depth + 1, arrivalKind: kind, arrivalFactId: fact.id, arrivalResolved: fact.resolved });
+          queue.push({ fact: f, depth: depth + 1, arrivalKind: kind, arrivalFactId: fact.id });
         }
       }
     }
@@ -178,8 +182,8 @@ function enqueueDownstream(
       // shorter-arrival kind (e.g. php-include) reaches the partner first.
       const partnerFile = graph.files.get(partner.fileId);
       if (partnerFile && partnerFile.id !== testFileId && !partnerFile.vendor) {
-        recordEvidence(evidence, partnerFile.id, bridgeKind, fact.id, fact.resolved);
-        recordEvidence(evidence, partnerFile.id, bridgeKind, partner.id, partner.resolved);
+        recordEvidence(evidence, partnerFile.id, bridgeKind, fact.id);
+        recordEvidence(evidence, partnerFile.id, bridgeKind, partner.id);
       }
       if (enqueued.has(partner.id)) continue;
       enqueued.add(partner.id);
@@ -188,7 +192,6 @@ function enqueueDownstream(
         depth: depth + 1,
         arrivalKind: bridgeKind,
         arrivalFactId: fact.id,
-        arrivalResolved: fact.resolved,
       });
     }
   }
@@ -239,11 +242,10 @@ function recordEvidence(
   fileId: number,
   kind: EdgeKind,
   factId: number,
-  resolved: boolean,
 ): void {
   let entry = store.get(fileId);
   if (!entry) {
-    entry = { kinds: new Map(), partial: false };
+    entry = { kinds: new Map() };
     store.set(fileId, entry);
   }
   let ids = entry.kinds.get(kind);
@@ -252,7 +254,6 @@ function recordEvidence(
     entry.kinds.set(kind, ids);
   }
   ids.add(factId);
-  if (!resolved) entry.partial = true;
 }
 
 function complementaryFactsForRole(

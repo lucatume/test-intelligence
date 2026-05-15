@@ -91,6 +91,31 @@ describe('traverseTest', () => {
     expect(sources).not.toContain('b.php');
   });
 
+  it('edge.partial is false when every evidence kind is a resolved variant', () => {
+    // a.php is reached via a resolved js-import; one of a.php's own facts is
+    // resolved=false but never feeds a bridge kind. The js-import edge to
+    // a.php must NOT be marked partial — partial reflects evidence kinds only.
+    const base = tinyGraph();
+    const fire = base.facts.get(200);
+    if (!fire) throw new Error('fixture');
+    const patchedFire: FactRow = { ...fire, resolved: false };
+    const facts = new Map(base.facts);
+    facts.set(200, patchedFire);
+    const factsByFile = new Map(base.factsByFile);
+    factsByFile.set(2, [patchedFire]);
+    const g: Graph = { ...base, facts, factsByFile };
+    const idx = buildAnchorIndex(g);
+    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(['thing']), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    const aEdge = r.edges.find((e) => e.source === 'a.php');
+    expect(aEdge).toBeDefined();
+    expect(aEdge?.evidence.every((e) => e.kind === 'js-import')).toBe(true);
+    expect(aEdge?.partial).toBe(false);
+  });
+
   it('e2e tests walk REST edges; unit tests do not', () => {
     const f1: FileRow = { id: 1, path: 'tests/e2e.spec.ts', language: 'ts', vendor: false, framework: 'playwright', frameworkClass: 'e2e' };
     const f2: FileRow = { id: 2, path: 'src/endpoint.php', language: 'php', vendor: false, framework: null, frameworkClass: null };
@@ -155,6 +180,8 @@ describe('traverseTest — wildcard bridge', () => {
     expect(r.edges.map((e) => e.source)).toEqual(['src/listener.php']);
     const kinds = r.edges[0]?.evidence.map((e) => e.kind) ?? [];
     expect(kinds).toContain('hook-mediated-uncertain');
+    // An edge carrying an *-uncertain evidence kind is partial.
+    expect(r.edges[0]?.partial).toBe(true);
   });
 
   it('emits hook-mediated-uncertain via literal fact → wildcard listener', () => {
