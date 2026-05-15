@@ -60,6 +60,14 @@ export interface RestEndpointPayload {
   readonly method: string;
   readonly route: string;
   readonly callback?: string;
+  /** Set true when the route carried a normalized regex param (`(?P<id>…)` → `{*}`). */
+  readonly routeParam?: boolean;
+  /** Present on facts left unresolved by a `$this->prop` miss — context for the
+   *  cross-file resolver: the enclosing class FQN and the unresolved property names. */
+  readonly unresolved?: {
+    readonly class: string | null;
+    readonly fields: readonly string[];
+  };
 }
 
 export interface RestCallJsPayload {
