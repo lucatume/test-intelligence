@@ -14,6 +14,7 @@ import {
   upsertAnchor,
   insertFactAnchor,
   insertTest,
+  clearFactsForFile,
 } from '../store/writers.js';
 import { walk } from '../discover/walk.js';
 import { classifyFile } from '../discover/framework.js';
@@ -144,6 +145,10 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
               framework: file.framework,
               frameworkClass: file.frameworkClass,
             });
+            // Per-file delete-then-insert: drop this file's prior facts so a
+            // re-build (cold start or `ti update`) replaces facts instead of
+            // appending. fact_anchor cascades; anchors are keyed and shared.
+            clearFactsForFile(db, fileId);
             filesExtracted++;
             for (const f of r.value) {
               const factId = insertFact(db, {
@@ -203,6 +208,10 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       });
       const derivePhaseMs = opts.clock.nowMillis() - derivePhaseStart;
 
+      const evidenceCount = (
+        db.prepare('SELECT COUNT(*) AS n FROM edge, json_each(edge.evidence)').get() as { n: number }
+      ).n;
+
       const elapsedMillis = opts.clock.nowMillis() - startMs;
       const timings: BuildTimings = {
         lockMs,
@@ -225,6 +234,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
         factsInserted,
         testsFound,
         edgesWritten: deriveSummary.edgesWritten,
+        evidenceCount,
         testsBounded: deriveSummary.testsBounded,
         elapsedMillis,
         timings,
@@ -232,7 +242,8 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       if (verbosity !== 'quiet') {
         opts.stderr.write(
           `ti: build complete — ${String(filesExtracted)} files, ${String(factsInserted)} facts, ` +
-          `${String(testsFound)} tests, ${String(deriveSummary.edgesWritten)} edges` +
+          `${String(testsFound)} tests, ${String(deriveSummary.edgesWritten)} edges, ` +
+          `${String(evidenceCount)} evidence` +
           (deriveSummary.testsBounded > 0 ? ` (${String(deriveSummary.testsBounded)} bounded)` : '') +
           ` in ${String(elapsedMillis)}ms\n`,
         );

@@ -57,6 +57,11 @@ export interface BuildSummary {
   readonly factsInserted: number;
   readonly testsFound: number;
   readonly edgesWritten: number;
+  // Total evidence-kind count across all edges:
+  // SELECT COUNT(*) FROM edge, json_each(edge.evidence). Rises when extraction
+  // finds a new evidence path to an already-known (test, source) pair — a more
+  // sensitive quality signal than the dedup-stable edge count.
+  readonly evidenceCount: number;
   readonly testsBounded: number;
   readonly elapsedMillis: number;
   readonly timings: BuildTimings;

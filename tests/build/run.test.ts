@@ -20,6 +20,42 @@ function write(root: string, rel: string, body: string): void {
 describe.skipIf(!hasPhpAvailable())('runBuild end-to-end', () => {
   const getTmp = useTmpDir('ti-build-run-');
 
+  it('does not accumulate fact rows across repeated cold-start builds', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+function ti_deletemeelephant_helper() {}
+ti_deletemeelephant_helper();
+`);
+    write(root, 'src/mod.ts', `export function modFn() {}`);
+
+    const cfgRes = parseConfig({ confidence: { threshold: 0 } });
+    if (cfgRes.kind === 'err') throw new Error('cfg');
+
+    const runOnce = async (): Promise<number> => {
+      const r = await runBuild({
+        projectRoot: root,
+        config: cfgRes.value,
+        clock: systemClock,
+        stderr: { write: () => {} },
+        repoRoot,
+      });
+      expect(r.kind).toBe('ok');
+      const s = openStore(root);
+      if (s.kind === 'err') throw new Error(s.error.message);
+      try {
+        const row = s.value.db.prepare('SELECT COUNT(*) AS n FROM fact').get() as { n: number };
+        return row.n;
+      } finally {
+        s.value.close();
+      }
+    };
+
+    const first = await runOnce();
+    const second = await runOnce();
+    expect(first).toBeGreaterThan(0);
+    expect(second).toBe(first);
+  });
+
   it('discovers → extracts → derives, populates the store, prints summary', async () => {
     const root = getTmp();
     write(root, 'plugin.php', `<?php
@@ -57,16 +93,23 @@ test('cart flow', async () => { clientFn(); });
       expect(r.value.filesExtracted).toBeGreaterThan(0);
       expect(r.value.testsFound).toBeGreaterThan(0);
       expect(r.value.edgesWritten).toBeGreaterThan(0);
+      expect(r.value.evidenceCount).toBeGreaterThan(0);
     }
     expect(lines.join('')).toMatch(/build complete/);
+    const summaryLine = lines.find((l) => l.includes('build complete'));
+    expect(summaryLine).toContain('evidence');
 
     const sRes = openStore(root);
     if (sRes.kind !== 'ok') throw new Error('store');
     try {
       const fileCount = (sRes.value.db.prepare('SELECT COUNT(*) AS n FROM file').get() as { n: number }).n;
       const edgeCount = (sRes.value.db.prepare('SELECT COUNT(*) AS n FROM edge').get() as { n: number }).n;
+      const evRow = sRes.value.db
+        .prepare('SELECT COUNT(*) AS n FROM edge, json_each(edge.evidence)')
+        .get() as { n: number };
       expect(fileCount).toBeGreaterThanOrEqual(4);
       expect(edgeCount).toBeGreaterThan(0);
+      if (r.kind === 'ok') expect(r.value.evidenceCount).toBe(evRow.n);
     } finally { sRes.value.close(); }
   });
 
