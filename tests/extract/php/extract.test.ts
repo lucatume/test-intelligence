@@ -480,4 +480,110 @@ ti_deletemeelephant_helper();
     expect(sc?.anchors[0]?.key).toBe('shortcode:my_tag');
     expect((sc?.payload as { tag?: string }).tag).toBe('my_tag');
   });
+
+  it('collapses a char-class route param containing a literal paren', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wc/v3', '/products/(?P<id>[\\\\d)]+)', []);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /wc/v3/products/{*}');
+  });
+
+  it('collapses a nested-group route param', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wc/v3', '/items/(?P<id>(\\\\d+))', []);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /wc/v3/items/{*}');
+  });
+
+  it('collapses the unnamed-capture WP route-param form (?<name>...)', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wc/v3', '/posts/(?<slug>[a-z-]+)', []);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /wc/v3/posts/{*}');
+  });
+
+  it('collapses two regex route segments in one route', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wc/v3', '/(?P<type>[a-z]+)/(?P<id>\\\\d+)', []);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /wc/v3/{*}/{*}');
+  });
+
+  it('collapses double slash from an empty namespace', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('', '/test-empty-namespace', []);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /test-empty-namespace');
+  });
+
+  it('handles an empty route', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('myplugin/v1', '', []);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /myplugin/v1');
+  });
+
+  it('handles both namespace and route empty', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('', '', []);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /');
+  });
+
+  it('resolves $this->prop with a string-literal default in a REST route', async () => {
+    const root = getTmp();
+    write(
+      root,
+      'controller.php',
+      "<?php\nclass Ti_Controller {\n  protected $namespace = 'wp-abilities/v1';\n  protected $rest_base = 'abilities';\n  public function register() {\n    register_rest_route($this->namespace, '/' . $this->rest_base, []);\n  }\n}\n",
+    );
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'controller.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /wp-abilities/v1/abilities');
+    expect(rest?.resolved).toBe(true);
+  });
+
+  it('resolves a typed property default', async () => {
+    const root = getTmp();
+    write(
+      root,
+      'controller.php',
+      "<?php\nclass Ti_Typed {\n  protected string $namespace = 'typed/v2';\n  public function register() {\n    register_rest_route($this->namespace, '/items', []);\n  }\n}\n",
+    );
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'controller.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /typed/v2/items');
+  });
+
+  it('leaves $this->prop unresolved when the property has no string-literal default', async () => {
+    const root = getTmp();
+    write(
+      root,
+      'controller.php',
+      "<?php\nclass Ti_NoDefault {\n  protected $namespace;\n  public function register() {\n    register_rest_route($this->namespace, '/items', []);\n  }\n}\n",
+    );
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'controller.php', worker });
+    const rest = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(rest?.anchors[0]?.key).toBe('rest:GET /{*}/items');
+    expect(rest?.resolved).toBe(false);
+  });
+
+  it('keeps two same-file classes property tables separate', async () => {
+    const root = getTmp();
+    write(
+      root,
+      'controllers.php',
+      "<?php\nclass Ti_A {\n  protected $namespace = 'ns-a/v1';\n  public function r() { register_rest_route($this->namespace, '/x', []); }\n}\nclass Ti_B {\n  protected $namespace = 'ns-b/v1';\n  public function r() { register_rest_route($this->namespace, '/y', []); }\n}\n",
+    );
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'controllers.php', worker });
+    const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual(['rest:GET /ns-a/v1/x', 'rest:GET /ns-b/v1/y']);
+  });
 });

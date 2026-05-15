@@ -34,6 +34,8 @@ final class Visitor extends NodeVisitorAbstract
     private array $defines = [];
     /** @var array<string, array<string, string>> */
     private array $classConsts = [];
+    /** @var array<string, array<string, string>> */
+    private array $classProps = [];
 
     /** @var array<string, true> Static PHP language built-ins. */
     private const PHP_BUILTIN_CLASSES = [
@@ -475,8 +477,10 @@ final class Visitor extends NodeVisitorAbstract
         $rt = ltrim($route, '/');
         $rt = rtrim($rt, '/');
         $joined = '/' . $ns . ($rt === '' ? '' : '/' . $rt);
-        // Regex segments like (?P<name>\d+) → {*}
-        $anchorBody = preg_replace('/\(\?P<[^>]+>[^)]+\)/', '{*}', $joined) ?? $joined;
+        // Collapse any run of slashes — empty namespace/route would yield // or ///.
+        $joined = preg_replace('#/+#', '/', $joined) ?? $joined;
+        // Regex segments like (?P<name>\d+) or (?<slug>...) → {*}
+        $anchorBody = $this->collapseRouteParams($joined);
         // If either input carried {*} from the skeleton machinery, the result has it too.
         $hasWildcard = str_contains($anchorBody, '{*}');
 
@@ -497,6 +501,46 @@ final class Visitor extends NodeVisitorAbstract
                 ],
             ];
         }
+    }
+
+    /**
+     * Collapse every PCRE named-group route param — (?P<n>…), (?<n>…) — to {*}.
+     * Brace-matched: tracks paren depth and treats [...] as a char-class span
+     * in which ( and ) are literal. A regex cannot do this (nested parens,
+     * ) inside a char class), hence a scanner.
+     */
+    private function collapseRouteParams(string $route): string
+    {
+        $out = '';
+        $len = strlen($route);
+        $i = 0;
+        while ($i < $len) {
+            $isNamed = (substr($route, $i, 4) === '(?P<') || (substr($route, $i, 3) === '(?<');
+            if (!$isNamed) {
+                $out .= $route[$i];
+                $i++;
+                continue;
+            }
+            // Consume the whole group, brace-matched.
+            $depth = 0;
+            $inClass = false;
+            while ($i < $len) {
+                $ch = $route[$i];
+                if ($inClass) {
+                    if ($ch === ']') $inClass = false;
+                } elseif ($ch === '[') {
+                    $inClass = true;
+                } elseif ($ch === '(') {
+                    $depth++;
+                } elseif ($ch === ')') {
+                    $depth--;
+                    if ($depth === 0) { $i++; break; }
+                }
+                $i++;
+            }
+            $out .= '{*}';
+        }
+        return $out;
     }
 
     /** @return list<string> */
@@ -617,6 +661,18 @@ final class Visitor extends NodeVisitorAbstract
             }
             return null;
         }
+        if ($node instanceof Node\Expr\PropertyFetch
+            && $node->var instanceof Node\Expr\Variable
+            && $node->var->name === 'this'
+            && $node->name instanceof Node\Identifier) {
+            $current = end($this->classStack);
+            if ($current !== false && isset($this->classProps[$current][$node->name->name])) {
+                return $this->classProps[$current][$node->name->name];
+            }
+            // Known to be a $this->prop fragment but its default is not a
+            // string literal — skeletonize rather than drop the whole fact.
+            return '{*}';
+        }
         return null;
     }
 
@@ -630,10 +686,12 @@ final class Visitor extends NodeVisitorAbstract
     {
         $this->defines = [];
         $this->classConsts = [];
+        $this->classProps = [];
         $traverser = new NodeTraverser();
         $defines = &$this->defines;
         $classConsts = &$this->classConsts;
-        $finder = new class($defines, $classConsts) extends NodeVisitorAbstract {
+        $classProps = &$this->classProps;
+        $finder = new class($defines, $classConsts, $classProps) extends NodeVisitorAbstract {
             private ?string $ns = null;
             /** @var list<string> */
             private array $stack = [];
@@ -641,8 +699,13 @@ final class Visitor extends NodeVisitorAbstract
             /**
              * @param array<string, string> $defines
              * @param array<string, array<string, string>> $classConsts
+             * @param array<string, array<string, string>> $classProps
              */
-            public function __construct(private array &$defines, private array &$classConsts) {}
+            public function __construct(
+                private array &$defines,
+                private array &$classConsts,
+                private array &$classProps,
+            ) {}
             public function enterNode(Node $node): void
             {
                 if ($node instanceof Node\Stmt\Namespace_) {
@@ -653,6 +716,7 @@ final class Visitor extends NodeVisitorAbstract
                     $fqn = $this->ns !== null ? $this->ns . '\\' . $node->name->name : $node->name->name;
                     $this->stack[] = $fqn;
                     $this->classConsts[$fqn] ??= [];
+                    $this->classProps[$fqn] ??= [];
                     return;
                 }
                 if ($node instanceof Node\Stmt\ClassConst) {
@@ -661,6 +725,17 @@ final class Visitor extends NodeVisitorAbstract
                         foreach ($node->consts as $c) {
                             if ($c->value instanceof Node\Scalar\String_) {
                                 $this->classConsts[$current][$c->name->name] = $c->value->value;
+                            }
+                        }
+                    }
+                    return;
+                }
+                if ($node instanceof Node\Stmt\Property) {
+                    $current = end($this->stack);
+                    if ($current !== false) {
+                        foreach ($node->props as $p) {
+                            if ($p->default instanceof Node\Scalar\String_) {
+                                $this->classProps[$current][$p->name->name] = $p->default->value;
                             }
                         }
                     }
