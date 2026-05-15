@@ -14,6 +14,11 @@ export interface BuildOptions {
   readonly config: ValidatedConfig;
   readonly clock: Clock;
   readonly onlyPaths?: readonly string[];
+  // When true, a discovered file whose content hash matches the stored
+  // `file.content_hash` and that already has facts is skipped — its facts,
+  // anchors, and test rows are left intact. Default (omitted/false) extracts
+  // every file. Set by `ti update`; `ti build` leaves it off (full cold start).
+  readonly skipUnchanged?: boolean;
   readonly stderr: { write(s: string): void };
   readonly verbosity?: 'quiet' | 'normal' | 'verbose';
   readonly timing?: BuildTimingOptions;
@@ -54,6 +59,9 @@ export interface BuildTimings {
 
 export interface BuildSummary {
   readonly filesExtracted: number;
+  // Files skipped because their content hash matched the stored hash and they
+  // already had facts. Always 0 when skipUnchanged is not set (`ti build`).
+  readonly filesSkipped: number;
   readonly factsInserted: number;
   readonly testsFound: number;
   readonly edgesWritten: number;

@@ -19,21 +19,22 @@ export async function updateCommand(args: UpdateCommandArgs): Promise<number> {
     const stdin = await args.io.readStdin();
     paths = stdin.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
   }
-  if (paths.length === 0) {
-    args.io.stderr.write('ti: no paths given; pass paths positionally or via stdin\n');
-    return 0;
-  }
 
   const cfg = await loadEffectiveConfig(args.projectRoot, args.io);
   if (cfg === null) return 1;
 
+  // No paths → re-validate hashes over the full discovery walk: every file is
+  // hashed, unchanged ones skip extraction, changed/new ones re-extract. With
+  // paths → differential update over the listed paths. Both run with the
+  // content-hash skip on; only `ti build` does a forced full extract.
   const r = await runBuild({
     projectRoot: args.projectRoot,
     config: cfg,
     clock: systemClock,
     stderr: args.io.stderr,
     verbosity: args.verbosity,
-    onlyPaths: paths,
+    skipUnchanged: true,
+    ...(paths.length > 0 ? { onlyPaths: paths } : {}),
     ...(args.timing !== undefined ? { timing: { emit: args.timing.emit, topN: args.timing.topN } } : {}),
     ...(args.repoRoot !== undefined ? { repoRoot: args.repoRoot } : {}),
   });

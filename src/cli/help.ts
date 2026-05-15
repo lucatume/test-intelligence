@@ -6,7 +6,8 @@ USAGE
 LIFECYCLE
   ti init                         Create ti.config.ts with detected defaults.
   ti build                        Cold-start: extract every file, derive all edges.
-  ti update [<paths...>]          Differential update.
+  ti update [<paths...>]          Differential update; skips unchanged files.
+                                  No paths: re-validate every file's hash (cheap).
   ti clean [--all] [--force]      Remove .ti/ contents (--all removes .ti/ itself).
   ti migrate                      Forward-only schema upgrade.
   ti unlock [--force]             Release stale .ti/.lock.

@@ -192,3 +192,27 @@ export function clearAllEdges(db: Database.Database): void {
 export function clearFactsForFile(db: Database.Database, fileId: number): void {
   db.prepare('DELETE FROM fact WHERE file_id = ?').run(fileId);
 }
+
+export interface FileExtractState {
+  readonly fileId: number;
+  readonly contentHash: string;
+  readonly factCount: number;
+}
+
+// Per-file state the incremental-skip check needs: the stored content hash
+// and how many fact rows the file currently has. `null` when the path has no
+// `file` row. The fact count is index-resolved via fact_file_idx.
+export function readFileExtractState(
+  db: Database.Database,
+  path: string,
+): FileExtractState | null {
+  const row = db
+    .prepare(
+      `SELECT f.id AS id, f.content_hash AS content_hash,
+              (SELECT COUNT(*) FROM fact WHERE file_id = f.id) AS fact_count
+       FROM file f WHERE f.path = ?`,
+    )
+    .get(path) as { id: number; content_hash: string; fact_count: number } | undefined;
+  if (row === undefined) return null;
+  return { fileId: row.id, contentHash: row.content_hash, factCount: row.fact_count };
+}

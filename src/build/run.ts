@@ -1,6 +1,5 @@
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { cpus } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +14,7 @@ import {
   insertFactAnchor,
   insertTest,
   clearFactsForFile,
+  readFileExtractState,
 } from '../store/writers.js';
 import { walk } from '../discover/walk.js';
 import { classifyFile } from '../discover/framework.js';
@@ -30,6 +30,7 @@ import { derive } from '../derive/derive.js';
 import { HOOK_STOP_LIST_BUILTINS, type ValidatedConfig } from '../config/parse.js';
 import type { BuildOptions, BuildSummary, BuildError, BuildTimings, SlowFile } from './types.js';
 import type { DiscoveredFile } from '../discover/types.js';
+import { contentHash } from './contentHash.js';
 
 // Files per BEGIN/COMMIT in the extract write loop. The store is opened in
 // WAL mode, so without batching every per-file statement (upsertFile,
@@ -68,6 +69,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
   try {
 
     let filesExtracted = 0;
+    let filesSkipped = 0;
     let factsInserted = 0;
     let testsFound = 0;
     let worker: PhpWorker | undefined;
@@ -121,7 +123,22 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
               if (verbosity === 'verbose') opts.stderr.write(`ti: skipped (read failed) ${file.path}\n`);
               continue;
             }
-            const contentHash = createHash('sha1').update(text).digest('hex');
+            const hash = contentHash(text);
+            // Incremental skip: a file whose content hash matches the stored
+            // hash and that already has facts did not change — leave its
+            // facts/anchors/test rows untouched and do no extraction. A
+            // hash-matched file with zero facts (failed/partial prior
+            // extraction) still re-extracts. Deterministic: no clock read.
+            if (opts.skipUnchanged === true) {
+              const state = readFileExtractState(db, file.path);
+              if (state !== null && state.contentHash === hash && state.factCount > 0) {
+                filesSkipped++;
+                if (verbosity === 'verbose') {
+                  opts.stderr.write(`ti: skipped (unchanged) ${file.path}\n`);
+                }
+                continue;
+              }
+            }
             const compilerOptions = compilerOptionsResolver.forFile(
               join(opts.projectRoot, file.path),
             );
@@ -156,7 +173,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
             const fileId = upsertFile(db, {
               path: file.path,
               language: file.language,
-              contentHash,
+              contentHash: hash,
               extractedAt: opts.clock.now(),
               isTest: file.framework !== null,
               framework: file.framework,
@@ -264,6 +281,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       };
       const summary: BuildSummary = {
         filesExtracted,
+        filesSkipped,
         factsInserted,
         testsFound,
         edgesWritten: deriveSummary.edgesWritten,
@@ -274,7 +292,9 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       };
       if (verbosity !== 'quiet') {
         opts.stderr.write(
-          `ti: build complete — ${String(filesExtracted)} files, ${String(factsInserted)} facts, ` +
+          `ti: build complete — ${String(filesExtracted)} files` +
+          (filesSkipped > 0 ? `, ${String(filesSkipped)} skipped` : '') +
+          `, ${String(factsInserted)} facts, ` +
           `${String(testsFound)} tests, ${String(deriveSummary.edgesWritten)} edges, ` +
           `${String(evidenceCount)} evidence` +
           (deriveSummary.testsBounded > 0 ? ` (${String(deriveSummary.testsBounded)} bounded)` : '') +
