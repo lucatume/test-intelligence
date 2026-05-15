@@ -127,6 +127,113 @@ final class Visitor extends NodeVisitorAbstract
         return isset(self::$phpBuiltinClassesLower[strtolower($name)]);
     }
 
+    /** @var array<string, true> Common PHP stdlib + WP-core functions with no
+     *  project symbol-def. A symbol-use for these is always a dead-end anchor,
+     *  so it is skipped. Pragmatic, not exhaustive. */
+    private const PHP_BUILTIN_FUNCTIONS = [
+        // type checks
+        'is_array' => true, 'is_string' => true, 'is_int' => true, 'is_integer' => true,
+        'is_bool' => true, 'is_float' => true, 'is_numeric' => true, 'is_null' => true,
+        'is_object' => true, 'is_callable' => true, 'is_scalar' => true, 'is_iterable' => true,
+        'is_a' => true, 'gettype' => true, 'settype' => true, 'intval' => true,
+        'strval' => true, 'floatval' => true, 'boolval' => true,
+        // arrays
+        'array_map' => true, 'array_filter' => true, 'array_merge' => true,
+        'array_keys' => true, 'array_values' => true, 'array_key_exists' => true,
+        'array_search' => true, 'array_slice' => true, 'array_splice' => true,
+        'array_push' => true, 'array_pop' => true, 'array_shift' => true,
+        'array_unshift' => true, 'array_reverse' => true, 'array_unique' => true,
+        'array_flip' => true, 'array_combine' => true, 'array_fill' => true,
+        'array_diff' => true, 'array_intersect' => true, 'array_column' => true,
+        'array_reduce' => true, 'array_walk' => true, 'array_sum' => true,
+        'array_product' => true, 'array_chunk' => true, 'array_pad' => true,
+        'array_key_first' => true, 'array_key_last' => true, 'in_array' => true,
+        'array_fill_keys' => true, 'array_diff_key' => true, 'array_intersect_key' => true,
+        'count' => true, 'sizeof' => true, 'sort' => true, 'rsort' => true,
+        'usort' => true, 'uasort' => true, 'uksort' => true, 'asort' => true,
+        'ksort' => true, 'arsort' => true, 'krsort' => true, 'range' => true,
+        'compact' => true, 'extract' => true,
+        // strings
+        'strlen' => true, 'strpos' => true, 'stripos' => true, 'strrpos' => true,
+        'str_contains' => true, 'str_starts_with' => true, 'str_ends_with' => true,
+        'str_replace' => true, 'str_ireplace' => true, 'substr' => true,
+        'substr_count' => true, 'str_repeat' => true, 'str_pad' => true,
+        'str_split' => true, 'str_word_count' => true, 'strtolower' => true,
+        'strtoupper' => true, 'ucfirst' => true, 'lcfirst' => true, 'ucwords' => true,
+        'trim' => true, 'ltrim' => true, 'rtrim' => true, 'explode' => true,
+        'implode' => true, 'join' => true, 'sprintf' => true, 'printf' => true,
+        'vsprintf' => true, 'number_format' => true, 'nl2br' => true,
+        'htmlspecialchars' => true, 'htmlentities' => true, 'html_entity_decode' => true,
+        'strip_tags' => true, 'addslashes' => true, 'stripslashes' => true,
+        'wordwrap' => true, 'strrev' => true, 'strtr' => true, 'substr_replace' => true,
+        'preg_match' => true, 'preg_match_all' => true, 'preg_replace' => true,
+        'preg_replace_callback' => true, 'preg_split' => true, 'preg_quote' => true,
+        'mb_strlen' => true, 'mb_substr' => true, 'mb_strtolower' => true,
+        'mb_strtoupper' => true, 'mb_strpos' => true,
+        // json / serialization
+        'json_encode' => true, 'json_decode' => true, 'serialize' => true,
+        'unserialize' => true, 'base64_encode' => true, 'base64_decode' => true,
+        'maybe_serialize' => true, 'maybe_unserialize' => true,
+        // math
+        'abs' => true, 'ceil' => true, 'floor' => true, 'round' => true,
+        'min' => true, 'max' => true, 'intdiv' => true, 'pow' => true,
+        'sqrt' => true, 'rand' => true, 'mt_rand' => true, 'random_int' => true,
+        // misc php
+        'function_exists' => true, 'class_exists' => true,
+        'method_exists' => true, 'property_exists' => true, 'defined' => true,
+        'define' => true, 'constant' => true, 'func_get_args' => true,
+        'func_num_args' => true, 'call_user_func' => true, 'call_user_func_array' => true,
+        'var_dump' => true, 'print_r' => true, 'var_export' => true,
+        'error_log' => true, 'trigger_error' => true,
+        'date' => true, 'time' => true, 'strtotime' => true,
+        'microtime' => true, 'mktime' => true, 'dirname' => true, 'basename' => true,
+        'pathinfo' => true, 'realpath' => true, 'file_exists' => true,
+        'file_get_contents' => true, 'file_put_contents' => true,
+        // WP core — i18n + escaping
+        '__' => true, '_e' => true, '_x' => true, '_n' => true, '_nx' => true,
+        'esc_html' => true, 'esc_html__' => true, 'esc_html_e' => true,
+        'esc_attr' => true, 'esc_attr__' => true, 'esc_attr_e' => true,
+        'esc_url' => true, 'esc_url_raw' => true, 'esc_textarea' => true,
+        'esc_js' => true, 'wp_kses' => true, 'wp_kses_post' => true,
+        // WP core — sanitization
+        'sanitize_text_field' => true, 'sanitize_title' => true,
+        'sanitize_key' => true, 'sanitize_email' => true, 'sanitize_html_class' => true,
+        'sanitize_file_name' => true, 'absint' => true,
+        'wp_unslash' => true, 'wp_slash' => true, 'stripslashes_deep' => true,
+        // WP core — options / meta
+        'get_option' => true, 'update_option' => true, 'add_option' => true,
+        'delete_option' => true, 'get_post_meta' => true, 'update_post_meta' => true,
+        'get_transient' => true, 'set_transient' => true, 'delete_transient' => true,
+        // WP core — misc. Hook functions (add_action/do_action/apply_filters/
+        // …) are deliberately NOT denylisted: they are declarative-handled and
+        // a separate test asserts they still emit a symbol-use.
+        'wp_die' => true, 'wp_parse_args' => true,
+        'add_query_arg' => true, 'remove_query_arg' => true, 'wp_redirect' => true,
+        'current_user_can' => true, 'is_admin' => true, 'is_user_logged_in' => true,
+        'wp_create_nonce' => true, 'wp_verify_nonce' => true, 'check_admin_referer' => true,
+        'get_permalink' => true, 'home_url' => true, 'site_url' => true,
+        'admin_url' => true, 'plugins_url' => true, 'wp_enqueue_script' => true,
+        'wp_enqueue_style' => true, 'register_post_type' => true,
+        'get_post' => true, 'get_posts' => true, 'wp_insert_post' => true,
+    ];
+
+    /** @var array<string, true>|null lowercase mirror, lazily built once */
+    private static ?array $phpBuiltinFunctionsLower = null;
+
+    private static function isBuiltinFunction(string $name): bool
+    {
+        if (self::$phpBuiltinFunctionsLower === null) {
+            self::$phpBuiltinFunctionsLower = [];
+            foreach (self::PHP_BUILTIN_FUNCTIONS as $k => $_) {
+                self::$phpBuiltinFunctionsLower[strtolower($k)] = true;
+            }
+        }
+        $bare = ltrim($name, '\\');
+        $pos = strrpos($bare, '\\');
+        if ($pos !== false) $bare = substr($bare, $pos + 1);
+        return isset(self::$phpBuiltinFunctionsLower[strtolower($bare)]);
+    }
+
     public function __construct(string $file, ?string $relFile = null)
     {
         $this->file = $file;
@@ -224,7 +331,7 @@ final class Visitor extends NodeVisitorAbstract
         if ($node instanceof Node\Expr\FuncCall) {
             $name = $this->funcName($node);
             $this->tryEmitDeclarative('function-call', $node, $name, null);
-            if ($name !== null) {
+            if ($name !== null && !self::isBuiltinFunction($name)) {
                 $resolved = $this->resolveName($name);
                 $this->facts[] = [
                     'kind' => 'symbol-use',

@@ -27,6 +27,19 @@ describe.skipIf(!hasPhpAvailable())('extractPhpFile', () => {
   });
   afterAll(async () => { await worker.shutdown(); });
 
+  it('skips symbol-use for built-in functions, emits for project functions', async () => {
+    const root = getTmp();
+    write(root, 'helper.php', `<?php
+function ti_helper() { return is_array([]); }
+ti_helper();
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'helper.php', worker });
+    const uses = facts.filter((f) => f.kind === 'symbol-use');
+    const names = uses.map((f) => (f.payload as { name?: string }).name);
+    expect(names).toContain('ti_helper');
+    expect(names).not.toContain('is_array');
+  });
+
   it('returns parsed Facts for a hook listener', async () => {
     const root = getTmp();
     write(root, 'plugin.php', "<?php add_action('init', 'my_cb');");
