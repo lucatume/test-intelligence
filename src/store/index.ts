@@ -15,6 +15,8 @@ export {
   clearAllEdges,
   clearFactsForFile,
   readFileExtractState,
+  updateFactResolvedPayload,
+  repointFactAnchor,
 } from './writers.js';
 export type {
   FileInsert,
@@ -24,6 +26,8 @@ export type {
   TestInsert,
   EdgeInsert,
   FileExtractState,
+  FactUpdate,
+  FactAnchorRepoint,
 } from './writers.js';
 export { removeStoreContents } from './clean.js';
 export type { CleanOptions, CleanError } from './clean.js';

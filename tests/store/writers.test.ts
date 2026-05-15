@@ -8,6 +8,8 @@ import {
   insertTest,
   clearFactsForFile,
   readFileExtractState,
+  updateFactResolvedPayload,
+  repointFactAnchor,
 } from '../../src/store/writers.js';
 import { useTmpDir } from '../helpers/tmpDir.js';
 
@@ -131,6 +133,51 @@ describe('store writers', () => {
       expect(withFacts).toEqual({ fileId, contentHash: 'deadbeef', factCount: 2 });
 
       expect(readFileExtractState(db, 'src/missing.ts')).toBeNull();
+    } finally { close(); }
+  });
+
+  it('updateFactResolvedPayload updates resolved and payload of a fact', () => {
+    const s = openStore(getTmp());
+    if (s.kind === 'err') throw new Error(s.error.message);
+    const { db, close } = s.value;
+    try {
+      const fileId = upsertFile(db, {
+        path: 'p.php', language: 'php', contentHash: 'h',
+        extractedAt: '2026-05-15T00:00:00.000Z', isTest: false, framework: null, frameworkClass: null,
+      });
+      const factId = insertFact(db, {
+        fileId, kind: 'rest-endpoint', resolved: false, startLine: 1, endLine: 1,
+        payload: { kind: 'rest-endpoint', method: 'GET', route: '/x', namespace: '{*}' },
+      });
+      updateFactResolvedPayload(db, {
+        factId, resolved: true,
+        payload: { kind: 'rest-endpoint', method: 'GET', route: '/x', namespace: 'wp/v2' },
+      });
+      const row = db.prepare('SELECT resolved, payload FROM fact WHERE id = ?').get(factId) as { resolved: number; payload: string };
+      expect(row.resolved).toBe(1);
+      expect(JSON.parse(row.payload)).toMatchObject({ namespace: 'wp/v2' });
+    } finally { close(); }
+  });
+
+  it('repointFactAnchor replaces a fact_anchor row with a new anchor', () => {
+    const s = openStore(getTmp());
+    if (s.kind === 'err') throw new Error(s.error.message);
+    const { db, close } = s.value;
+    try {
+      const fileId = upsertFile(db, {
+        path: 'p.php', language: 'php', contentHash: 'h',
+        extractedAt: '2026-05-15T00:00:00.000Z', isTest: false, framework: null, frameworkClass: null,
+      });
+      const factId = insertFact(db, {
+        fileId, kind: 'rest-endpoint', resolved: false, startLine: 1, endLine: 1,
+        payload: { kind: 'rest-endpoint', method: 'GET', route: '/x', namespace: '{*}' },
+      });
+      const oldAnchor = upsertAnchor(db, { key: 'rest:GET /{*}/x', type: 'rest' });
+      insertFactAnchor(db, { factId, anchorId: oldAnchor, role: 'subject' });
+      const newAnchor = upsertAnchor(db, { key: 'rest:GET /wp/v2/x', type: 'rest' });
+      repointFactAnchor(db, { factId, oldAnchorId: oldAnchor, newAnchorId: newAnchor, role: 'subject' });
+      const rows = db.prepare('SELECT anchor_id FROM fact_anchor WHERE fact_id = ?').all(factId) as Array<{ anchor_id: number }>;
+      expect(rows).toEqual([{ anchor_id: newAnchor }]);
     } finally { close(); }
   });
 });

@@ -216,3 +216,34 @@ export function readFileExtractState(
   if (row === undefined) return null;
   return { fileId: row.id, contentHash: row.content_hash, factCount: row.fact_count };
 }
+
+export interface FactUpdate {
+  readonly factId: number;
+  readonly resolved: boolean;
+  readonly payload: unknown;
+}
+
+// Mutate an existing fact's resolved flag and payload in place. Used by the
+// cross-file rest-endpoint resolver, which fills inherited properties after
+// extraction and re-derives the fact's resolution state.
+export function updateFactResolvedPayload(db: Database.Database, u: FactUpdate): void {
+  db.prepare('UPDATE fact SET resolved = ?, payload = ? WHERE id = ?')
+    .run(u.resolved ? 1 : 0, JSON.stringify(u.payload), u.factId);
+}
+
+export interface FactAnchorRepoint {
+  readonly factId: number;
+  readonly oldAnchorId: number;
+  readonly newAnchorId: number;
+  readonly role: string;
+}
+
+// Re-point a fact's anchor: drop the (factId, oldAnchorId, role) row and add
+// (factId, newAnchorId, role). fact_anchor PK is (fact_id, anchor_id, role);
+// INSERT OR IGNORE guards an already-present target row.
+export function repointFactAnchor(db: Database.Database, r: FactAnchorRepoint): void {
+  db.prepare('DELETE FROM fact_anchor WHERE fact_id = ? AND anchor_id = ? AND role = ?')
+    .run(r.factId, r.oldAnchorId, r.role);
+  db.prepare('INSERT OR IGNORE INTO fact_anchor (fact_id, anchor_id, role) VALUES (?, ?, ?)')
+    .run(r.factId, r.newAnchorId, r.role);
+}
