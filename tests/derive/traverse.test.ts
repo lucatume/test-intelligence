@@ -53,6 +53,51 @@ function tinyGraph(): Graph {
   };
 }
 
+function ajaxGraph(opts: {
+  testFrameworkClass: 'unit' | 'e2e';
+  callResolved: boolean;
+}): Graph {
+  // test (file 1) -> imports caller.ts (file 2) which $.post's action 'save_order'
+  // file 3 (listener.php) registers add_action('wp_ajax_save_order', ...).
+  const f1: FileRow = { id: 1, path: 'tests/order.test.ts', language: 'ts', vendor: false, framework: 'jest', frameworkClass: opts.testFrameworkClass };
+  const f2: FileRow = { id: 2, path: 'src/caller.ts', language: 'ts', vendor: false, framework: null, frameworkClass: null };
+  const f3: FileRow = { id: 3, path: 'src/listener.php', language: 'php', vendor: false, framework: null, frameworkClass: null };
+
+  const testDef: FactRow = {
+    id: 100, fileId: 1, kind: 'test-def', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'test-def', framework: 'jest', testId: 't1' },
+  };
+  const importToCaller: FactRow = {
+    id: 101, fileId: 1, kind: 'import-edge', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'import-edge', specifier: './caller', resolved: true, resolvedPath: 'src/caller.ts' },
+  };
+  const ajaxCall: FactRow = {
+    id: 200, fileId: 2, kind: 'ajax-call-js', resolved: opts.callResolved, startLine: 1, endLine: 1,
+    payload: { kind: 'ajax-call-js', action: 'save_order' },
+  };
+  const ajaxListener: FactRow = {
+    id: 300, fileId: 3, kind: 'ajax-listener', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'ajax-listener', action: 'save_order' },
+  };
+
+  const facts = new Map<number, FactRow>([
+    [100, testDef], [101, importToCaller], [200, ajaxCall], [300, ajaxListener],
+  ]);
+  const factsByFile = new Map<number, FactRow[]>([
+    [1, [testDef, importToCaller]], [2, [ajaxCall]], [3, [ajaxListener]],
+  ]);
+  const anchorLinks = [
+    { factId: 101, anchorKey: k('js-module:src/caller.ts'), role: 'module' as const },
+    { factId: 200, anchorKey: k('ajax:save_order'), role: 'target' as const },
+    { factId: 300, anchorKey: k('ajax:save_order'), role: 'subject' as const },
+  ];
+  return {
+    files: new Map([[1, f1], [2, f2], [3, f3]]),
+    facts, factsByFile, anchorLinks,
+    tests: [{ testId: 't1', fileId: 1, framework: 'jest', frameworkClass: opts.testFrameworkClass, factId: 100 }],
+  };
+}
+
 describe('traverseTest', () => {
   it('reaches imported and hook-listener files', () => {
     const g = tinyGraph();
@@ -195,6 +240,115 @@ describe('traverseTest', () => {
     expect(kindsOf(rResolved)).toEqual(kindsOf(rUnresolved));
     // The bridging rest-call-js is resolved → the kind is rest-mediated.
     expect(kindsOf(rResolved)).toContain('rest-mediated');
+  });
+
+  it('e2e tests still bridge ajax-call-js to ajax-listener (characterization — must not regress)', () => {
+    const g = ajaxGraph({ testFrameworkClass: 'e2e', callResolved: true });
+    const idx = buildAnchorIndex(g);
+    const r = traverseTest(g, idx, 100, 't1', 'e2e', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    const edge = r.edges.find((e) => e.source === 'src/listener.php');
+    expect(edge).toBeDefined();
+    expect(edge?.evidence.some((ev) => ev.kind === 'ajax-mediated')).toBe(true);
+  });
+
+  it('unit tests bridge ajax-call-js to ajax-listener through an imported caller', () => {
+    const g = ajaxGraph({ testFrameworkClass: 'unit', callResolved: true });
+    const idx = buildAnchorIndex(g);
+    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    const edge = r.edges.find((e) => e.source === 'src/listener.php');
+    expect(edge).toBeDefined();
+    expect(edge?.evidence.some((ev) => ev.kind === 'ajax-mediated')).toBe(true);
+    // ajax-call-js fact at depth 1 (imported), ajax-listener partner at depth 2:
+    // ajax-mediated 0.85 * exact 1 * 0.92**2 (0.8464) = 0.71944.
+    expect(edge?.confidence).toBeCloseTo(0.71944);
+  });
+
+  it('an unresolved ajax-call-js bridges as ajax-mediated-partial', () => {
+    const g = ajaxGraph({ testFrameworkClass: 'unit', callResolved: false });
+    const idx = buildAnchorIndex(g);
+    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    const edge = r.edges.find((e) => e.source === 'src/listener.php');
+    expect(edge).toBeDefined();
+    expect(edge?.evidence.some((ev) => ev.kind === 'ajax-mediated-partial')).toBe(true);
+    expect(edge?.partial).toBe(true);
+    // ajax-mediated-partial 0.4 * exact 1 * 0.92**2 (0.8464) = 0.33856.
+    expect(edge?.confidence).toBeCloseTo(0.33856);
+  });
+
+  it('attenuates an ajax bridge reached through a deeper import chain', () => {
+    // Chain: test -> mid.ts -> caller.ts (ajax-call) -> listener.php.
+    const g = ajaxGraph({ testFrameworkClass: 'unit', callResolved: true });
+    const fMid: FileRow = { id: 4, path: 'src/mid.ts', language: 'ts', vendor: false, framework: null, frameworkClass: null };
+    const importToMid: FactRow = {
+      id: 102, fileId: 1, kind: 'import-edge', resolved: true, startLine: 1, endLine: 1,
+      payload: { kind: 'import-edge', specifier: './mid', resolved: true, resolvedPath: 'src/mid.ts' },
+    };
+    const midImportCaller: FactRow = {
+      id: 103, fileId: 4, kind: 'import-edge', resolved: true, startLine: 1, endLine: 1,
+      payload: { kind: 'import-edge', specifier: './caller', resolved: true, resolvedPath: 'src/caller.ts' },
+    };
+    const testDef = g.facts.get(100);
+    const ajaxCall = g.facts.get(200);
+    const ajaxListener = g.facts.get(300);
+    if (!testDef || !ajaxCall || !ajaxListener) throw new Error('fixture');
+    const files = new Map(g.files);
+    files.set(4, fMid);
+    const facts = new Map(g.facts);
+    facts.delete(101);            // drop the direct test -> caller import
+    facts.set(102, importToMid);
+    facts.set(103, midImportCaller);
+    const factsByFile = new Map<number, FactRow[]>([
+      [1, [testDef, importToMid]],
+      [2, [ajaxCall]],
+      [3, [ajaxListener]],
+      [4, [midImportCaller]],
+    ]);
+    const anchorLinks = [
+      { factId: 102, anchorKey: k('js-module:src/mid.ts'), role: 'module' as const },
+      { factId: 103, anchorKey: k('js-module:src/caller.ts'), role: 'module' as const },
+      { factId: 200, anchorKey: k('ajax:save_order'), role: 'target' as const },
+      { factId: 300, anchorKey: k('ajax:save_order'), role: 'subject' as const },
+    ];
+    const g2: Graph = { files, facts, factsByFile, anchorLinks, tests: g.tests };
+    const idx = buildAnchorIndex(g2);
+    const r = traverseTest(g2, idx, 100, 't1', 'unit', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    const edge = r.edges.find((e) => e.source === 'src/listener.php');
+    expect(edge).toBeDefined();
+    // ajax-call-js fact now at depth 2 (test->mid->caller), partner at depth 3:
+    // ajax-mediated 0.85 * exact 1 * 0.92**3 (0.778688) = 0.6618848.
+    expect(edge?.confidence).toBeCloseTo(0.6618848);
+    // Strictly below the one-hop-shallower edge (0.71944).
+    expect(edge?.confidence).toBeLessThan(0.71944);
+  });
+
+  it('drops an ajax bridge edge below the confidence threshold', () => {
+    const g = ajaxGraph({ testFrameworkClass: 'unit', callResolved: true });
+    const idx = buildAnchorIndex(g);
+    // The ajax-mediated edge stores at ~0.71944. A threshold above it drops the
+    // edge; the structural js-import edge to src/caller.ts (0.95) stays.
+    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0.8,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    expect(r.edges.some((e) => e.source === 'src/listener.php')).toBe(false);
+    expect(r.edges.some((e) => e.source === 'src/caller.ts')).toBe(true);
   });
 });
 

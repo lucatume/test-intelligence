@@ -256,7 +256,12 @@ function bridgeKindFor(
       if (frameworkClass !== 'e2e') return null;
       return resolved ? 'rest-mediated' : 'rest-mediated-partial';
     case 'ajax-call-js':
-      if (frameworkClass !== 'e2e') return null;
+      // No framework-class gate (program Phase 2). AJAX actions are literal
+      // strings on both sides; the ajax:<action> anchor is an exact-match key.
+      // e2e specs do not statically import the $.post caller, so gating to e2e
+      // starved the bridge (program failure mode F1). Unit tests that DO import
+      // the caller now bridge; Phase 1 distance attenuation prices transitive
+      // edges honestly.
       return resolved ? 'ajax-mediated' : 'ajax-mediated-partial';
     case 'enqueue-script':
       if (frameworkClass !== 'e2e') return null;
