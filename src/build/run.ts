@@ -28,6 +28,7 @@ import { parseProjectRelativePath } from '../paths.js';
 import { parseAnchor } from '../anchors/parse.js';
 import { derive } from '../derive/derive.js';
 import { resolveRestEndpoints } from './resolve-rest-endpoints.js';
+import { resolveEnqueueScripts } from './resolve-enqueue-scripts.js';
 import { HOOK_STOP_LIST_BUILTINS, type ValidatedConfig } from '../config/parse.js';
 import type { BuildOptions, BuildSummary, BuildError, BuildTimings, SlowFile } from './types.js';
 import type { DiscoveredFile } from '../discover/types.js';
@@ -241,11 +242,17 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       const extractPhaseMs = opts.clock.nowMillis() - extractPhaseStart;
 
       // Cross-file pass: fill rest-endpoint facts whose namespace is an
-      // inherited class property. Must run after every file's facts are in
-      // the store and before derive snapshots the graph.
+      // inherited class property, and re-point enqueue-script js-module
+      // anchors that name a compiled bundle to their source entry. Must run
+      // after every file's facts are in the store and before derive snapshots
+      // the graph.
       db.exec('BEGIN');
       try {
         resolveRestEndpoints(db);
+        resolveEnqueueScripts(db, {
+          outputDirs: opts.config.build.outputDirs,
+          projectRoot: opts.projectRoot,
+        });
         db.exec('COMMIT');
       } catch (e) {
         try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
