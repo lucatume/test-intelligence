@@ -36,6 +36,14 @@ final class Visitor extends NodeVisitorAbstract
     private array $classConsts = [];
     /** @var array<string, array<string, string>> */
     private array $classProps = [];
+    /**
+     * Per-function/method literal local-variable assignments (H1).
+     * Keyed <scopeKey> => <varName> => <literal>. Populated by prePass.
+     * @var array<string, array<string, string>>
+     */
+    private array $localVars = [];
+    /** @var list<string> Scope keys (<name>@<startLine>) for the enclosing function/method chain. */
+    private array $scopeStack = [];
     /** @var list<string> Property names hit as $this->prop misses during the current arg-binding cycle. */
     private array $unresolvedThisProps = [];
 
@@ -299,6 +307,7 @@ final class Visitor extends NodeVisitorAbstract
         if ($node instanceof Node\Stmt\Function_) {
             $name = $this->namespace ? $this->namespace . '\\' . $node->name->name : $node->name->name;
             $this->facts[] = $this->factSymbolDef($node, $name, true);
+            $this->scopeStack[] = $node->name->name . '@' . ($node->getStartLine() ?: 0);
             return;
         }
         if ($node instanceof Node\Stmt\ClassMethod && !empty($this->classStack)) {
@@ -308,6 +317,7 @@ final class Visitor extends NodeVisitorAbstract
             if ($this->classIsPhpUnit && $this->isPhpUnitTestMethod($node)) {
                 $this->facts[] = $this->factTestDef($node, $class, $node->name->name);
             }
+            $this->scopeStack[] = $node->name->name . '@' . ($node->getStartLine() ?: 0);
             return;
         }
         if ($node instanceof Node\Expr\Include_) {
@@ -385,6 +395,14 @@ final class Visitor extends NodeVisitorAbstract
             }
             return;
         }
+        if ($node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) {
+            // A closure body opens no recordable local-variable scope (H1):
+            // its assignments sit at nesting > 0 of the enclosing function in
+            // the pre-pass and are never recorded. Push a sentinel so variable
+            // uses inside the closure resolve against nothing → {*}.
+            $this->scopeStack[] = "\0closure";
+            return;
+        }
     }
 
     public function leaveNode(Node $node): void
@@ -393,6 +411,15 @@ final class Visitor extends NodeVisitorAbstract
         if ($node instanceof Node\Stmt\ClassLike) {
             array_pop($this->classStack);
             $this->classIsPhpUnit = false;
+        }
+        if ($node instanceof Node\Stmt\Function_) {
+            array_pop($this->scopeStack);
+        }
+        if ($node instanceof Node\Stmt\ClassMethod && !empty($this->classStack)) {
+            array_pop($this->scopeStack);
+        }
+        if ($node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) {
+            array_pop($this->scopeStack);
         }
     }
 
@@ -569,6 +596,10 @@ final class Visitor extends NodeVisitorAbstract
                 $this->emitAdminPageRegisterFact($n, $payload, $name);
                 return;
             }
+            if (($p['transform'] ?? null) === 'block-render') {
+                $this->emitBlockRenderFact($n, $payload, $name);
+                return;
+            }
             $anchors = [];
             $anchorRule = $p['anchor'] ?? null;
             if (is_array($anchorRule)) {
@@ -717,6 +748,80 @@ final class Visitor extends NodeVisitorAbstract
                 'fn' => $fn,
             ],
         ];
+    }
+
+    /**
+     * Emit a block-render fact for register_block_type /
+     * register_block_type_from_metadata. The block name (arg 0) is bound into
+     * $payload['name']: a literal ('core/foo'), a skeleton ('{*}'), or absent.
+     * When the name is unresolved, H6 applies the WordPress-core naming
+     * convention: a render_callback literal of shape render_block_core_<slug>
+     * names block core/<slug> (callback underscores become slug hyphens). A
+     * non-convention callback degrades to an unresolved fact — never a guess.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function emitBlockRenderFact(Node $n, array $payload, ?string $fnName): void
+    {
+        // register_block_type_from_metadata's arg 0 is a metadata directory
+        // path, never a block name — ignore the bound value and rely solely on
+        // the render_callback convention. register_block_type's arg 0 IS the
+        // block name, so an arg-0 literal there is authoritative.
+        $name = $fnName === 'register_block_type_from_metadata'
+            ? null
+            : ($payload['name'] ?? null);
+        $resolved = is_string($name) && $name !== '' && !str_contains($name, '{*}');
+
+        if (!$resolved) {
+            $slug = $this->blockSlugFromRenderCallback($n);
+            if ($slug !== null) {
+                $name = 'core/' . str_replace('_', '-', $slug);
+                $resolved = true;
+            }
+        }
+
+        $anchors = [];
+        if (is_string($name) && $name !== '' && !str_contains($name, '{*}')) {
+            $anchors[] = ['key' => 'block:' . $name, 'role' => 'subject'];
+        }
+        $outPayload = ['kind' => 'block-render'];
+        if (is_string($name) && $name !== '') $outPayload['name'] = $name;
+        $this->facts[] = [
+            'kind' => 'block-render',
+            'resolved' => $resolved,
+            'location' => $this->loc($n),
+            'anchors' => $anchors,
+            'payload' => $outPayload,
+        ];
+    }
+
+    /**
+     * Scan a register_block_type* call's options-array argument for a
+     * 'render_callback' string item matching the render_block_core_<slug>
+     * convention; return <slug> (underscore form) or null. Narrow: only a
+     * plain string literal of the exact core convention shape matches — a
+     * closure / array-callable / variable yields null.
+     */
+    private function blockSlugFromRenderCallback(Node $n): ?string
+    {
+        $args = $this->extractArgs($n);
+        // The options array is the last Array_ argument.
+        $arr = null;
+        foreach ($args as $a) {
+            if ($a instanceof Node\Expr\Array_) $arr = $a;
+        }
+        if ($arr === null) return null;
+        foreach ($arr->items as $item) {
+            if (!$item instanceof Node\ArrayItem) continue;
+            if (!$item->key instanceof Node\Scalar\String_) continue;
+            if ($item->key->value !== 'render_callback') continue;
+            if (!$item->value instanceof Node\Scalar\String_) return null;
+            if (preg_match('/^render_block_core_([a-z0-9_]+)$/', $item->value->value, $m) === 1) {
+                return $m[1];
+            }
+            return null;
+        }
+        return null;
     }
 
     /**
@@ -920,7 +1025,10 @@ final class Visitor extends NodeVisitorAbstract
                 if ($part instanceof Node\Scalar\EncapsedStringPart) {
                     $out .= $part->value;
                 } else {
-                    $out .= '{*}';
+                    // An interpolated part — recurse so a resolvable local
+                    // variable (H1) or $this->prop is substituted; an
+                    // unresolvable part falls back to the {*} skeleton.
+                    $out .= $this->readStringSkeleton($part) ?? '{*}';
                 }
             }
             return $out;
@@ -961,6 +1069,22 @@ final class Visitor extends NodeVisitorAbstract
             }
             return null;
         }
+        if ($node instanceof Node\Expr\Variable && is_string($node->name)) {
+            // H1 — depth-1 intra-function local-variable resolution. The
+            // $localVars table holds only top-statement-level literal
+            // assignments within the enclosing function/method. A free or
+            // poisoned variable is a miss → null. The caller drops the anchor
+            // (bare $var) or skeletonizes the part to {*} (encapsed/concat).
+            // Returning a bare '{*}' here would be wrong: every dynamic
+            // do_action($x) / do_shortcode($x) would then share the single
+            // anchor hook:{*} / shortcode:{*}, and the bridge would pair every
+            // dynamic fire with every dynamic listener — a false-edge blowup.
+            $scope = end($this->scopeStack);
+            if ($scope !== false && isset($this->localVars[$scope][$node->name])) {
+                return $this->localVars[$scope][$node->name];
+            }
+            return null;
+        }
         if ($node instanceof Node\Expr\PropertyFetch
             && $node->var instanceof Node\Expr\Variable
             && $node->var->name === 'this'
@@ -990,11 +1114,13 @@ final class Visitor extends NodeVisitorAbstract
         $this->defines = [];
         $this->classConsts = [];
         $this->classProps = [];
+        $this->localVars = [];
         $traverser = new NodeTraverser();
         $defines = &$this->defines;
         $classConsts = &$this->classConsts;
         $classProps = &$this->classProps;
-        $finder = new class($defines, $classConsts, $classProps) extends NodeVisitorAbstract {
+        $localVars = &$this->localVars;
+        $finder = new class($defines, $classConsts, $classProps, $localVars) extends NodeVisitorAbstract {
             private ?string $ns = null;
             /** @var list<string> */
             private array $stack = [];
@@ -1002,6 +1128,21 @@ final class Visitor extends NodeVisitorAbstract
             private bool $inMethod = false;
             /** Nesting depth inside if/loop/closure/etc. within the current method. */
             private int $nesting = 0;
+            /**
+             * Scope keys (<name>@<startLine>) of the enclosing function/method
+             * chain — H1's local-variable scope. A closure does NOT open a
+             * scope frame; its assignments sit at nesting > 0 of the enclosing
+             * function and are excluded by the nesting guard.
+             * @var list<string>
+             */
+            private array $scopeStack = [];
+            /**
+             * Per-scope local-variable assignment ambiguity flags (H1). A
+             * variable that received two differing literals is poisoned and its
+             * $localVars entry deleted, so the fetch site falls back to {*}.
+             * @var array<string, array<string, true>>
+             */
+            private array $localVarsAmbiguous = [];
             /**
              * Per-property provenance, prePass-local. 'default' = declared default,
              * 'assign' = method/constructor assignment. An assignment never loses to
@@ -1028,11 +1169,13 @@ final class Visitor extends NodeVisitorAbstract
              * @param array<string, string> $defines
              * @param array<string, array<string, string>> $classConsts
              * @param array<string, array<string, string>> $classProps
+             * @param array<string, array<string, string>> $localVars
              */
             public function __construct(
                 private array &$defines,
                 private array &$classConsts,
                 private array &$classProps,
+                private array &$localVars,
             ) {}
             public function enterNode(Node $node): void
             {
@@ -1050,6 +1193,16 @@ final class Visitor extends NodeVisitorAbstract
                 if ($node instanceof Node\Stmt\ClassMethod) {
                     $this->inMethod = true;
                     $this->nesting = 0;
+                    $this->scopeStack[] = $node->name->name . '@' . ($node->getStartLine() ?: 0);
+                    return;
+                }
+                if ($node instanceof Node\Stmt\Function_) {
+                    // Free functions open a local-variable scope too (H1).
+                    // inMethod gates the nesting counter; reuse it as the
+                    // generic "inside a function/method body" flag.
+                    $this->inMethod = true;
+                    $this->nesting = 0;
+                    $this->scopeStack[] = $node->name->name . '@' . ($node->getStartLine() ?: 0);
                     return;
                 }
                 if ($this->inMethod && in_array(get_class($node), self::NESTING_NODES, true)) {
@@ -1094,6 +1247,21 @@ final class Visitor extends NodeVisitorAbstract
                     }
                     return;
                 }
+                // H1 — top-statement-level $var = <literal> within a
+                // function/method body. The nesting guard excludes branch /
+                // loop / closure assignments; recordLocalVar handles ambiguity.
+                if ($node instanceof Node\Expr\Assign
+                    && $this->inMethod
+                    && $this->nesting === 0
+                    && $node->var instanceof Node\Expr\Variable
+                    && is_string($node->var->name)
+                    && $node->var->name !== 'this') {
+                    $scope = end($this->scopeStack);
+                    if ($scope !== false) {
+                        $this->recordLocalVar($scope, $node->var->name, $node->expr);
+                    }
+                    return;
+                }
                 if ($node instanceof Node\Stmt\Const_) {
                     foreach ($node->consts as $c) {
                         if ($c->value instanceof Node\Scalar\String_) {
@@ -1118,9 +1286,10 @@ final class Visitor extends NodeVisitorAbstract
             {
                 if ($node instanceof Node\Stmt\Namespace_) $this->ns = null;
                 if ($node instanceof Node\Stmt\ClassLike) array_pop($this->stack);
-                if ($node instanceof Node\Stmt\ClassMethod) {
+                if ($node instanceof Node\Stmt\ClassMethod || $node instanceof Node\Stmt\Function_) {
                     $this->inMethod = false;
                     $this->nesting = 0;
+                    array_pop($this->scopeStack);
                     return;
                 }
                 if ($this->inMethod && $this->nesting > 0
@@ -1145,6 +1314,26 @@ final class Visitor extends NodeVisitorAbstract
                 }
                 $this->classProps[$fqcn][$prop] = $literal;
                 $this->origin[$fqcn][$prop] = 'assign';
+            }
+
+            /**
+             * Record a top-level $var = <rhs> assignment for H1, honoring
+             * ambiguity: two differing literals poison the variable (entry
+             * deleted → readStringSkeleton falls back to {*}); the same literal
+             * twice is idempotent.
+             */
+            private function recordLocalVar(string $scope, string $var, Node $rhs): void
+            {
+                if (isset($this->localVarsAmbiguous[$scope][$var])) return;
+                $literal = $this->readPrePassLiteral($rhs);
+                if ($literal === null) return;
+                $existing = $this->localVars[$scope][$var] ?? null;
+                if ($existing !== null && $existing !== $literal) {
+                    $this->localVarsAmbiguous[$scope][$var] = true;
+                    unset($this->localVars[$scope][$var]);
+                    return;
+                }
+                $this->localVars[$scope][$var] = $literal;
             }
 
             /** Resolve an assignment RHS to a plain string, or null if not statically known. */

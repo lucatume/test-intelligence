@@ -107,9 +107,20 @@ export const WP_PHP_PATTERNS: readonly PhpPatternWithAnchor[] = [
   },
   {
     match: { lang: 'php', nodeKind: 'function-call', name: 'register_block_type' },
-    bind: { name: { arg: 0, type: 'string' } },
+    bind: { name: { arg: 0, type: 'string', optional: true } },
     emit: 'block-render',
     anchor: { template: 'block:{name}', role: 'subject' },
+    transform: 'block-render',
+  },
+  // register_block_type_from_metadata( $metadata_path, $args ) — arg 0 is a
+  // directory path, not a block name. The block-render transform infers the
+  // name from a render_block_core_<slug> render_callback when present (H6).
+  {
+    match: { lang: 'php', nodeKind: 'function-call', name: 'register_block_type_from_metadata' },
+    bind: { name: { arg: 0, type: 'string', optional: true } },
+    emit: 'block-render',
+    anchor: { template: 'block:{name}', role: 'subject' },
+    transform: 'block-render',
   },
   // add_menu_page($page_title, $menu_title, $capability, $menu_slug, …) —
   // the menu_slug (arg 3) is the WP admin-page anchor (program Phase 5).

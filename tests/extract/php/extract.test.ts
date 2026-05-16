@@ -826,4 +826,156 @@ ti_deletemeelephant_helper();
     const facts = await extractPhpFile({ projectRoot: root, relPath: 'dyn.php', worker });
     expect(facts.filter((f) => f.kind === 'admin-page-register')).toHaveLength(0);
   });
+
+  // --- H1: PHP local-variable assignment tracking (depth-1, intra-function) ---
+
+  it('resolves a do_action hook from a top-level local-variable assignment', async () => {
+    const root = getTmp();
+    write(root, 'h1.php', "<?php function ti_fire() { $hook = 'save_post'; do_action( $hook ); }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h1.php', worker });
+    const hook = facts.find((f) => f.kind === 'hook-fire');
+    expect(hook?.resolved).toBe(true);
+    expect(hook?.anchors).toContainEqual({ key: 'hook:save_post', role: 'target' });
+  });
+
+  it('resolves a local variable inside an encapsed hook string', async () => {
+    const root = getTmp();
+    write(root, 'h1enc.php', "<?php function ti_fire() { $suffix = 'block-editor-assets'; do_action( \"admin_print_styles-{$suffix}\" ); }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h1enc.php', worker });
+    const hook = facts.find((f) => f.kind === 'hook-fire');
+    expect(hook?.resolved).toBe(true);
+    expect(hook?.anchors).toContainEqual({ key: 'hook:admin_print_styles-block-editor-assets', role: 'target' });
+  });
+
+  it('resolves an add_action hook from a local-variable assignment', async () => {
+    const root = getTmp();
+    write(root, 'h1add.php', "<?php function ti_listen() { $h = 'wp_ajax_thing'; add_action( $h, 'cb' ); }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h1add.php', worker });
+    const hook = facts.find((f) => f.kind === 'hook-listener');
+    expect(hook?.resolved).toBe(true);
+    expect(hook?.anchors).toContainEqual({ key: 'hook:wp_ajax_thing', role: 'subject' });
+  });
+
+  it('leaves a free variable (function parameter) unresolved', async () => {
+    const root = getTmp();
+    write(root, 'h1free.php', "<?php function ti_fire( $block_type ) { do_action( \"x_{$block_type}\" ); }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h1free.php', worker });
+    const hook = facts.find((f) => f.kind === 'hook-fire');
+    expect(hook?.resolved).toBe(false);
+    expect((hook?.payload as { hook?: string }).hook).toBe('x_{*}');
+  });
+
+  it('ignores a branch re-assignment so the top-level value stands', async () => {
+    const root = getTmp();
+    write(root, 'h1cond.php', "<?php function ti_fire( $c ) { $h = 'a'; if ( $c ) { $h = 'b'; } do_action( $h ); }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h1cond.php', worker });
+    const hook = facts.find((f) => f.kind === 'hook-fire');
+    expect(hook?.resolved).toBe(true);
+    expect(hook?.anchors).toContainEqual({ key: 'hook:a', role: 'target' });
+  });
+
+  it('poisons a variable assigned two differing top-level literals', async () => {
+    const root = getTmp();
+    write(root, 'h1poison.php', "<?php function ti_fire() { $h = 'a'; $h = 'b'; do_action( $h ); }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h1poison.php', worker });
+    const hook = facts.find((f) => f.kind === 'hook-fire');
+    // A poisoned bare $var resolves to nothing: no hook payload, no anchor —
+    // never the single colliding hook:{*} anchor.
+    expect(hook?.resolved).toBe(false);
+    expect((hook?.payload as { hook?: string }).hook).toBeUndefined();
+    expect(hook?.anchors).toEqual([]);
+  });
+
+  it('treats two identical top-level assignments as idempotent', async () => {
+    const root = getTmp();
+    write(root, 'h1idem.php', "<?php function ti_fire() { $h = 'a'; $h = 'a'; do_action( $h ); }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h1idem.php', worker });
+    const hook = facts.find((f) => f.kind === 'hook-fire');
+    expect(hook?.resolved).toBe(true);
+    expect(hook?.anchors).toContainEqual({ key: 'hook:a', role: 'target' });
+  });
+
+  it('scopes local variables per function — no cross-contamination', async () => {
+    const root = getTmp();
+    write(root, 'h1scope.php', "<?php function ti_one() { $h = 'one'; do_action( $h ); } function ti_two() { $h = 'two'; do_action( $h ); }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h1scope.php', worker });
+    const hooks = facts.filter((f) => f.kind === 'hook-fire');
+    const keys = hooks.flatMap((h) => h.anchors.map((a) => a.key)).sort();
+    expect(keys).toEqual(['hook:one', 'hook:two']);
+  });
+
+  it('resolves a const-backed local-variable assignment', async () => {
+    const root = getTmp();
+    write(root, 'h1const.php', "<?php const TI_HOOK = 'init'; function ti_fire() { $h = TI_HOOK; do_action( $h ); }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h1const.php', worker });
+    const hook = facts.find((f) => f.kind === 'hook-fire');
+    expect(hook?.resolved).toBe(true);
+    expect(hook?.anchors).toContainEqual({ key: 'hook:init', role: 'target' });
+  });
+
+  it('does not resolve a variable assigned inside a closure body', async () => {
+    const root = getTmp();
+    write(root, 'h1closure.php', "<?php function ti_outer() { $h = 'outer'; add_action( 'init', function () { $h = 'inner'; do_action( $h ); } ); }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h1closure.php', worker });
+    const fire = facts.find((f) => f.kind === 'hook-fire');
+    // The closure body opens no scope; $h there resolves to nothing — no
+    // anchor, never the outer 'outer' value and never a colliding hook:{*}.
+    expect(fire?.resolved).toBe(false);
+    expect((fire?.payload as { hook?: string }).hook).toBeUndefined();
+    expect(fire?.anchors).toEqual([]);
+  });
+
+  // --- H6: callback-name-convention block names ---
+
+  it('infers a block name from a render_block_core_ callback in register_block_type_from_metadata', async () => {
+    const root = getTmp();
+    write(root, 'h6meta.php', "<?php register_block_type_from_metadata( __DIR__ . '/social-link', array( 'render_callback' => 'render_block_core_social_link' ) );");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h6meta.php', worker });
+    const block = facts.find((f) => f.kind === 'block-render');
+    expect(block?.resolved).toBe(true);
+    expect(block?.anchors).toContainEqual({ key: 'block:core/social-link', role: 'subject' });
+  });
+
+  it('converts callback underscores to hyphens in the inferred block slug', async () => {
+    const root = getTmp();
+    write(root, 'h6slug.php', "<?php register_block_type_from_metadata( __DIR__ . '/post-terms', array( 'render_callback' => 'render_block_core_post_terms' ) );");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h6slug.php', worker });
+    const block = facts.find((f) => f.kind === 'block-render');
+    expect(block?.anchors).toContainEqual({ key: 'block:core/post-terms', role: 'subject' });
+  });
+
+  it('leaves a block unresolved when the callback is not the core convention', async () => {
+    const root = getTmp();
+    write(root, 'h6miss.php', "<?php register_block_type_from_metadata( __DIR__ . '/x', array( 'render_callback' => 'my_plugin_render' ) );");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h6miss.php', worker });
+    const block = facts.find((f) => f.kind === 'block-render');
+    expect(block?.resolved).toBe(false);
+    expect(block?.anchors).toEqual([]);
+  });
+
+  it('leaves a block unresolved when the render_callback is a closure', async () => {
+    const root = getTmp();
+    write(root, 'h6closure.php', "<?php register_block_type_from_metadata( __DIR__ . '/x', array( 'render_callback' => function () {} ) );");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h6closure.php', worker });
+    const block = facts.find((f) => f.kind === 'block-render');
+    expect(block?.resolved).toBe(false);
+  });
+
+  it('keeps a literal register_block_type name over the callback convention', async () => {
+    const root = getTmp();
+    write(root, 'h6lit.php', "<?php register_block_type( 'core/foo', array( 'render_callback' => 'render_block_core_bar' ) );");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h6lit.php', worker });
+    const block = facts.find((f) => f.kind === 'block-render');
+    expect(block?.resolved).toBe(true);
+    expect(block?.anchors).toContainEqual({ key: 'block:core/foo', role: 'subject' });
+  });
+
+  it('infers a block name for register_block_type with a dynamic name + convention callback', async () => {
+    const root = getTmp();
+    write(root, 'h6var.php', "<?php function ti_reg( $n ) { register_block_type( $n, array( 'render_callback' => 'render_block_core_quote' ) ); }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h6var.php', worker });
+    const block = facts.find((f) => f.kind === 'block-render');
+    expect(block?.resolved).toBe(true);
+    expect(block?.anchors).toContainEqual({ key: 'block:core/quote', role: 'subject' });
+  });
 });

@@ -35,7 +35,8 @@ export interface UserPattern {
     | 'enqueue-src'
     | 'ajax-action-from-url'
     | 'admin-page-slug-from-url'
-    | 'admin-page-slug';
+    | 'admin-page-slug'
+    | 'block-render';
 }
 
 const ALL_FACT_KINDS: readonly FactKind[] = [
@@ -86,6 +87,7 @@ const patternSchema = P.object(
         'ajax-action-from-url',
         'admin-page-slug-from-url',
         'admin-page-slug',
+        'block-render',
       ] as const),
     ),
   },
