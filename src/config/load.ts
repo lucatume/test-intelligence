@@ -11,6 +11,7 @@ const CONFIG_KEYS = new Set([
   'confidence',
   'traversal',
   'concurrency',
+  'build',
   'ignore',
   'vendor',
   'allowSymlinkTargets',

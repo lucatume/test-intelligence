@@ -51,6 +51,22 @@ describe('parseConfig — empty object', () => {
   });
 });
 
+describe('parseConfig — build.outputDirs', () => {
+  it('defaults build.outputDirs to ["build","dist"] when absent', () => {
+    const r = parseConfig({});
+    expect(r.kind).toBe('ok');
+    if (r.kind !== 'ok') return;
+    expect(r.value.build.outputDirs).toEqual(['build', 'dist']);
+  });
+
+  it('accepts a user-supplied build.outputDirs', () => {
+    const r = parseConfig({ build: { outputDirs: ['out'] } });
+    expect(r.kind).toBe('ok');
+    if (r.kind !== 'ok') return;
+    expect(r.value.build.outputDirs).toEqual(['out']);
+  });
+});
+
 describe('parseConfig — overrides', () => {
   it('honours tests.classes path globs', () => {
     const r = parseConfig({

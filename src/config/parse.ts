@@ -57,6 +57,13 @@ export interface ConcurrencyConfig {
   readonly deriveWorkers?: number;
 }
 
+export interface BuildConfig {
+  /** Directory names treated as compiled build output. The compiled→source
+   *  join only attempts *.asset.php / build→src remapping for js-module paths
+   *  under one of these directories. */
+  readonly outputDirs: readonly string[];
+}
+
 // Per-bundle toggles for the built-in ignore defaults. Each defaults to true
 // — disabling a bundle removes its globs from the effective ignore list.
 // The baseline (node_modules, .git, dist, build) is unconditional and cannot
@@ -80,6 +87,7 @@ export interface ValidatedConfig {
   readonly confidence: ConfidenceConfig;
   readonly traversal: TraversalConfig;
   readonly concurrency: ConcurrencyConfig;
+  readonly build: BuildConfig;
   readonly ignore: readonly string[];
   readonly ignoreDefaults: IgnoreDefaultsConfig;
   readonly vendor: readonly string[];
@@ -96,6 +104,7 @@ export type UserConfig = Partial<{
   confidence: unknown;
   traversal: unknown;
   concurrency: unknown;
+  build: unknown;
   ignore: readonly string[];
   ignoreDefaults: Partial<IgnoreDefaultsConfig>;
   vendor: readonly string[];
@@ -310,6 +319,15 @@ const concurrencySchema = P.object(
   { strict: true },
 );
 
+const DEFAULT_BUILD_OUTPUT_DIRS: readonly string[] = ['build', 'dist'];
+
+const buildSchema = P.object(
+  {
+    outputDirs: P.optional(P.array(P.string)),
+  },
+  { strict: true },
+);
+
 const ignoreDefaultsSchema = P.object(
   {
     agenticWorktrees: P.optional(P.boolean),
@@ -329,6 +347,7 @@ const rootSchema = P.object(
     confidence: P.optional(confidenceSchema),
     traversal: P.optional(traversalSchema),
     concurrency: P.optional(concurrencySchema),
+    build: P.optional(buildSchema),
     ignore: P.optional(P.array(P.string)),
     ignoreDefaults: P.optional(ignoreDefaultsSchema),
     vendor: P.optional(P.array(P.string)),
@@ -400,6 +419,9 @@ export function parseConfig(raw: unknown): ParseResult<ValidatedConfig> {
       maxWildcardMatchesPerAnchor: r.traversal?.maxWildcardMatchesPerAnchor ?? DEFAULT_MAX_WILDCARD_MATCHES_PER_ANCHOR,
     },
     concurrency,
+    build: {
+      outputDirs: r.build?.outputDirs ?? DEFAULT_BUILD_OUTPUT_DIRS,
+    },
     ignore: computeEffectiveIgnore(r.ignore, r.ignoreDefaults),
     ignoreDefaults: resolveIgnoreDefaults(r.ignoreDefaults),
     vendor: r.vendor ?? DEFAULT_VENDOR,
