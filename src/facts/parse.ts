@@ -15,7 +15,7 @@ const ALL_FACT_KINDS: readonly FactKind[] = [
   'symbol-def', 'symbol-use', 'import-edge', 'php-include',
   'hook-listener', 'hook-fire', 'rest-endpoint', 'rest-call-js',
   'ajax-listener', 'ajax-call-js', 'enqueue-script',
-  'admin-page-nav', 'admin-page-register', 'script-localize',
+  'admin-page-nav', 'admin-page-register', 'store-register', 'store-access', 'script-localize',
   'script-localize-inline', 'shortcode', 'block-render', 'test-def',
   'parse-error',
 ] as const;
@@ -89,6 +89,8 @@ const PAYLOAD_BY_KIND: Record<FactKind, Schema<FactPayload>> = {
   'enqueue-script': passthroughPayload('enqueue-script'),
   'admin-page-nav': passthroughPayload('admin-page-nav'),
   'admin-page-register': passthroughPayload('admin-page-register'),
+  'store-register': passthroughPayload('store-register'),
+  'store-access': passthroughPayload('store-access'),
   'script-localize': passthroughPayload('script-localize'),
   'script-localize-inline': passthroughPayload('script-localize-inline'),
   shortcode: passthroughPayload('shortcode'),

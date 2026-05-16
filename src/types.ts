@@ -39,6 +39,8 @@ export type FactKind =
   | 'enqueue-script'
   | 'admin-page-nav'
   | 'admin-page-register'
+  | 'store-register'
+  | 'store-access'
   | 'script-localize'
   | 'script-localize-inline'
   | 'shortcode'
@@ -61,6 +63,7 @@ export type AnchorType =
   | 'ajax'
   | 'script-handle'
   | 'wp-admin-page'
+  | 'wp-store'
   | 'shortcode'
   | 'block'
   | 'test';
@@ -82,6 +85,7 @@ export const ALL_ANCHOR_TYPES = [
   'ajax',
   'script-handle',
   'wp-admin-page',
+  'wp-store',
   'shortcode',
   'block',
   'test',

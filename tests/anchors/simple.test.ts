@@ -73,6 +73,8 @@ describe('parseAnchor — pass-through anchors', () => {
     ['php-file:src/Cart.php', 'src/Cart.php'],
     ['script-handle:cart-ui', 'cart-ui'],
     ['wp-admin-page:wc-settings', 'wc-settings'],
+    ['wp-store:core/editor', 'core/editor'],
+    ['wp-store:wc/admin/plugins', 'wc/admin/plugins'],
     ['shortcode:my_tag', 'my_tag'],
     ['block:myplugin/cart', 'myplugin/cart'],
     ['test:phpunit:tests/Cart.php::add', 'phpunit:tests/Cart.php::add'],

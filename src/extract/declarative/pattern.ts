@@ -42,7 +42,7 @@ export interface UserPattern {
 const ALL_FACT_KINDS: readonly FactKind[] = [
   'symbol-def', 'symbol-use', 'import-edge', 'php-include',
   'hook-listener', 'hook-fire', 'rest-endpoint', 'rest-call-js',
-  'ajax-listener', 'ajax-call-js', 'enqueue-script', 'script-localize',
+  'ajax-listener', 'ajax-call-js', 'enqueue-script', 'store-register', 'store-access', 'script-localize',
   'script-localize-inline', 'shortcode', 'block-render', 'test-def', 'parse-error',
 ];
 

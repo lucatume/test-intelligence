@@ -70,7 +70,7 @@ describe('branded type identities', () => {
     const _f: FromArray extends AnchorType ? true : false = true;
     const _g: AnchorType extends FromArray ? true : false = true;
     void _f; void _g;
-    expect(ALL_ANCHOR_TYPES.length).toBe(12);
+    expect(ALL_ANCHOR_TYPES.length).toBe(13);
   });
 
   it('FactKind has the sealed v1 set', () => {
@@ -88,6 +88,8 @@ describe('branded type identities', () => {
       'enqueue-script',
       'admin-page-nav',
       'admin-page-register',
+      'store-register',
+      'store-access',
       'script-localize',
       'script-localize-inline',
       'shortcode',
@@ -95,6 +97,6 @@ describe('branded type identities', () => {
       'test-def',
       'parse-error',
     ];
-    expect(ks.length).toBe(19);
+    expect(ks.length).toBe(21);
   });
 });

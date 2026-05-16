@@ -107,6 +107,16 @@ export interface AdminPageRegisterPayload {
   readonly fn: 'add_menu_page' | 'add_submenu_page';
 }
 
+export interface StoreRegisterPayload {
+  readonly kind: 'store-register';
+  readonly key: string;
+}
+
+export interface StoreAccessPayload {
+  readonly kind: 'store-access';
+  readonly key: string;
+}
+
 export interface ScriptLocalizePayload {
   readonly kind: 'script-localize';
   readonly handle: string;
@@ -157,6 +167,8 @@ export type FactPayload =
   | EnqueueScriptPayload
   | AdminPageNavPayload
   | AdminPageRegisterPayload
+  | StoreRegisterPayload
+  | StoreAccessPayload
   | ScriptLocalizePayload
   | ScriptLocalizeInlinePayload
   | ShortcodePayload

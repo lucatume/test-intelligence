@@ -115,4 +115,26 @@ describe('parseFact', () => {
     });
     expect(r.kind).toBe('ok');
   });
+
+  it('parses a store-register fact', () => {
+    const r = parseFact({
+      kind: 'store-register',
+      resolved: true,
+      location: { file: 'client/data/plugins/index.js', startLine: 10, endLine: 14 },
+      anchors: [{ key: 'wp-store:wc/admin/plugins', role: 'subject' }],
+      payload: { kind: 'store-register', key: 'wc/admin/plugins' },
+    });
+    expect(r.kind).toBe('ok');
+  });
+
+  it('parses a store-access fact', () => {
+    const r = parseFact({
+      kind: 'store-access',
+      resolved: true,
+      location: { file: 'client/components/Foo.js', startLine: 5, endLine: 5 },
+      anchors: [{ key: 'wp-store:core/editor', role: 'target' }],
+      payload: { kind: 'store-access', key: 'core/editor' },
+    });
+    expect(r.kind).toBe('ok');
+  });
 });
