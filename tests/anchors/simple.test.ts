@@ -72,6 +72,7 @@ describe('parseAnchor — pass-through anchors', () => {
     ['js-module:./helpers.ts', './helpers.ts'],
     ['php-file:src/Cart.php', 'src/Cart.php'],
     ['script-handle:cart-ui', 'cart-ui'],
+    ['wp-admin-page:wc-settings', 'wc-settings'],
     ['shortcode:my_tag', 'my_tag'],
     ['block:myplugin/cart', 'myplugin/cart'],
     ['test:phpunit:tests/Cart.php::add', 'phpunit:tests/Cart.php::add'],
@@ -107,6 +108,13 @@ describe('parseAnchor — wildcard marker {*}', () => {
   it('marks an ajax anchor partial when body contains {*}', () => {
     const r = parseAnchor('ajax:save_{*}');
     if (r.kind !== 'ok') throw new Error('expected ok');
+    expect((r.value as { partial?: boolean }).partial).toBe(true);
+  });
+
+  it('marks a wp-admin-page anchor with a {*} tail as partial', () => {
+    const r = parseAnchor('wp-admin-page:wc-orders{*}');
+    if (r.kind !== 'ok') throw new Error('expected ok');
+    expect(r.value.type).toBe('wp-admin-page');
     expect((r.value as { partial?: boolean }).partial).toBe(true);
   });
 });

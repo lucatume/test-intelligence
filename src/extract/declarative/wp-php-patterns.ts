@@ -111,4 +111,22 @@ export const WP_PHP_PATTERNS: readonly PhpPatternWithAnchor[] = [
     emit: 'block-render',
     anchor: { template: 'block:{name}', role: 'subject' },
   },
+  // add_menu_page($page_title, $menu_title, $capability, $menu_slug, …) —
+  // the menu_slug (arg 3) is the WP admin-page anchor (program Phase 5).
+  {
+    match: { lang: 'php', nodeKind: 'function-call', name: 'add_menu_page' },
+    bind: { slug: { arg: 3, type: 'string' } },
+    emit: 'admin-page-register',
+    anchor: { template: 'wp-admin-page:{slug}', role: 'subject' },
+    transform: 'admin-page-slug',
+  },
+  // add_submenu_page($parent_slug, $page_title, $menu_title, $capability,
+  // $menu_slug, …) — the menu_slug is arg 4.
+  {
+    match: { lang: 'php', nodeKind: 'function-call', name: 'add_submenu_page' },
+    bind: { slug: { arg: 4, type: 'string' } },
+    emit: 'admin-page-register',
+    anchor: { template: 'wp-admin-page:{slug}', role: 'subject' },
+    transform: 'admin-page-slug',
+  },
 ];

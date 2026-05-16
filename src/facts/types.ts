@@ -94,6 +94,19 @@ export interface EnqueueScriptPayload {
   readonly resolvedJsModule?: string;
 }
 
+export interface AdminPageNavPayload {
+  readonly kind: 'admin-page-nav';
+  readonly url: string;
+  readonly slug: string;
+  readonly method: 'goto' | 'route';
+}
+
+export interface AdminPageRegisterPayload {
+  readonly kind: 'admin-page-register';
+  readonly slug: string;
+  readonly fn: 'add_menu_page' | 'add_submenu_page';
+}
+
 export interface ScriptLocalizePayload {
   readonly kind: 'script-localize';
   readonly handle: string;
@@ -142,6 +155,8 @@ export type FactPayload =
   | AjaxListenerPayload
   | AjaxCallJsPayload
   | EnqueueScriptPayload
+  | AdminPageNavPayload
+  | AdminPageRegisterPayload
   | ScriptLocalizePayload
   | ScriptLocalizeInlinePayload
   | ShortcodePayload

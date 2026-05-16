@@ -565,6 +565,10 @@ final class Visitor extends NodeVisitorAbstract
                 $this->emitEnqueueScriptFact($n, $payload);
                 return;
             }
+            if (($p['transform'] ?? null) === 'admin-page-slug') {
+                $this->emitAdminPageRegisterFact($n, $payload, $name);
+                return;
+            }
             $anchors = [];
             $anchorRule = $p['anchor'] ?? null;
             if (is_array($anchorRule)) {
@@ -680,6 +684,38 @@ final class Visitor extends NodeVisitorAbstract
             'location' => $this->loc($n),
             'anchors' => $anchors,
             'payload' => $payload,
+        ];
+    }
+
+    /**
+     * Emit an admin-page-register fact for add_menu_page / add_submenu_page
+     * (program Phase 5). The menu_slug is already bound into $payload['slug']
+     * as a readStringSkeleton result: a pure literal ('wc-settings'), a
+     * concat-with-literal-head ('wc-orders{*}'), or — when fully dynamic — the
+     * bare string '{*}' (or absent). A fully-dynamic slug carries no static
+     * anchor and is the project-wrapper indirection the spec declares out of
+     * scope, so the fact is dropped.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function emitAdminPageRegisterFact(Node $n, array $payload, ?string $name): void
+    {
+        $slug = $payload['slug'] ?? null;
+        if (!is_string($slug) || $slug === '' || $slug === '{*}') {
+            return;
+        }
+        $fn = $name === 'add_submenu_page' ? 'add_submenu_page' : 'add_menu_page';
+        $resolved = !str_contains($slug, '{*}');
+        $this->facts[] = [
+            'kind' => 'admin-page-register',
+            'resolved' => $resolved,
+            'location' => $this->loc($n),
+            'anchors' => [['key' => 'wp-admin-page:' . $slug, 'role' => 'subject']],
+            'payload' => [
+                'kind' => 'admin-page-register',
+                'slug' => $slug,
+                'fn' => $fn,
+            ],
         ];
     }
 

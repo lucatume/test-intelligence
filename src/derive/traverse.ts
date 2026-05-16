@@ -338,6 +338,20 @@ function bridgeKindFor(
       // is now effectively unreachable for enqueue-script facts; it is kept for
       // exhaustiveness and documents the gate's removal.
       return 'enqueue-mediated';
+    case 'admin-page-nav':
+      // Program Phase 5: a Playwright spec's page.goto('admin.php?page=<slug>')
+      // URL is a static anchor. It bridges, via a literal-exact menu-slug join,
+      // to the PHP add_menu_page/add_submenu_page that registers <slug>. No
+      // framework-class gate — admin-page-nav facts arise only from
+      // page.goto/page.route (Playwright idioms), so the pattern IS the gate.
+      // This is the first bridge an e2e spec produces because it is e2e-shaped,
+      // not despite it. The survey scoped Phase 5 to this hop: page->bundle is
+      // not statically recoverable on real WP codebases.
+      return 'admin-page-mediated';
+    case 'admin-page-register':
+      // Subject side. Like hook-listener, it initiates no further walk; the
+      // edge forms from the admin-page-nav (target) side via the anchor join.
+      return null;
     case 'shortcode':
       return 'shortcode-render';
     case 'block-render':

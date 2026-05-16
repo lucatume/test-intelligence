@@ -54,6 +54,7 @@ export type EdgeKind =
   | 'ajax-mediated'
   | 'ajax-mediated-partial'
   | 'enqueue-mediated'
+  | 'admin-page-mediated'
   | 'shortcode-render'
   | 'block-render';
 

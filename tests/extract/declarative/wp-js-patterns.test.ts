@@ -167,6 +167,45 @@ describe('WP_JS_PATTERNS', () => {
     expect(ajax?.anchors[0]?.key).toBe('ajax:woocommerce_get_customer_details');
   });
 
+  it('extracts an admin-page-nav fact from page.goto with a page= slug', () => {
+    const sf = parse(
+      'tests/e2e-pw/settings.spec.ts',
+      "page.goto('wp-admin/admin.php?page=wc-settings');",
+    );
+    const facts = runDeclarativePatterns(sf, 'tests/e2e-pw/settings.spec.ts', WP_JS_PATTERNS);
+    const nav = facts.filter((f) => f.kind === 'admin-page-nav');
+    expect(nav).toHaveLength(1);
+    expect(nav[0]?.payload).toMatchObject({
+      kind: 'admin-page-nav',
+      slug: 'wc-settings',
+      method: 'goto',
+      url: 'wp-admin/admin.php?page=wc-settings',
+    });
+    expect(nav[0]?.anchors).toEqual([{ key: 'wp-admin-page:wc-settings', role: 'target' }]);
+    expect(nav[0]?.resolved).toBe(true);
+  });
+
+  it('does not emit admin-page-nav for a wp-admin URL with no page= param', () => {
+    const sf = parse(
+      'tests/e2e-pw/products.spec.ts',
+      "page.goto('wp-admin/edit.php?post_type=product');",
+    );
+    const facts = runDeclarativePatterns(sf, 'tests/e2e-pw/products.spec.ts', WP_JS_PATTERNS);
+    expect(facts.filter((f) => f.kind === 'admin-page-nav')).toHaveLength(0);
+  });
+
+  it('extracts admin-page-nav from page.route with a page= slug', () => {
+    const sf = parse(
+      'tests/e2e-pw/intercept.spec.ts',
+      "page.route('wp-admin/admin.php?page=wc-orders', () => {});",
+    );
+    const facts = runDeclarativePatterns(sf, 'tests/e2e-pw/intercept.spec.ts', WP_JS_PATTERNS);
+    const nav = facts.filter((f) => f.kind === 'admin-page-nav');
+    expect(nav).toHaveLength(1);
+    expect(nav[0]?.payload).toMatchObject({ slug: 'wc-orders', method: 'route' });
+    expect(nav[0]?.anchors[0]?.key).toBe('wp-admin-page:wc-orders');
+  });
+
   it('extracts a resolved ajax-call-js from a Backbone.ajax call in an IIFE', () => {
     const src = [
       '( function( $ ) {',

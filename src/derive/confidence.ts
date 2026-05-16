@@ -12,6 +12,7 @@ export const BASE_CONFIDENCE: Readonly<Record<EdgeKind, number>> = {
   'ajax-mediated': 0.85,
   'ajax-mediated-partial': 0.4,
   'enqueue-mediated': 0.7,
+  'admin-page-mediated': 0.9,
   'shortcode-render': 0.85,
   'block-render': 0.7,
 };

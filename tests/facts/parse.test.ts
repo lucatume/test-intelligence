@@ -88,4 +88,31 @@ describe('parseFact', () => {
     });
     expect(r.kind).toBe('err');
   });
+
+  it('parses an admin-page-nav fact', () => {
+    const r = parseFact({
+      kind: 'admin-page-nav',
+      resolved: true,
+      location: { file: 'tests/e2e-pw/settings.spec.ts', startLine: 3, endLine: 3 },
+      anchors: [{ key: 'wp-admin-page:wc-settings', role: 'target' }],
+      payload: {
+        kind: 'admin-page-nav',
+        url: 'wp-admin/admin.php?page=wc-settings',
+        slug: 'wc-settings',
+        method: 'goto',
+      },
+    });
+    expect(r.kind).toBe('ok');
+  });
+
+  it('parses an admin-page-register fact', () => {
+    const r = parseFact({
+      kind: 'admin-page-register',
+      resolved: true,
+      location: { file: 'includes/admin/class-wc-admin-menus.php', startLine: 123, endLine: 130 },
+      anchors: [{ key: 'wp-admin-page:wc-settings', role: 'subject' }],
+      payload: { kind: 'admin-page-register', slug: 'wc-settings', fn: 'add_submenu_page' },
+    });
+    expect(r.kind).toBe('ok');
+  });
 });

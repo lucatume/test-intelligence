@@ -788,4 +788,42 @@ ti_deletemeelephant_helper();
     expect(rest?.resolved).toBe(false);
     expect((rest?.payload as { unresolved?: unknown }).unresolved).toBeUndefined();
   });
+
+  it('extracts an admin-page-register fact from a literal add_submenu_page slug', async () => {
+    const root = getTmp();
+    write(root, 'menus.php', "<?php add_submenu_page( 'woocommerce', 'Settings', 'Settings', 'manage_woocommerce', 'wc-settings', array( $this, 'settings_page' ) );");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'menus.php', worker });
+    const reg = facts.filter((f) => f.kind === 'admin-page-register');
+    expect(reg).toHaveLength(1);
+    expect(reg[0]?.payload).toMatchObject({ kind: 'admin-page-register', slug: 'wc-settings', fn: 'add_submenu_page' });
+    expect(reg[0]?.resolved).toBe(true);
+    expect(reg[0]?.anchors).toContainEqual({ key: 'wp-admin-page:wc-settings', role: 'subject' });
+  });
+
+  it('extracts a concat-head slug from add_submenu_page as a wildcard-tail anchor', async () => {
+    const root = getTmp();
+    write(root, 'orders.php', "<?php add_submenu_page( 'woocommerce', 'Orders', 'Orders', 'edit_posts', 'wc-orders' . ( $x ? '' : '--' . $t ), array( $this, 'output' ) );");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'orders.php', worker });
+    const reg = facts.filter((f) => f.kind === 'admin-page-register');
+    expect(reg).toHaveLength(1);
+    expect((reg[0]?.payload as { slug?: string }).slug).toBe('wc-orders{*}');
+    expect(reg[0]?.resolved).toBe(false);
+    expect(reg[0]?.anchors).toContainEqual({ key: 'wp-admin-page:wc-orders{*}', role: 'subject' });
+  });
+
+  it('extracts add_menu_page slug at the correct arg index', async () => {
+    const root = getTmp();
+    write(root, 'menu.php', "<?php add_menu_page( 'Sales reports', 'Sales reports', 'view_woocommerce_reports', 'wc-reports', array( $this, 'reports_page' ) );");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'menu.php', worker });
+    const reg = facts.filter((f) => f.kind === 'admin-page-register');
+    expect(reg).toHaveLength(1);
+    expect(reg[0]?.payload).toMatchObject({ slug: 'wc-reports', fn: 'add_menu_page' });
+  });
+
+  it('emits no admin-page-register fact when the slug is fully dynamic', async () => {
+    const root = getTmp();
+    write(root, 'dyn.php', "<?php add_menu_page( $title, $title, $cap, $options['path'], array( __CLASS__, 'page_wrapper' ) );");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'dyn.php', worker });
+    expect(facts.filter((f) => f.kind === 'admin-page-register')).toHaveLength(0);
+  });
 });

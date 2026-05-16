@@ -26,7 +26,8 @@ export function runDeclarativePatterns(
     if (matched !== null) {
       for (const p of tsPatterns) {
         if (!matchesPattern(matched, p)) continue;
-        facts.push(applyPattern(matched, p, sf, relPath, inits));
+        const fact = applyPattern(matched, p, sf, relPath, inits);
+        if (fact !== null) facts.push(fact);
       }
     }
     ts.forEachChild(n, walk);
@@ -132,13 +133,29 @@ function extractActionFromUrl(fields: Record<string, unknown>): void {
   }
 }
 
+const PAGE_SLUG_IN_URL = /[?&]page=([A-Za-z0-9_-]+)/;
+
+// Pulls the WordPress admin-page slug out of a `page.goto`/`page.route` URL
+// (program Phase 5). Returns true when an `admin.php?page=<slug>` slug was
+// found and the admin-page-nav fact should be emitted; false otherwise (a
+// wp-admin URL with no page= slug, e.g. edit.php, is not an admin-page nav).
+function adminPageSlugFromUrl(fields: Record<string, unknown>): boolean {
+  const url = fields['url'];
+  if (typeof url !== 'string') return false;
+  if (!url.includes('admin.php')) return false;
+  const m = PAGE_SLUG_IN_URL.exec(url);
+  if (m === null || m[1] === undefined) return false;
+  fields['slug'] = m[1];
+  return true;
+}
+
 function applyPattern(
   m: MatchedCall,
   p: UserPattern,
   sf: ts.SourceFile,
   relPath: string,
   inits: LiteralInitMap,
-): Fact {
+): Fact | null {
   const startLine = sf.getLineAndCharacterOfPosition(m.node.getStart(sf)).line + 1;
   const endLine = sf.getLineAndCharacterOfPosition(m.node.getEnd()).line + 1;
 
@@ -158,6 +175,12 @@ function applyPattern(
     // The URL skeleton has served its purpose; drop it so its residual {*}
     // does not flag the fact unresolved and so the payload stays clean.
     if (typeof fields['action'] === 'string') delete fields['url'];
+  }
+  if (p.transform === 'admin-page-slug-from-url') {
+    // method is the navigation call name: 'goto' or 'route'.
+    fields['method'] = m.name;
+    // No page= slug → not an admin-page navigation; suppress the fact.
+    if (!adminPageSlugFromUrl(fields)) return null;
   }
   if (resolved && containsWildcard(fields)) resolved = false;
 

@@ -148,7 +148,62 @@ function enqueueGraph(opts: { testFrameworkClass: 'unit' | 'e2e' }): Graph {
   };
 }
 
+function adminPageGraph(): Graph {
+  // test (file 1, a Playwright spec) carries an admin-page-nav fact to
+  // 'wc-settings'. file 2 (menus.php) registers that admin page. The bridge is
+  // a pure anchor join: wp-admin-page:wc-settings target<->subject.
+  const f1: FileRow = { id: 1, path: 'tests/e2e-pw/settings.spec.ts', language: 'ts', vendor: false, framework: 'playwright', frameworkClass: 'e2e' };
+  const f2: FileRow = { id: 2, path: 'includes/admin/class-wc-admin-menus.php', language: 'php', vendor: false, framework: null, frameworkClass: null };
+
+  const testDef: FactRow = {
+    id: 100, fileId: 1, kind: 'test-def', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'test-def', framework: 'playwright', testId: 't1' },
+  };
+  const nav: FactRow = {
+    id: 200, fileId: 1, kind: 'admin-page-nav', resolved: true, startLine: 3, endLine: 3,
+    payload: { kind: 'admin-page-nav', url: 'wp-admin/admin.php?page=wc-settings', slug: 'wc-settings', method: 'goto' },
+  };
+  const register: FactRow = {
+    id: 300, fileId: 2, kind: 'admin-page-register', resolved: true, startLine: 123, endLine: 130,
+    payload: { kind: 'admin-page-register', slug: 'wc-settings', fn: 'add_submenu_page' },
+  };
+
+  const facts = new Map<number, FactRow>([[100, testDef], [200, nav], [300, register]]);
+  const factsByFile = new Map<number, FactRow[]>([
+    [1, [testDef, nav]], [2, [register]],
+  ]);
+  const anchorLinks = [
+    { factId: 200, anchorKey: k('wp-admin-page:wc-settings'), role: 'target' as const },
+    { factId: 300, anchorKey: k('wp-admin-page:wc-settings'), role: 'subject' as const },
+  ];
+  return {
+    files: new Map([[1, f1], [2, f2]]),
+    facts, factsByFile, anchorLinks,
+    tests: [{ testId: 't1', fileId: 1, framework: 'playwright', frameworkClass: 'e2e', factId: 100 }],
+  };
+}
+
 describe('traverseTest', () => {
+  it('a Playwright spec bridges to the PHP that registers the admin page it visits', () => {
+    // Program Phase 5: the admin-page-nav fact (from page.goto) and the
+    // admin-page-register fact (from add_submenu_page) join on the
+    // wp-admin-page:wc-settings anchor. No framework-class gate.
+    const g = adminPageGraph();
+    const idx = buildAnchorIndex(g);
+    const r = traverseTest(g, idx, 100, 't1', 'e2e', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    const adminEdge = r.edges.find((e) =>
+      e.evidence.some((ev) => ev.kind === 'admin-page-mediated'),
+    );
+    expect(adminEdge).toBeDefined();
+    expect(adminEdge?.source).toBe('includes/admin/class-wc-admin-menus.php');
+    // BASE_CONFIDENCE 0.9, literal-exact slug join, one hop.
+    expect(adminEdge?.confidence).toBeGreaterThanOrEqual(0.8);
+  });
+
   it('reaches imported and hook-listener files', () => {
     const g = tinyGraph();
     const idx = buildAnchorIndex(g);

@@ -37,6 +37,8 @@ export type FactKind =
   | 'ajax-listener'
   | 'ajax-call-js'
   | 'enqueue-script'
+  | 'admin-page-nav'
+  | 'admin-page-register'
   | 'script-localize'
   | 'script-localize-inline'
   | 'shortcode'
@@ -58,6 +60,7 @@ export type AnchorType =
   | 'rest'
   | 'ajax'
   | 'script-handle'
+  | 'wp-admin-page'
   | 'shortcode'
   | 'block'
   | 'test';
@@ -78,6 +81,7 @@ export const ALL_ANCHOR_TYPES = [
   'rest',
   'ajax',
   'script-handle',
+  'wp-admin-page',
   'shortcode',
   'block',
   'test',

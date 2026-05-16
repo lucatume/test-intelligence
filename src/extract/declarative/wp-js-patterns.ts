@@ -148,4 +148,22 @@ export const WP_JS_PATTERNS: readonly UserPattern[] = [
     emit: 'hook-fire',
     anchor: { template: 'hook:{hook}', role: 'target' },
   },
+  // page.goto('/wp-admin/admin.php?page=wc-settings') — Playwright navigation
+  // (program Phase 5). The admin-page-slug-from-url transform extracts the
+  // page= slug; a URL with no page= slug emits no fact.
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'goto', receiver: 'page' },
+    bind: { url: { arg: 0, type: 'string' } },
+    emit: 'admin-page-nav',
+    transform: 'admin-page-slug-from-url',
+    anchor: { template: 'wp-admin-page:{slug}', role: 'target' },
+  },
+  // page.route('/wp-admin/admin.php?page=wc-orders', handler) — URL interception
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'route', receiver: 'page' },
+    bind: { url: { arg: 0, type: 'string' } },
+    emit: 'admin-page-nav',
+    transform: 'admin-page-slug-from-url',
+    anchor: { template: 'wp-admin-page:{slug}', role: 'target' },
+  },
 ];
