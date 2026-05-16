@@ -21,7 +21,6 @@ interface DeriveRequest {
   readonly id: number;
   readonly testFactId: number;
   readonly testId: string;
-  readonly frameworkClass: 'unit' | 'e2e';
 }
 
 interface DeriveResponse {
@@ -41,7 +40,6 @@ port.on('message', (req: DeriveRequest) => {
     init.index,
     req.testFactId,
     req.testId,
-    req.frameworkClass,
     {
       maxDepth: init.params.maxDepth,
       maxMillisPerTest: init.params.maxMillisPerTest,

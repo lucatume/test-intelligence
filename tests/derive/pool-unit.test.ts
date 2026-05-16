@@ -86,10 +86,10 @@ describe('startDeriveWorkerPool', () => {
     if (!test) throw new Error('no test');
     try {
       const r1 = await pool1.derive({
-        testFactId: test.factId, testId: test.testId, frameworkClass: test.frameworkClass,
+        testFactId: test.factId, testId: test.testId,
       });
       const r4 = await pool4.derive({
-        testFactId: test.factId, testId: test.testId, frameworkClass: test.frameworkClass,
+        testFactId: test.factId, testId: test.testId,
       });
       expect(r1.edges.length).toBe(r4.edges.length);
       expect(r1.edges.length).toBe(1);
@@ -121,7 +121,7 @@ describe('startDeriveWorkerPool', () => {
       const results = await Promise.all(
         Array.from({ length: 50 }, () =>
           pool.derive({
-            testFactId: test.factId, testId: test.testId, frameworkClass: test.frameworkClass,
+            testFactId: test.factId, testId: test.testId,
           }),
         ),
       );

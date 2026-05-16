@@ -56,7 +56,8 @@ export type EdgeKind =
   | 'enqueue-mediated'
   | 'admin-page-mediated'
   | 'shortcode-render'
-  | 'block-render';
+  | 'block-render'
+  | 'store-mediated';
 
 export interface Edge {
   readonly testId: string;

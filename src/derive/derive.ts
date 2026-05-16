@@ -162,7 +162,7 @@ export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
       for (let i = 0; i < graph.tests.length; i++) {
         const t = graph.tests[i];
         if (!t) continue;
-        const r = traverseTest(graph, index, t.factId, t.testId, t.frameworkClass, {
+        const r = traverseTest(graph, index, t.factId, t.testId, {
           maxDepth: opts.params.maxDepth,
           maxMillisPerTest: opts.params.maxMillisPerTest,
           threshold: opts.params.threshold,
@@ -192,7 +192,6 @@ export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
               const r = await pool.derive({
                 testFactId: t.factId,
                 testId: t.testId,
-                frameworkClass: t.frameworkClass,
               });
               absorb(r);
             }

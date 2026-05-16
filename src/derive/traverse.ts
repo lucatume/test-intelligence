@@ -54,7 +54,6 @@ export function traverseTest(
   index: AnchorIndex,
   testFactId: number,
   testId: string,
-  frameworkClass: 'unit' | 'e2e',
   options: TraversalOptions,
 ): TraversalResult {
   const start = options.now();
@@ -122,7 +121,7 @@ export function traverseTest(
     }
 
     // Walk outward through this fact's relations.
-    enqueueDownstream(graph, index, cur.fact, cur.depth, queue, enqueued, options, frameworkClass, evidence, testFact.fileId);
+    enqueueDownstream(graph, index, cur.fact, cur.depth, queue, enqueued, options, evidence, testFact.fileId);
   }
 
   const edges: Edge[] = [];
@@ -157,7 +156,6 @@ function enqueueDownstream(
   queue: QueueItem[],
   enqueued: Set<number>,
   options: TraversalOptions,
-  frameworkClass: 'unit' | 'e2e',
   evidence: Map<number, EvidenceAgg>,
   testFileId: number,
 ): void {
@@ -223,7 +221,7 @@ function enqueueDownstream(
   }
 
   // 2. Cross-language / hook bridges: follow anchor to complementary facts.
-  const bridgeKind = bridgeKindFor(fact.kind, fact.resolved, frameworkClass, fact.payload, options.hookStopList);
+  const bridgeKind = bridgeKindFor(fact.kind, fact.resolved, fact.payload, options.hookStopList);
   if (bridgeKind === null) return;
 
   const links = index.linksByFact.get(fact.id) ?? [];
@@ -292,7 +290,6 @@ function enqueueEnqueueSiblings(
 function bridgeKindFor(
   kind: FactKind,
   resolved: boolean,
-  frameworkClass: 'unit' | 'e2e',
   payload: Readonly<Record<string, unknown>>,
   stopList: ReadonlySet<string>,
 ): EdgeKind | null {
@@ -352,10 +349,27 @@ function bridgeKindFor(
       // Subject side. Like hook-listener, it initiates no further walk; the
       // edge forms from the admin-page-nav (target) side via the anchor join.
       return null;
+    case 'store-register':
+      // Registration (subject) side. Like hook-listener / admin-page-register
+      // it initiates no walk; the edge forms from the store-access (target)
+      // side via the wp-store: anchor join.
+      return null;
+    case 'store-access':
+      // @wordpress/data store read/write (useSelect/useDispatch/select/
+      // dispatch). No framework-class gate: store access lives in React
+      // components imported by unit tests AND exercised by e2e specs; gating
+      // to e2e would starve the unit-test path (same reasoning as the rest/
+      // ajax bridges). A store key is a literal exact-match string on both
+      // sides, so the anchor join is always exact-precision.
+      return 'store-mediated';
     case 'shortcode':
       return 'shortcode-render';
     case 'block-render':
-      if (frameworkClass !== 'e2e') return null;
+      // No framework-class gate. The block-render fire side is JS
+      // registerBlockType (a block's edit/save component), which is imported
+      // by jest unit component tests — gating to e2e starved the bridge and it
+      // produced zero edges. PHP register_block_type is the subject side; the
+      // anchor join pairs JS-target ↔ PHP-subject on block:<ns>/<name>.
       return 'block-render';
     default:
       return null;

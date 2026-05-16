@@ -26,6 +26,7 @@ describe('confidence', () => {
     expect(BASE_CONFIDENCE['admin-page-mediated']).toBe(0.9);
     expect(BASE_CONFIDENCE['shortcode-render']).toBe(0.85);
     expect(BASE_CONFIDENCE['block-render']).toBe(0.7);
+    expect(BASE_CONFIDENCE['store-mediated']).toBe(0.8);
   });
 });
 

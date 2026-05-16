@@ -15,6 +15,7 @@ export const BASE_CONFIDENCE: Readonly<Record<EdgeKind, number>> = {
   'admin-page-mediated': 0.9,
   'shortcode-render': 0.85,
   'block-render': 0.7,
+  'store-mediated': 0.8,
 };
 
 export function combineConfidence(values: readonly number[]): number {

@@ -10,7 +10,6 @@ import type { DeriveParams } from './derive.js';
 export interface DeriveRequest {
   readonly testFactId: number;
   readonly testId: string;
-  readonly frameworkClass: 'unit' | 'e2e';
 }
 
 export interface DeriveWorkerPool {

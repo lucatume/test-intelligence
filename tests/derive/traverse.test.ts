@@ -183,14 +183,124 @@ function adminPageGraph(): Graph {
   };
 }
 
+function storeGraph(): Graph {
+  // test (file 1, jest unit) imports file 2 (a React component) which accesses
+  // the 'wc/admin/plugins' store via useDispatch. file 3 registers that store.
+  // The bridge is a wp-store:wc/admin/plugins target<->subject anchor join.
+  const f1: FileRow = { id: 1, path: 'tests/Plugins.test.tsx', language: 'ts', vendor: false, framework: 'jest', frameworkClass: 'unit' };
+  const f2: FileRow = { id: 2, path: 'client/components/Plugins.tsx', language: 'ts', vendor: false, framework: null, frameworkClass: null };
+  const f3: FileRow = { id: 3, path: 'client/data/plugins/index.js', language: 'js', vendor: false, framework: null, frameworkClass: null };
+
+  const testDef: FactRow = {
+    id: 100, fileId: 1, kind: 'test-def', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'test-def', framework: 'jest', testId: 't1' },
+  };
+  const importToComp: FactRow = {
+    id: 101, fileId: 1, kind: 'import-edge', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'import-edge', specifier: './Plugins', resolved: true, resolvedPath: 'client/components/Plugins.tsx' },
+  };
+  const access: FactRow = {
+    id: 200, fileId: 2, kind: 'store-access', resolved: true, startLine: 5, endLine: 5,
+    payload: { kind: 'store-access', key: 'wc/admin/plugins' },
+  };
+  const register: FactRow = {
+    id: 300, fileId: 3, kind: 'store-register', resolved: true, startLine: 10, endLine: 14,
+    payload: { kind: 'store-register', key: 'wc/admin/plugins' },
+  };
+
+  const facts = new Map<number, FactRow>([[100, testDef], [101, importToComp], [200, access], [300, register]]);
+  const factsByFile = new Map<number, FactRow[]>([
+    [1, [testDef, importToComp]], [2, [access]], [3, [register]],
+  ]);
+  const anchorLinks = [
+    { factId: 200, anchorKey: k('wp-store:wc/admin/plugins'), role: 'target' as const },
+    { factId: 300, anchorKey: k('wp-store:wc/admin/plugins'), role: 'subject' as const },
+  ];
+  return {
+    files: new Map([[1, f1], [2, f2], [3, f3]]),
+    facts, factsByFile, anchorLinks,
+    tests: [{ testId: 't1', fileId: 1, framework: 'jest', frameworkClass: 'unit', factId: 100 }],
+  };
+}
+
+function blockGraph(): Graph {
+  // test (file 1, jest unit) imports file 2 (a block's JS edit component) which
+  // carries a block-render TARGET fact (registerBlockType). file 3 (PHP)
+  // registers that block (register_block_type) — block-render SUBJECT. The
+  // bridge is a block:woocommerce/cart target<->subject anchor join.
+  const f1: FileRow = { id: 1, path: 'tests/cart-block.test.tsx', language: 'ts', vendor: false, framework: 'jest', frameworkClass: 'unit' };
+  const f2: FileRow = { id: 2, path: 'assets/js/blocks/cart/index.tsx', language: 'ts', vendor: false, framework: null, frameworkClass: null };
+  const f3: FileRow = { id: 3, path: 'src/Blocks/Cart.php', language: 'php', vendor: false, framework: null, frameworkClass: null };
+
+  const testDef: FactRow = {
+    id: 100, fileId: 1, kind: 'test-def', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'test-def', framework: 'jest', testId: 't1' },
+  };
+  const importToBlock: FactRow = {
+    id: 101, fileId: 1, kind: 'import-edge', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'import-edge', specifier: './index', resolved: true, resolvedPath: 'assets/js/blocks/cart/index.tsx' },
+  };
+  const jsRegister: FactRow = {
+    id: 200, fileId: 2, kind: 'block-render', resolved: true, startLine: 5, endLine: 5,
+    payload: { kind: 'block-render', name: 'woocommerce/cart' },
+  };
+  const phpRegister: FactRow = {
+    id: 300, fileId: 3, kind: 'block-render', resolved: true, startLine: 20, endLine: 24,
+    payload: { kind: 'block-render', name: 'woocommerce/cart' },
+  };
+
+  const facts = new Map<number, FactRow>([[100, testDef], [101, importToBlock], [200, jsRegister], [300, phpRegister]]);
+  const factsByFile = new Map<number, FactRow[]>([
+    [1, [testDef, importToBlock]], [2, [jsRegister]], [3, [phpRegister]],
+  ]);
+  const anchorLinks = [
+    { factId: 200, anchorKey: k('block:woocommerce/cart'), role: 'target' as const },
+    { factId: 300, anchorKey: k('block:woocommerce/cart'), role: 'subject' as const },
+  ];
+  return {
+    files: new Map([[1, f1], [2, f2], [3, f3]]),
+    facts, factsByFile, anchorLinks,
+    tests: [{ testId: 't1', fileId: 1, framework: 'jest', frameworkClass: 'unit', factId: 100 }],
+  };
+}
+
 describe('traverseTest', () => {
+  it('a unit test bridges a JS block-render to the PHP that registers the block', () => {
+    const g = blockGraph();
+    const idx = buildAnchorIndex(g);
+    const r = traverseTest(g, idx, 100, 't1', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    const phpEdge = r.edges.find((e) => e.source === 'src/Blocks/Cart.php');
+    expect(phpEdge).toBeDefined();
+    expect(phpEdge?.evidence.some((ev) => ev.kind === 'block-render')).toBe(true);
+  });
+
+  it('a unit test bridges through a @wordpress/data store-access to the registering file', () => {
+    const g = storeGraph();
+    const idx = buildAnchorIndex(g);
+    const r = traverseTest(g, idx, 100, 't1', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    const storeEdge = r.edges.find((e) =>
+      e.evidence.some((ev) => ev.kind === 'store-mediated'),
+    );
+    expect(storeEdge).toBeDefined();
+    expect(storeEdge?.source).toBe('client/data/plugins/index.js');
+  });
+
+
   it('a Playwright spec bridges to the PHP that registers the admin page it visits', () => {
     // Program Phase 5: the admin-page-nav fact (from page.goto) and the
     // admin-page-register fact (from add_submenu_page) join on the
     // wp-admin-page:wc-settings anchor. No framework-class gate.
     const g = adminPageGraph();
     const idx = buildAnchorIndex(g);
-    const r = traverseTest(g, idx, 100, 't1', 'e2e', {
+    const r = traverseTest(g, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -207,7 +317,7 @@ describe('traverseTest', () => {
   it('reaches imported and hook-listener files', () => {
     const g = tinyGraph();
     const idx = buildAnchorIndex(g);
-    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -220,7 +330,7 @@ describe('traverseTest', () => {
   it('respects hook stop-list', () => {
     const g = tinyGraph();
     const idx = buildAnchorIndex(g);
-    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(['thing']), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -232,7 +342,7 @@ describe('traverseTest', () => {
   it('drops edges below threshold', () => {
     const g = tinyGraph();
     const idx = buildAnchorIndex(g);
-    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0.9,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -255,7 +365,7 @@ describe('traverseTest', () => {
     factsByFile.set(2, [patchedFire]);
     const g: Graph = { ...base, facts, factsByFile };
     const idx = buildAnchorIndex(g);
-    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(['thing']), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -295,7 +405,7 @@ describe('traverseTest', () => {
     };
     const idx = buildAnchorIndex(g);
 
-    const unit = traverseTest(g, idx, 1, 't1', 'unit', { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32 });
+    const unit = traverseTest(g, idx, 1, 't1', { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32 });
     expect(unit.edges.some((e) => e.source === 'src/endpoint.php')).toBe(true);
 
     // An e2e spec that does NOT import the caller never reaches the rest-call-js
@@ -306,14 +416,14 @@ describe('traverseTest', () => {
       factsByFile: new Map([[1, [td]], [2, [endpoint]], [3, [rcj]]]),
       anchorLinks: g.anchorLinks.filter((l) => l.factId !== 2),
     };
-    const e2e = traverseTest(gNoImport, buildAnchorIndex(gNoImport), 1, 't2', 'e2e', { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32 });
+    const e2e = traverseTest(gNoImport, buildAnchorIndex(gNoImport), 1, 't2', { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32 });
     expect(e2e.edges.some((e) => e.source === 'src/endpoint.php')).toBe(false);
   });
 
   it('structural import edges keep BASE_CONFIDENCE (characterization — must not change)', () => {
     const g = tinyGraph();
     const idx = buildAnchorIndex(g);
-    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -353,9 +463,9 @@ describe('traverseTest', () => {
     const opts = { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set<string>(), now: (): number => 0, maxWildcardMatchesPerAnchor: 32 };
 
     const gUnresolved = build(false);
-    const rUnresolved = traverseTest(gUnresolved, buildAnchorIndex(gUnresolved), 1, 't1', 'unit', opts);
+    const rUnresolved = traverseTest(gUnresolved, buildAnchorIndex(gUnresolved), 1, 't1', opts);
     const gResolved = build(true);
-    const rResolved = traverseTest(gResolved, buildAnchorIndex(gResolved), 1, 't1', 'unit', opts);
+    const rResolved = traverseTest(gResolved, buildAnchorIndex(gResolved), 1, 't1', opts);
 
     const kindsOf = (r: ReturnType<typeof traverseTest>): string[] =>
       (r.edges.find((e) => e.source === 'src/endpoint.php')?.evidence.map((e) => e.kind) ?? []).sort();
@@ -369,7 +479,7 @@ describe('traverseTest', () => {
   it('e2e tests still bridge ajax-call-js to ajax-listener (characterization — must not regress)', () => {
     const g = ajaxGraph({ testFrameworkClass: 'e2e', callResolved: true });
     const idx = buildAnchorIndex(g);
-    const r = traverseTest(g, idx, 100, 't1', 'e2e', {
+    const r = traverseTest(g, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -382,7 +492,7 @@ describe('traverseTest', () => {
   it('unit tests bridge ajax-call-js to ajax-listener through an imported caller', () => {
     const g = ajaxGraph({ testFrameworkClass: 'unit', callResolved: true });
     const idx = buildAnchorIndex(g);
-    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -398,7 +508,7 @@ describe('traverseTest', () => {
   it('an unresolved ajax-call-js bridges as ajax-mediated-partial', () => {
     const g = ajaxGraph({ testFrameworkClass: 'unit', callResolved: false });
     const idx = buildAnchorIndex(g);
-    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -447,7 +557,7 @@ describe('traverseTest', () => {
     ];
     const g2: Graph = { files, facts, factsByFile, anchorLinks, tests: g.tests };
     const idx = buildAnchorIndex(g2);
-    const r = traverseTest(g2, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g2, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -466,7 +576,7 @@ describe('traverseTest', () => {
     const idx = buildAnchorIndex(g);
     // The ajax-mediated edge stores at ~0.71944. A threshold above it drops the
     // edge; the structural js-import edge to src/caller.ts (0.95) stays.
-    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0.8,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -524,7 +634,7 @@ describe('traverseTest — confidence tiering', () => {
     const idx = buildAnchorIndex(g);
     // Unit-class test: the rest-call-js bridge has no framework-class gate
     // (program Phase 4); the broad-wildcard endpoint is priced by Phase 1.
-    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -545,7 +655,7 @@ describe('traverseTest — confidence tiering', () => {
     );
     const g2: Graph = { ...g, anchorLinks: exactLinks };
     const idx = buildAnchorIndex(g2);
-    const r = traverseTest(g2, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g2, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -567,7 +677,7 @@ describe('traverseTest — confidence tiering', () => {
     );
     const g2: Graph = { ...g, anchorLinks: exactLinks };
     const idx = buildAnchorIndex(g2);
-    const r = traverseTest(g2, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g2, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -616,7 +726,7 @@ describe('traverseTest — confidence tiering', () => {
     ];
     const g2: Graph = { files, facts, factsByFile, anchorLinks, tests: g.tests };
     const idx = buildAnchorIndex(g2);
-    const r = traverseTest(g2, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g2, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -659,7 +769,7 @@ describe('traverseTest — wildcard bridge', () => {
       tests: [],
     };
     const idx = buildAnchorIndex(graph);
-    const r = traverseTest(graph, idx, 100, 'phpunit:tests/x.php::Foo::testIt', 'unit', {
+    const r = traverseTest(graph, idx, 100, 'phpunit:tests/x.php::Foo::testIt', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -691,7 +801,7 @@ describe('traverseTest — wildcard bridge', () => {
       tests: [],
     };
     const idx = buildAnchorIndex(graph);
-    const r = traverseTest(graph, idx, 200, 'phpunit:tests/x.php::Foo::testIt', 'unit', {
+    const r = traverseTest(graph, idx, 200, 'phpunit:tests/x.php::Foo::testIt', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -732,7 +842,7 @@ describe('traverseTest — wildcard bridge', () => {
     const graph: Graph = { files, facts, factsByFile, anchorLinks, tests: [] };
     const idx = buildAnchorIndex(graph);
 
-    const r = traverseTest(graph, idx, 9000, 'phpunit:tests/x.php::Foo::testIt', 'unit', {
+    const r = traverseTest(graph, idx, 9000, 'phpunit:tests/x.php::Foo::testIt', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 7,
@@ -744,7 +854,7 @@ describe('traverseTest — wildcard bridge', () => {
   it('a unit test reaches an enqueued classic JS file via enqueue-mediated', () => {
     const g = enqueueGraph({ testFrameworkClass: 'unit' });
     const idx = buildAnchorIndex(g);
-    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32,
     });
@@ -756,7 +866,7 @@ describe('traverseTest — wildcard bridge', () => {
   it('the bridge carries on into the enqueued file’s ajax-mediated edge', () => {
     const g = enqueueGraph({ testFrameworkClass: 'unit' });
     const idx = buildAnchorIndex(g);
-    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32,
     });
@@ -793,7 +903,7 @@ describe('traverseTest — wildcard bridge', () => {
       tests: [{ testId: 't1', fileId: 1, framework: 'jest', frameworkClass: 'unit', factId: 100 }],
     };
     const idx = buildAnchorIndex(g);
-    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32,
     });
@@ -805,7 +915,7 @@ describe('traverseTest — wildcard bridge', () => {
   it('enqueue-mediated edges attenuate with traversal distance', () => {
     const g = enqueueGraph({ testFrameworkClass: 'unit' });
     const idx = buildAnchorIndex(g);
-    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+    const r = traverseTest(g, idx, 100, 't1', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32,
     });
