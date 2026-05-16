@@ -92,4 +92,129 @@ describe('runDeclarativePatterns', () => {
     if (!f) throw new Error('no fact');
     expect((f.payload as { config?: { path?: string } }).config?.path).toBeUndefined();
   });
+
+  it('resolves an object bind passed by identifier to a same-file declaration', () => {
+    const sf = parse(
+      'src/a.ts',
+      "var data = { action: 'wc_save' }; $.ajax({ url: ajaxurl, data: data });",
+    );
+    const pattern: UserPattern = {
+      match: { lang: 'ts', nodeKind: 'method-call', name: 'ajax', receiver: '$' },
+      bind: { config: { arg: 0, type: 'object' } },
+      emit: 'ajax-call-js',
+      anchor: { template: 'ajax:{config.data.action}', role: 'target' },
+    };
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', [pattern]);
+    expect(facts).toHaveLength(1);
+    const [f] = facts;
+    if (!f) throw new Error('no fact');
+    expect(f.resolved).toBe(true);
+    expect(f.anchors[0]?.key).toBe('ajax:wc_save');
+  });
+
+  it('resolves a string bind passed by identifier to a same-file declaration', () => {
+    const sf = parse('src/a.ts', "const path = '/myplugin/v1/x'; apiFetch({ path: path });");
+    const pattern: UserPattern = {
+      match: { lang: 'ts', nodeKind: 'function-call', name: 'apiFetch' },
+      bind: { config: { arg: 0, type: 'object' } },
+      emit: 'rest-call-js',
+      anchor: { template: 'rest:GET {config.path}', role: 'target' },
+    };
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', [pattern]);
+    const [f] = facts;
+    if (!f) throw new Error('no fact');
+    expect(f.anchors[0]?.key).toBe('rest:GET /myplugin/v1/x');
+  });
+
+  it('does not chase identifier-to-identifier (depth-1 stop)', () => {
+    const sf = parse(
+      'src/a.ts',
+      "var inner = { action: 'wc_y' }; var data = inner; $.ajax({ data: data });",
+    );
+    const pattern: UserPattern = {
+      match: { lang: 'ts', nodeKind: 'method-call', name: 'ajax', receiver: '$' },
+      bind: { config: { arg: 0, type: 'object' } },
+      emit: 'ajax-call-js',
+      anchor: { template: 'ajax:{config.data.action}', role: 'target' },
+    };
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', [pattern]);
+    const [f] = facts;
+    if (!f) throw new Error('no fact');
+    expect(f.resolved).toBe(false);
+  });
+
+  it('uses last-writer-wins on duplicate variable names', () => {
+    const sf = parse(
+      'src/a.ts',
+      "var data = { action: 'first' }; var data = { action: 'second' }; $.ajax({ data: data });",
+    );
+    const pattern: UserPattern = {
+      match: { lang: 'ts', nodeKind: 'method-call', name: 'ajax', receiver: '$' },
+      bind: { config: { arg: 0, type: 'object' } },
+      emit: 'ajax-call-js',
+      anchor: { template: 'ajax:{config.data.action}', role: 'target' },
+    };
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', [pattern]);
+    const [f] = facts;
+    if (!f) throw new Error('no fact');
+    expect(f.anchors[0]?.key).toBe('ajax:second');
+  });
+
+  it('resolves an identifier used as an object property value', () => {
+    const sf = parse(
+      'src/a.ts',
+      "var act = 'wc_prop'; $.ajax({ data: { action: act } });",
+    );
+    const pattern: UserPattern = {
+      match: { lang: 'ts', nodeKind: 'method-call', name: 'ajax', receiver: '$' },
+      bind: { config: { arg: 0, type: 'object' } },
+      emit: 'ajax-call-js',
+      anchor: { template: 'ajax:{config.data.action}', role: 'target' },
+    };
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', [pattern]);
+    const [f] = facts;
+    if (!f) throw new Error('no fact');
+    expect(f.anchors[0]?.key).toBe('ajax:wc_prop');
+  });
+
+  it('leaves a binding unresolved when an identifier has no matching declaration', () => {
+    const sf = parse('src/a.ts', "$.ajax({ data: missing });");
+    const pattern: UserPattern = {
+      match: { lang: 'ts', nodeKind: 'method-call', name: 'ajax', receiver: '$' },
+      bind: { config: { arg: 0, type: 'object' } },
+      emit: 'ajax-call-js',
+      anchor: { template: 'ajax:{config.data.action}', role: 'target' },
+    };
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', [pattern]);
+    const [f] = facts;
+    if (!f) throw new Error('no fact');
+    expect(f.resolved).toBe(false);
+  });
+
+  it('folds a + concat of string literals into a skeleton keeping literal segments', () => {
+    const sf = parse('src/a.ts', "fetch('/wc/v3/products/' + id + '/variations');");
+    const pattern: UserPattern = {
+      match: { lang: 'ts', nodeKind: 'function-call', name: 'fetch' },
+      bind: { url: { arg: 0, type: 'string' } },
+      emit: 'rest-call-js',
+      anchor: { template: 'rest:GET {url}', role: 'target' },
+    };
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', [pattern]);
+    const [f] = facts;
+    if (!f) throw new Error('no fact');
+    expect((f.payload as { url?: string }).url).toBe('/wc/v3/products/{*}/variations');
+  });
+
+  it('folds a leading dynamic concat operand to {*}', () => {
+    const sf = parse('src/a.ts', "fetch(base + '?action=wc_x');");
+    const pattern: UserPattern = {
+      match: { lang: 'ts', nodeKind: 'function-call', name: 'fetch' },
+      bind: { url: { arg: 0, type: 'string' } },
+      emit: 'rest-call-js',
+    };
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', [pattern]);
+    const [f] = facts;
+    if (!f) throw new Error('no fact');
+    expect((f.payload as { url?: string }).url).toBe('{*}?action=wc_x');
+  });
 });

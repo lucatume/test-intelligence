@@ -39,4 +39,14 @@ describe('parsePattern', () => {
     });
     expect(r.kind).toBe('ok');
   });
+
+  it('accepts the ajax-action-from-url transform', () => {
+    const r = parsePattern({
+      match: { lang: 'ts', nodeKind: 'method-call', name: 'post', receiver: '$' },
+      bind: { url: { arg: 0, type: 'string' } },
+      emit: 'ajax-call-js',
+      transform: 'ajax-action-from-url',
+    });
+    expect(r.kind).toBe('ok');
+  });
 });

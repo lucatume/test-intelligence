@@ -30,7 +30,7 @@ export interface UserPattern {
   readonly bind: Readonly<Record<string, Binding>>;
   readonly emit: FactKind;
   readonly anchor?: PatternAnchor;
-  readonly transform?: 'rest-route' | 'enqueue-src';
+  readonly transform?: 'rest-route' | 'enqueue-src' | 'ajax-action-from-url';
 }
 
 const ALL_FACT_KINDS: readonly FactKind[] = [
@@ -74,7 +74,7 @@ const patternSchema = P.object(
     bind: P.record(bindingSchema),
     emit: P.refine(P.string, (s) => (ALL_FACT_KINDS.includes(s as FactKind) ? null : `unknown FactKind "${s}"`)),
     anchor: P.optional(anchorSchema),
-    transform: P.optional(P.enumOf(['rest-route', 'enqueue-src'] as const)),
+    transform: P.optional(P.enumOf(['rest-route', 'enqueue-src', 'ajax-action-from-url'] as const)),
   },
   { strict: true },
 );

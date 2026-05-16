@@ -19,19 +19,62 @@ export function runDeclarativePatterns(
   if (tsPatterns.length === 0) return [];
 
   const facts: Fact[] = [];
+  const inits = buildLiteralInitMap(sf);
 
   const walk = (n: ts.Node): void => {
     const matched = matchNode(n);
     if (matched !== null) {
       for (const p of tsPatterns) {
         if (!matchesPattern(matched, p)) continue;
-        facts.push(applyPattern(matched, p, sf, relPath));
+        facts.push(applyPattern(matched, p, sf, relPath, inits));
       }
     }
     ts.forEachChild(n, walk);
   };
   walk(sf);
   return facts;
+}
+
+type LiteralInitMap = ReadonlyMap<string, ts.Expression>;
+
+function isLiteralInitializer(n: ts.Expression): boolean {
+  return (
+    ts.isObjectLiteralExpression(n) ||
+    ts.isStringLiteral(n) ||
+    ts.isNoSubstitutionTemplateLiteral(n) ||
+    ts.isTemplateExpression(n) ||
+    ts.isNumericLiteral(n) ||
+    n.kind === ts.SyntaxKind.TrueKeyword ||
+    n.kind === ts.SyntaxKind.FalseKeyword
+  );
+}
+
+function buildLiteralInitMap(sf: ts.SourceFile): LiteralInitMap {
+  const map = new Map<string, ts.Expression>();
+  const visit = (n: ts.Node): void => {
+    if (
+      ts.isVariableDeclaration(n) &&
+      ts.isIdentifier(n.name) &&
+      n.initializer !== undefined &&
+      isLiteralInitializer(n.initializer)
+    ) {
+      // Last-writer-wins: a later declaration overwrites an earlier one.
+      map.set(n.name.text, n.initializer);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return map;
+}
+
+// Resolves a bare identifier to its same-file literal initializer (depth-1: if
+// the initializer is itself an identifier, it is not chased further).
+function resolveExpression(n: ts.Expression, inits: LiteralInitMap): ts.Expression {
+  if (ts.isIdentifier(n)) {
+    const init = inits.get(n.text);
+    if (init !== undefined && !ts.isIdentifier(init)) return init;
+  }
+  return n;
 }
 
 function matchNode(n: ts.Node): MatchedCall | null {
@@ -76,7 +119,26 @@ function matchesPattern(m: MatchedCall, p: UserPattern): boolean {
   }
 }
 
-function applyPattern(m: MatchedCall, p: UserPattern, sf: ts.SourceFile, relPath: string): Fact {
+const ACTION_IN_URL = /[?&]action=([A-Za-z0-9_-]+)/;
+
+// Pulls an `action=<token>` substring out of a bound `url` skeleton into
+// `fields.action`. Used by patterns whose AJAX action lives in the request URL.
+function extractActionFromUrl(fields: Record<string, unknown>): void {
+  const url = fields['url'];
+  if (typeof url !== 'string') return;
+  const m = ACTION_IN_URL.exec(url);
+  if (m !== null && m[1] !== undefined && !m[1].includes('{*}')) {
+    fields['action'] = m[1];
+  }
+}
+
+function applyPattern(
+  m: MatchedCall,
+  p: UserPattern,
+  sf: ts.SourceFile,
+  relPath: string,
+  inits: LiteralInitMap,
+): Fact {
   const startLine = sf.getLineAndCharacterOfPosition(m.node.getStart(sf)).line + 1;
   const endLine = sf.getLineAndCharacterOfPosition(m.node.getEnd()).line + 1;
 
@@ -85,10 +147,17 @@ function applyPattern(m: MatchedCall, p: UserPattern, sf: ts.SourceFile, relPath
   const argNodes: readonly ts.Expression[] = m.node.arguments ?? [];
 
   for (const [fieldName, binding] of Object.entries(p.bind)) {
-    const argNode = argNodes[binding.arg];
-    const value = argNode !== undefined ? readLiteral(argNode, binding.type) : (binding.default ?? null);
+    const rawArg = argNodes[binding.arg];
+    const argNode = rawArg !== undefined ? resolveExpression(rawArg, inits) : undefined;
+    const value = argNode !== undefined ? readLiteral(argNode, binding.type, inits) : (binding.default ?? null);
     if (value === null && binding.optional !== true) resolved = false;
     if (value !== null) fields[fieldName] = value;
+  }
+  if (p.transform === 'ajax-action-from-url') {
+    extractActionFromUrl(fields);
+    // The URL skeleton has served its purpose; drop it so its residual {*}
+    // does not flag the fact unresolved and so the payload stays clean.
+    if (typeof fields['action'] === 'string') delete fields['url'];
   }
   if (resolved && containsWildcard(fields)) resolved = false;
 
@@ -134,11 +203,29 @@ function containsWildcard(v: unknown): boolean {
   return false;
 }
 
-function readLiteral(n: ts.Expression, type: string): unknown {
+// Folds a `+` chain over string operands into a {*}-skeleton, preserving the
+// literal segments. Returns null only when the chain has no string literal.
+function foldConcat(n: ts.Expression): string | null {
+  if (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) return n.text;
+  if (ts.isTemplateExpression(n)) return templateLiteralSkeleton(n);
+  if (ts.isParenthesizedExpression(n)) return foldConcat(n.expression);
+  if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = foldConcat(n.left);
+    const right = foldConcat(n.right);
+    if (left === null && right === null) return null;
+    return (left ?? '{*}') + (right ?? '{*}');
+  }
+  return '{*}';
+}
+
+function readLiteral(n: ts.Expression, type: string, inits: LiteralInitMap): unknown {
   if (type === 'string') {
     if (ts.isStringLiteral(n)) return n.text;
     if (ts.isNoSubstitutionTemplateLiteral(n)) return n.text;
     if (ts.isTemplateExpression(n)) return templateLiteralSkeleton(n);
+    if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+      return foldConcat(n);
+    }
     return null;
   }
   if (type === 'int' && ts.isNumericLiteral(n)) return Number(n.text);
@@ -149,7 +236,7 @@ function readLiteral(n: ts.Expression, type: string): unknown {
     const out: Record<string, unknown> = {};
     for (const prop of n.properties) {
       if (!ts.isPropertyAssignment(prop) || !ts.isIdentifier(prop.name)) continue;
-      const val = prop.initializer;
+      const val = resolveExpression(prop.initializer, inits);
       if (ts.isStringLiteral(val) || ts.isNoSubstitutionTemplateLiteral(val)) {
         out[prop.name.text] = val.text;
       } else if (ts.isTemplateExpression(val)) {
@@ -159,7 +246,7 @@ function readLiteral(n: ts.Expression, type: string): unknown {
       } else if (val.kind === ts.SyntaxKind.TrueKeyword || val.kind === ts.SyntaxKind.FalseKeyword) {
         out[prop.name.text] = val.kind === ts.SyntaxKind.TrueKeyword;
       } else if (ts.isObjectLiteralExpression(val)) {
-        out[prop.name.text] = readLiteral(val, 'object');
+        out[prop.name.text] = readLiteral(val, 'object', inits);
       }
     }
     return out;

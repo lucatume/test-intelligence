@@ -91,4 +91,99 @@ describe('WP_JS_PATTERNS', () => {
     const list = facts.filter((f) => f.kind === 'hook-listener');
     expect(list).toHaveLength(1);
   });
+
+  it('matches $.ajax({url, data:{action}})', () => {
+    const sf = parse('src/a.ts', "$.ajax({ url: ajaxurl, data: { action: 'wc_x' } });");
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
+    const ajax = facts.find((f) => f.kind === 'ajax-call-js');
+    expect(ajax?.anchors[0]?.key).toBe('ajax:wc_x');
+    expect(ajax?.resolved).toBe(true);
+  });
+
+  it('matches $.get(url, {action})', () => {
+    const sf = parse('src/a.ts', "$.get(ajaxurl, { action: 'wc_get' });");
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
+    const ajax = facts.find((f) => f.kind === 'ajax-call-js');
+    expect(ajax?.anchors[0]?.key).toBe('ajax:wc_get');
+  });
+
+  it('matches $.getJSON(url, {action})', () => {
+    const sf = parse('src/a.ts', "$.getJSON(ajaxurl, { action: 'wc_json' });");
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
+    const ajax = facts.find((f) => f.kind === 'ajax-call-js');
+    expect(ajax?.anchors[0]?.key).toBe('ajax:wc_json');
+  });
+
+  it('matches Backbone.ajax({url, data:{action}}) as an $.ajax alias', () => {
+    const sf = parse('src/a.ts', "Backbone.ajax({ url: ajaxurl, data: { action: 'wc_bb' } });");
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
+    const ajax = facts.find((f) => f.kind === 'ajax-call-js');
+    expect(ajax?.anchors[0]?.key).toBe('ajax:wc_bb');
+  });
+
+  it('matches jQuery.get(url, {action})', () => {
+    const sf = parse('src/a.ts', "jQuery.get(ajaxurl, { action: 'wc_jqget' });");
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
+    const ajax = facts.find((f) => f.kind === 'ajax-call-js');
+    expect(ajax?.anchors[0]?.key).toBe('ajax:wc_jqget');
+  });
+
+  it('extracts the action from a concatenated $.post URL', () => {
+    const sf = parse(
+      'src/a.ts',
+      "$.post( ajaxurl + '?action=woocommerce_shipping_zones_save_changes', { changes: x } );",
+    );
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
+    const ajax = facts.find(
+      (f) =>
+        f.kind === 'ajax-call-js' &&
+        f.anchors[0]?.key === 'ajax:woocommerce_shipping_zones_save_changes',
+    );
+    expect(ajax).toBeDefined();
+    expect(ajax?.resolved).toBe(true);
+  });
+
+  it('leaves the action unresolved when a concatenated URL has no action token', () => {
+    const sf = parse('src/a.ts', "$.post( ajaxurl + '?foo=bar', { x: 1 } );");
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
+    const ajaxByUrl = facts.filter(
+      (f) => f.kind === 'ajax-call-js' && f.resolved && (f.anchors[0]?.key ?? '').startsWith('ajax:'),
+    );
+    expect(ajaxByUrl.every((f) => f.anchors[0]?.key !== 'ajax:foo')).toBe(true);
+  });
+
+  it('extracts a resolved ajax-call-js from a classic IIFE with var-data $.ajax', () => {
+    const src = [
+      '( function( $ ) {',
+      '  $( function() {',
+      "    var data = { action: 'woocommerce_get_customer_details', security: nonce };",
+      "    $.ajax({ url: woocommerce_admin_meta_boxes.ajax_url, data: data, type: 'POST' });",
+      '  } );',
+      '} )( jQuery );',
+    ].join('\n');
+    const sf = parse('src/admin.ts', src);
+    const facts = runDeclarativePatterns(sf, 'src/admin.ts', WP_JS_PATTERNS);
+    const ajax = facts.find((f) => f.kind === 'ajax-call-js' && f.resolved);
+    expect(ajax?.anchors[0]?.key).toBe('ajax:woocommerce_get_customer_details');
+  });
+
+  it('extracts a resolved ajax-call-js from a Backbone.ajax call in an IIFE', () => {
+    const src = [
+      '( function( $ ) {',
+      '  var APIView = Backbone.View.extend({',
+      '    save: function() {',
+      '      Backbone.ajax({',
+      "        method: 'POST',",
+      '        url: woocommerce_admin_api_keys.ajax_url,',
+      "        data: { action: 'woocommerce_update_api_key', security: nonce }",
+      '      });',
+      '    }',
+      '  });',
+      '} )( jQuery );',
+    ].join('\n');
+    const sf = parse('src/admin.ts', src);
+    const facts = runDeclarativePatterns(sf, 'src/admin.ts', WP_JS_PATTERNS);
+    const ajax = facts.find((f) => f.kind === 'ajax-call-js' && f.resolved);
+    expect(ajax?.anchors[0]?.key).toBe('ajax:woocommerce_update_api_key');
+  });
 });

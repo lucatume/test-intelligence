@@ -44,12 +44,59 @@ export const WP_JS_PATTERNS: readonly UserPattern[] = [
     emit: 'ajax-call-js',
     anchor: { template: 'ajax:{data.action}', role: 'target' },
   },
+  // $.post( ajaxurl + 'action=wc_x', data ) — action lives in the URL string
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'post', receiver: '$' },
+    bind: { url: { arg: 0, type: 'string', optional: true } },
+    emit: 'ajax-call-js',
+    transform: 'ajax-action-from-url',
+    anchor: { template: 'ajax:{action}', role: 'target' },
+  },
   // wp.ajax.post('my_action', data)
   {
     match: { lang: 'ts', nodeKind: 'method-call', name: 'post', receiver: 'ajax' },
     bind: { action: { arg: 0, type: 'string' } },
     emit: 'ajax-call-js',
     anchor: { template: 'ajax:{action}', role: 'target' },
+  },
+  // $.ajax({ url, data: { action } }) — classic jQuery AJAX
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'ajax', receiver: '$' },
+    bind: { config: { arg: 0, type: 'object' } },
+    emit: 'ajax-call-js',
+    anchor: { template: 'ajax:{config.data.action}', role: 'target' },
+  },
+  // Backbone.ajax({ url, data: { action } }) — thin alias of $.ajax
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'ajax', receiver: 'Backbone' },
+    bind: { config: { arg: 0, type: 'object' } },
+    emit: 'ajax-call-js',
+    anchor: { template: 'ajax:{config.data.action}', role: 'target' },
+  },
+  // $.get(ajaxurl, { action }) / jQuery.get(...) / $.getJSON(...) / jQuery.getJSON(...)
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'get', receiver: '$' },
+    bind: { url: { arg: 0, type: 'string', optional: true }, data: { arg: 1, type: 'object', optional: true } },
+    emit: 'ajax-call-js',
+    anchor: { template: 'ajax:{data.action}', role: 'target' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'get', receiver: 'jQuery' },
+    bind: { url: { arg: 0, type: 'string', optional: true }, data: { arg: 1, type: 'object', optional: true } },
+    emit: 'ajax-call-js',
+    anchor: { template: 'ajax:{data.action}', role: 'target' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'getJSON', receiver: '$' },
+    bind: { url: { arg: 0, type: 'string', optional: true }, data: { arg: 1, type: 'object', optional: true } },
+    emit: 'ajax-call-js',
+    anchor: { template: 'ajax:{data.action}', role: 'target' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'getJSON', receiver: 'jQuery' },
+    bind: { url: { arg: 0, type: 'string', optional: true }, data: { arg: 1, type: 'object', optional: true } },
+    emit: 'ajax-call-js',
+    anchor: { template: 'ajax:{data.action}', role: 'target' },
   },
   // @wordpress/hooks named-import form
   {
