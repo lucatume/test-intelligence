@@ -199,6 +199,29 @@ function enqueueDownstream(
     return;
   }
 
+  // enqueue-script: resolve the js-module anchor to the enqueued JS file and
+  // enqueue that file's facts. This is the only static reachability route to
+  // classic-WP admin scripts — they are not ES modules, nothing imports them.
+  if (fact.kind === 'enqueue-script') {
+    const links = index.linksByFact.get(fact.id) ?? [];
+    for (const link of links) {
+      if (link.role !== 'target' || !link.anchorKey.startsWith('js-module:')) continue;
+      const modPath = link.anchorKey.slice('js-module:'.length);
+      const target = index.filesByPath.get(modPath);
+      if (!target) continue;
+      const kind: EdgeKind = 'enqueue-mediated';
+      for (const f of graph.factsByFile.get(target.id) ?? []) {
+        if (enqueued.has(f.id)) continue;
+        enqueued.add(f.id);
+        queue.push({
+          fact: f, depth: depth + 1, arrivalKind: kind, arrivalFactId: fact.id,
+          arrivalPrecision: 'exact', arrivalIsBridge: true,
+        });
+      }
+    }
+    return;
+  }
+
   // 2. Cross-language / hook bridges: follow anchor to complementary facts.
   const bridgeKind = bridgeKindFor(fact.kind, fact.resolved, frameworkClass, fact.payload, options.hookStopList);
   if (bridgeKind === null) return;
@@ -217,6 +240,14 @@ function enqueueDownstream(
       if (partnerFile && partnerFile.id !== testFileId && !partnerFile.vendor) {
         recordEvidence(evidence, partnerFile.id, bridgeKind, fact.id, partner.fact.id, c);
       }
+      // Expose the partner file's enqueue-script siblings (program Phase 3):
+      // WP enqueues sit inside hook callbacks, so a PHP file reached via a hook
+      // bridge must surface its wp_enqueue_script facts for the enqueue→JS
+      // bridge to fire. Scoped to enqueue-script ONLY — surfacing every sibling
+      // fact would turn each hook hop into a full-file expansion and blow up
+      // the BFS on WP-core-dense graphs. Siblings carry arrivalKind=null: they
+      // propagate but record no edge of their own.
+      enqueueEnqueueSiblings(graph, partner.fact, partnerDepth, queue, enqueued);
       if (enqueued.has(partner.fact.id)) continue;
       enqueued.add(partner.fact.id);
       queue.push({
@@ -228,6 +259,33 @@ function enqueueDownstream(
         arrivalIsBridge: true,
       });
     }
+  }
+}
+
+/**
+ * Enqueue the `enqueue-script` facts in `anchorFact`'s file as propagate-only
+ * BFS items (`arrivalKind = null`). Used when a bridge arrival exposes a PHP
+ * file: WP `wp_enqueue_script` calls live inside hook callbacks, so a file
+ * reached via a hook bridge must surface its enqueues for the enqueue→JS
+ * bridge to fire. Scoped to enqueue-script only — surfacing every sibling fact
+ * would turn each hook hop into a full-file expansion. The siblings record no
+ * edge of their own; `enqueueDownstream` resolves their js-module anchor.
+ */
+function enqueueEnqueueSiblings(
+  graph: Graph,
+  anchorFact: FactRow,
+  depth: number,
+  queue: QueueItem[],
+  enqueued: Set<number>,
+): void {
+  for (const f of graph.factsByFile.get(anchorFact.fileId) ?? []) {
+    if (f.kind !== 'enqueue-script') continue;
+    if (enqueued.has(f.id)) continue;
+    enqueued.add(f.id);
+    queue.push({
+      fact: f, depth, arrivalKind: null, arrivalFactId: null,
+      arrivalPrecision: 'exact', arrivalIsBridge: false,
+    });
   }
 }
 
@@ -264,7 +322,15 @@ function bridgeKindFor(
       // edges honestly.
       return resolved ? 'ajax-mediated' : 'ajax-mediated-partial';
     case 'enqueue-script':
-      if (frameworkClass !== 'e2e') return null;
+      // No framework-class gate (program Phase 3). The enqueue link is the only
+      // static reachability path to classic-WP admin JS — those scripts are not
+      // ES modules, nothing imports them. Gating to e2e starved this bridge AND
+      // Phase 2's ajax bridge, which can only reach a $.post caller through this
+      // link. Phase 1 distance attenuation prices transitive enqueue edges
+      // honestly. Note: enqueueDownstream handles enqueue-script via its
+      // js-module branch and returns before reaching this switch, so this case
+      // is now effectively unreachable for enqueue-script facts; it is kept for
+      // exhaustiveness and documents the gate's removal.
       return 'enqueue-mediated';
     case 'shortcode':
       return 'shortcode-render';

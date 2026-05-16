@@ -98,6 +98,56 @@ function ajaxGraph(opts: {
   };
 }
 
+function enqueueGraph(opts: { testFrameworkClass: 'unit' | 'e2e' }): Graph {
+  // test (file 1) -> imports admin.php (file 2) which wp_enqueue_script's a
+  // classic admin script assets/js/admin/inline-edit.js (file 3). That JS file
+  // carries an ajax-call-js fact; listener.php (file 4) registers the action.
+  const f1: FileRow = { id: 1, path: 'tests/admin.test.ts', language: 'ts', vendor: false, framework: 'jest', frameworkClass: opts.testFrameworkClass };
+  const f2: FileRow = { id: 2, path: 'admin.php', language: 'php', vendor: false, framework: null, frameworkClass: null };
+  const f3: FileRow = { id: 3, path: 'assets/js/admin/inline-edit.js', language: 'js', vendor: false, framework: null, frameworkClass: null };
+  const f4: FileRow = { id: 4, path: 'listener.php', language: 'php', vendor: false, framework: null, frameworkClass: null };
+
+  const testDef: FactRow = {
+    id: 100, fileId: 1, kind: 'test-def', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'test-def', framework: 'jest', testId: 't1' },
+  };
+  const importToAdmin: FactRow = {
+    id: 101, fileId: 1, kind: 'import-edge', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'import-edge', specifier: './admin', resolved: true, resolvedPath: 'admin.php' },
+  };
+  const enqueue: FactRow = {
+    id: 200, fileId: 2, kind: 'enqueue-script', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'enqueue-script', handle: 'inline-edit', srcPath: 'assets/js/admin/inline-edit.js' },
+  };
+  const ajaxCall: FactRow = {
+    id: 300, fileId: 3, kind: 'ajax-call-js', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'ajax-call-js', action: 'inline_save' },
+  };
+  const ajaxListener: FactRow = {
+    id: 400, fileId: 4, kind: 'ajax-listener', resolved: true, startLine: 1, endLine: 1,
+    payload: { kind: 'ajax-listener', action: 'inline_save' },
+  };
+
+  const facts = new Map<number, FactRow>([
+    [100, testDef], [101, importToAdmin], [200, enqueue], [300, ajaxCall], [400, ajaxListener],
+  ]);
+  const factsByFile = new Map<number, FactRow[]>([
+    [1, [testDef, importToAdmin]], [2, [enqueue]], [3, [ajaxCall]], [4, [ajaxListener]],
+  ]);
+  const anchorLinks = [
+    { factId: 101, anchorKey: k('js-module:admin.php'), role: 'module' as const },
+    { factId: 200, anchorKey: k('script-handle:inline-edit'), role: 'subject' as const },
+    { factId: 200, anchorKey: k('js-module:assets/js/admin/inline-edit.js'), role: 'target' as const },
+    { factId: 300, anchorKey: k('ajax:inline_save'), role: 'target' as const },
+    { factId: 400, anchorKey: k('ajax:inline_save'), role: 'subject' as const },
+  ];
+  return {
+    files: new Map([[1, f1], [2, f2], [3, f3], [4, f4]]),
+    facts, factsByFile, anchorLinks,
+    tests: [{ testId: 't1', fileId: 1, framework: 'jest', frameworkClass: opts.testFrameworkClass, factId: 100 }],
+  };
+}
+
 describe('traverseTest', () => {
   it('reaches imported and hook-listener files', () => {
     const g = tinyGraph();
@@ -592,5 +642,81 @@ describe('traverseTest — wildcard bridge', () => {
     });
     // The cap is per-fact: 7 wildcard-side matches → at most 7 source files
     expect(r.edges.length).toBe(7);
+  });
+
+  it('a unit test reaches an enqueued classic JS file via enqueue-mediated', () => {
+    const g = enqueueGraph({ testFrameworkClass: 'unit' });
+    const idx = buildAnchorIndex(g);
+    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32,
+    });
+    const js = r.edges.find((e) => e.source === 'assets/js/admin/inline-edit.js');
+    expect(js).toBeDefined();
+    expect(js?.evidence.some((ev) => ev.kind === 'enqueue-mediated')).toBe(true);
+  });
+
+  it('the bridge carries on into the enqueued file’s ajax-mediated edge', () => {
+    const g = enqueueGraph({ testFrameworkClass: 'unit' });
+    const idx = buildAnchorIndex(g);
+    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32,
+    });
+    const listener = r.edges.find((e) => e.source === 'listener.php');
+    expect(listener).toBeDefined();
+    expect(listener?.evidence.some((ev) => ev.kind === 'ajax-mediated')).toBe(true);
+  });
+
+  it('surfaces enqueue-script siblings when a PHP file is reached via a hook bridge', () => {
+    // test (file 1) imports a.php (file 2) which fires hook 'thing'; admin.php
+    // (file 3) listens for 'thing' AND (same file) enqueues a classic admin
+    // script x.js (file 4). The enqueue-script fact must be surfaced even
+    // though only the hook-listener fact is the matched bridge partner.
+    const f1: FileRow = { id: 1, path: 'tests/x.test.ts', language: 'ts', vendor: false, framework: 'jest', frameworkClass: 'unit' };
+    const f2: FileRow = { id: 2, path: 'a.php', language: 'php', vendor: false, framework: null, frameworkClass: null };
+    const f3: FileRow = { id: 3, path: 'admin.php', language: 'php', vendor: false, framework: null, frameworkClass: null };
+    const f4: FileRow = { id: 4, path: 'assets/js/admin/x.js', language: 'js', vendor: false, framework: null, frameworkClass: null };
+    const testDef: FactRow = { id: 100, fileId: 1, kind: 'test-def', resolved: true, startLine: 1, endLine: 1, payload: { kind: 'test-def', framework: 'jest', testId: 't1' } };
+    const importToA: FactRow = { id: 101, fileId: 1, kind: 'import-edge', resolved: true, startLine: 1, endLine: 1, payload: { kind: 'import-edge', specifier: './a', resolved: true, resolvedPath: 'a.php' } };
+    const fire: FactRow = { id: 200, fileId: 2, kind: 'hook-fire', resolved: true, startLine: 1, endLine: 1, payload: { kind: 'hook-fire', hook: 'thing' } };
+    const adminListener: FactRow = { id: 300, fileId: 3, kind: 'hook-listener', resolved: true, startLine: 1, endLine: 1, payload: { kind: 'hook-listener', hook: 'thing' } };
+    const adminEnqueue: FactRow = { id: 301, fileId: 3, kind: 'enqueue-script', resolved: true, startLine: 2, endLine: 2, payload: { kind: 'enqueue-script', handle: 'x', srcPath: 'assets/js/admin/x.js' } };
+    const jsFact: FactRow = { id: 400, fileId: 4, kind: 'ajax-call-js', resolved: true, startLine: 1, endLine: 1, payload: { kind: 'ajax-call-js', action: 'do_x' } };
+    const g: Graph = {
+      files: new Map([[1, f1], [2, f2], [3, f3], [4, f4]]),
+      facts: new Map<number, FactRow>([[100, testDef], [101, importToA], [200, fire], [300, adminListener], [301, adminEnqueue], [400, jsFact]]),
+      factsByFile: new Map<number, FactRow[]>([[1, [testDef, importToA]], [2, [fire]], [3, [adminListener, adminEnqueue]], [4, [jsFact]]]),
+      anchorLinks: [
+        { factId: 101, anchorKey: k('js-module:a.php'), role: 'module' as const },
+        { factId: 200, anchorKey: k('hook:thing'), role: 'target' as const },
+        { factId: 300, anchorKey: k('hook:thing'), role: 'subject' as const },
+        { factId: 301, anchorKey: k('js-module:assets/js/admin/x.js'), role: 'target' as const },
+      ],
+      tests: [{ testId: 't1', fileId: 1, framework: 'jest', frameworkClass: 'unit', factId: 100 }],
+    };
+    const idx = buildAnchorIndex(g);
+    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32,
+    });
+    const js = r.edges.find((e) => e.source === 'assets/js/admin/x.js');
+    expect(js).toBeDefined();
+    expect(js?.evidence.some((ev) => ev.kind === 'enqueue-mediated')).toBe(true);
+  });
+
+  it('enqueue-mediated edges attenuate with traversal distance', () => {
+    const g = enqueueGraph({ testFrameworkClass: 'unit' });
+    const idx = buildAnchorIndex(g);
+    const r = traverseTest(g, idx, 100, 't1', 'unit', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32,
+    });
+    const js = r.edges.find((e) => e.source === 'assets/js/admin/inline-edit.js');
+    // enqueue-mediated BASE_CONFIDENCE is 0.7; the JS file is reached past an
+    // import hop, so Phase-1 distance decay must pull the stored confidence
+    // strictly below the 0.7 base.
+    expect(js?.confidence).toBeLessThan(0.7);
+    expect(js?.confidence).toBeGreaterThan(0);
   });
 });
