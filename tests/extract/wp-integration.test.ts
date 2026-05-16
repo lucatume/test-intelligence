@@ -85,6 +85,16 @@ jQuery.ajax({ url: ajaxurl, data: { action: 'get_cart' } });
     expect(anchors.has('rest:GET /myplugin/v1/items')).toBe(true);
     expect(anchors.has('script-handle:my-handle')).toBe(true);
     expect(anchors.has('ajax:get_cart')).toBe(true);
+    // Phase 3: wp_enqueue_script $src resolves to a js-module anchor.
+    const enqueueFact = collected.find((f) => f.kind === 'enqueue-script');
+    expect(enqueueFact).toBeDefined();
+    const moduleAnchor = enqueueFact?.anchors.find(
+      (a) => a.role === 'target' && a.key.startsWith('js-module:'),
+    );
+    expect(moduleAnchor).toBeDefined();
+    // plugin.php sits at the project root, so plugins_url('build/index.js',
+    // __FILE__) resolves to 'build/index.js' project-relative.
+    expect(moduleAnchor?.key).toBe('js-module:build/index.js');
     // JS-side
     expect(kinds.has('rest-call-js')).toBe(true);
     expect(kinds.has('ajax-call-js')).toBe(true);

@@ -57,6 +57,7 @@ export const WP_PHP_PATTERNS: readonly PhpPatternWithAnchor[] = [
     },
     emit: 'enqueue-script',
     anchor: { template: 'script-handle:{handle}', role: 'subject' },
+    transform: 'enqueue-src',
   },
   {
     match: { lang: 'php', nodeKind: 'function-call', name: 'wp_register_script' },
@@ -66,6 +67,7 @@ export const WP_PHP_PATTERNS: readonly PhpPatternWithAnchor[] = [
     },
     emit: 'enqueue-script',
     anchor: { template: 'script-handle:{handle}', role: 'subject' },
+    transform: 'enqueue-src',
   },
   {
     match: { lang: 'php', nodeKind: 'function-call', name: 'wp_enqueue_style' },

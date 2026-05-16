@@ -561,6 +561,10 @@ final class Visitor extends NodeVisitorAbstract
                 $this->emitRestRouteFacts($n, $payload);
                 return;
             }
+            if (($p['transform'] ?? null) === 'enqueue-src') {
+                $this->emitEnqueueScriptFact($n, $payload);
+                return;
+            }
             $anchors = [];
             $anchorRule = $p['anchor'] ?? null;
             if (is_array($anchorRule)) {
@@ -637,6 +641,130 @@ final class Visitor extends NodeVisitorAbstract
                 'payload' => $payload,
             ];
         }
+    }
+
+    /**
+     * Emit an enqueue-script fact, resolving the $src argument (AST arg 1) to a
+     * project-relative JS path and attaching a js-module target anchor when the
+     * path is a recognized WP enqueue idiom pointing at a JS file.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function emitEnqueueScriptFact(Node $n, array $payload): void
+    {
+        $anchors = [];
+        // Handle side: render the script-handle:{handle} subject anchor as today.
+        $handle = $payload['handle'] ?? null;
+        $handleResolved = false;
+        if (is_string($handle) && $handle !== '') {
+            $anchors[] = ['key' => 'script-handle:' . $handle, 'role' => 'subject'];
+            $handleResolved = !str_contains($handle, '{*}');
+        }
+
+        // $src side: resolve arg 1 to a project-relative JS path.
+        $args = $this->extractArgs($n);
+        $srcPath = $this->resolveEnqueueSrc($args[1] ?? null);
+        $jsModuleEmitted = false;
+        if ($srcPath !== null && $srcPath !== '' && !str_contains($srcPath, '{*}')
+            && preg_match('/\.(mjs|cjs|jsx|tsx|ts|js)$/i', $srcPath) === 1) {
+            $anchors[] = ['key' => 'js-module:' . $srcPath, 'role' => 'target'];
+            $payload['srcPath'] = $srcPath;
+            $jsModuleEmitted = true;
+        }
+
+        $payload['kind'] = 'enqueue-script';
+        $this->facts[] = [
+            'kind' => 'enqueue-script',
+            // resolved iff BOTH the handle anchor and a js-module anchor landed.
+            'resolved' => $handleResolved && $jsModuleEmitted,
+            'location' => $this->loc($n),
+            'anchors' => $anchors,
+            'payload' => $payload,
+        ];
+    }
+
+    /**
+     * Resolve a wp_enqueue_script $src argument node to a project-relative
+     * POSIX path, or null when the shape is not a recognized WP enqueue idiom.
+     * Pattern-shaped: a fixed named idiom set, no inter-procedural analysis.
+     */
+    private function resolveEnqueueSrc(?Node $node): ?string
+    {
+        if ($node === null) return null;
+
+        // bare string literal — '/wp-admin/js/inline-edit-post.js' style.
+        if ($node instanceof Node\Scalar\String_) {
+            $v = $node->value;
+            if ($v === '') return null;
+            // A leading '/' marks a site-root path; strip it to project-relative.
+            return $this->normalizeIncludePath(ltrim($v, '/'));
+        }
+
+        // plugins_url(LITERAL, __FILE__).
+        if ($node instanceof Node\Expr\FuncCall && $node->name instanceof Node\Name) {
+            $fn = $node->name->toString();
+            if ($fn === 'plugins_url') {
+                $args = $this->extractArgs($node);
+                $lit = isset($args[0]) && $args[0] instanceof Node\Scalar\String_
+                    ? $args[0]->value : null;
+                if ($lit === null) return null;
+                $base = dirname($this->relFile);
+                $joined = ($base === '.' ? '' : $base . '/') . $lit;
+                return $this->normalizeIncludePath($joined);
+            }
+            return null;
+        }
+
+        // CONCAT — left side a directory expression, right side the literal tail.
+        if ($node instanceof Node\Expr\BinaryOp\Concat) {
+            $tail = $this->readStringSkeleton($node->right);
+            if ($tail === null || str_contains($tail, '{*}')) return null;
+            $base = $this->resolveEnqueueDirBase($node->left);
+            if ($base === null) return null;
+            $joined = ($base === '' ? '' : $base . '/') . ltrim($tail, '/');
+            return $this->normalizeIncludePath($joined);
+        }
+
+        return null;
+    }
+
+    /**
+     * Resolve the directory-base expression on the left of a $src concat.
+     * Returns a project-relative directory, or null when not a known idiom.
+     */
+    private function resolveEnqueueDirBase(?Node $node): ?string
+    {
+        if ($node === null) return null;
+        // get_template_directory_uri() / get_stylesheet_directory_uri() /
+        // plugin_dir_url(__FILE__): the theme/plugin root is, in practice, the
+        // directory of the enqueuing file (theme functions.php sits at root).
+        if ($node instanceof Node\Expr\FuncCall && $node->name instanceof Node\Name) {
+            $fn = $node->name->toString();
+            if (in_array($fn, [
+                'get_template_directory_uri', 'get_stylesheet_directory_uri',
+                'plugin_dir_url', 'get_theme_file_uri',
+            ], true)) {
+                $d = dirname($this->relFile);
+                return $d === '.' ? '' : $d;
+            }
+            return null;
+        }
+        // CONST resolving to a path via define().
+        if ($node instanceof Node\Expr\ConstFetch) {
+            $name = $node->name->toString();
+            return isset($this->defines[$name])
+                ? $this->normalizeIncludePath($this->defines[$name]) : null;
+        }
+        // A nested concat (dir-expr . '/sub'): recurse + skeleton-read the tail.
+        if ($node instanceof Node\Expr\BinaryOp\Concat) {
+            $base = $this->resolveEnqueueDirBase($node->left);
+            $tail = $this->readStringSkeleton($node->right);
+            if ($base === null || $tail === null || str_contains($tail, '{*}')) return null;
+            return $this->normalizeIncludePath(
+                ($base === '' ? '' : $base . '/') . ltrim($tail, '/'),
+            );
+        }
+        return null;
     }
 
     /**
