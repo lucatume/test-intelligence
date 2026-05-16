@@ -148,6 +148,62 @@ export const WP_JS_PATTERNS: readonly UserPattern[] = [
     emit: 'hook-fire',
     anchor: { template: 'hook:{hook}', role: 'target' },
   },
+  // --- @wordpress/data store bridge ----------------------------------------
+  // Registration side. registerStore('wc/admin/x', config) /
+  // createReduxStore('wc/admin/x', config) + register(store). Arg 0 is the
+  // string key; a same-file `const STORE_NAME = '…'` resolves via the engine's
+  // literal-init map. An identifier from another file stays unresolved → no
+  // anchor → inert in derive.
+  {
+    match: { lang: 'ts', nodeKind: 'function-call', name: 'registerStore' },
+    bind: { key: { arg: 0, type: 'string' } },
+    emit: 'store-register',
+    anchor: { template: 'wp-store:{key}', role: 'subject' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'function-call', name: 'createReduxStore' },
+    bind: { key: { arg: 0, type: 'string' } },
+    emit: 'store-register',
+    anchor: { template: 'wp-store:{key}', role: 'subject' },
+  },
+  // Access side. useDispatch('core/notices') — key is arg 0. The nested
+  // select('…') inside a useSelect callback is matched by the `select` rule
+  // below (the engine walks every node), so useSelect needs no rule of its own.
+  {
+    match: { lang: 'ts', nodeKind: 'function-call', name: 'useDispatch' },
+    bind: { key: { arg: 0, type: 'string' } },
+    emit: 'store-access',
+    anchor: { template: 'wp-store:{key}', role: 'target' },
+  },
+  // Bare select('key') / dispatch('key') imported from @wordpress/data, and the
+  // select(...) call nested in a useSelect callback. `select`/`dispatch` are
+  // generic names: a call whose arg 0 is NOT a string literal binds to null and
+  // produces no anchor, so an over-match is inert. Matching the name is safe
+  // BECAUSE the anchor only materialises for a literal key.
+  {
+    match: { lang: 'ts', nodeKind: 'function-call', name: 'select' },
+    bind: { key: { arg: 0, type: 'string' } },
+    emit: 'store-access',
+    anchor: { template: 'wp-store:{key}', role: 'target' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'function-call', name: 'dispatch' },
+    bind: { key: { arg: 0, type: 'string' } },
+    emit: 'store-access',
+    anchor: { template: 'wp-store:{key}', role: 'target' },
+  },
+  // registerBlockType('woocommerce/cart', { edit, save }) — @wordpress/blocks.
+  // The JS side of a block. Emitted as a block-render TARGET so it joins the
+  // PHP register_block_type SUBJECT facts on the block:<ns>/<name> anchor: a
+  // block's JS edit/save component depends on the PHP that renders the block.
+  // This is the block-render bridge's fire side; without it the PHP subject
+  // facts have no partner and the block-render edge kind produces nothing.
+  {
+    match: { lang: 'ts', nodeKind: 'function-call', name: 'registerBlockType' },
+    bind: { name: { arg: 0, type: 'string' } },
+    emit: 'block-render',
+    anchor: { template: 'block:{name}', role: 'target' },
+  },
   // page.goto('/wp-admin/admin.php?page=wc-settings') — Playwright navigation
   // (program Phase 5). The admin-page-slug-from-url transform extracts the
   // page= slug; a URL with no page= slug emits no fact.

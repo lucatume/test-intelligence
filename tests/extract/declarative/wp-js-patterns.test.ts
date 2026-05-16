@@ -225,4 +225,73 @@ describe('WP_JS_PATTERNS', () => {
     const ajax = facts.find((f) => f.kind === 'ajax-call-js' && f.resolved);
     expect(ajax?.anchors[0]?.key).toBe('ajax:woocommerce_update_api_key');
   });
+
+  it('emits store-register for registerStore(key, config)', () => {
+    const sf = parse('src/store.ts', "registerStore('wc/admin/plugins', { reducer });");
+    const facts = runDeclarativePatterns(sf, 'src/store.ts', WP_JS_PATTERNS);
+    const f = facts.find((x) => x.kind === 'store-register');
+    expect(f?.resolved).toBe(true);
+    expect(f?.anchors[0]?.key).toBe('wp-store:wc/admin/plugins');
+    expect(f?.anchors[0]?.role).toBe('subject');
+  });
+
+  it('emits store-register for createReduxStore(key, config)', () => {
+    const sf = parse('src/store.ts', "const store = createReduxStore('wc/admin/orders', { reducer });");
+    const facts = runDeclarativePatterns(sf, 'src/store.ts', WP_JS_PATTERNS);
+    const f = facts.find((x) => x.kind === 'store-register');
+    expect(f?.anchors[0]?.key).toBe('wp-store:wc/admin/orders');
+  });
+
+  it('resolves createReduxStore with a same-file STORE_NAME const', () => {
+    const sf = parse(
+      'src/store.ts',
+      "const STORE_NAME = 'wc/admin/options'; const store = createReduxStore(STORE_NAME, {});",
+    );
+    const facts = runDeclarativePatterns(sf, 'src/store.ts', WP_JS_PATTERNS);
+    const f = facts.find((x) => x.kind === 'store-register');
+    expect(f?.resolved).toBe(true);
+    expect(f?.anchors[0]?.key).toBe('wp-store:wc/admin/options');
+  });
+
+  it('emits store-access for useDispatch("core/notices")', () => {
+    const sf = parse('src/c.tsx', "const { createNotice } = useDispatch('core/notices');");
+    const facts = runDeclarativePatterns(sf, 'src/c.tsx', WP_JS_PATTERNS);
+    const f = facts.find((x) => x.kind === 'store-access');
+    expect(f?.resolved).toBe(true);
+    expect(f?.anchors[0]?.key).toBe('wp-store:core/notices');
+    expect(f?.anchors[0]?.role).toBe('target');
+  });
+
+  it('emits store-access for the nested select() inside a useSelect callback', () => {
+    const sf = parse(
+      'src/c.tsx',
+      "const x = useSelect( ( select ) => select('core/editor').getCurrentPost() );",
+    );
+    const facts = runDeclarativePatterns(sf, 'src/c.tsx', WP_JS_PATTERNS);
+    const f = facts.find((x) => x.kind === 'store-access');
+    expect(f?.anchors[0]?.key).toBe('wp-store:core/editor');
+  });
+
+  it('emits store-access for a bare dispatch("core/x") call', () => {
+    const sf = parse('src/c.tsx', "dispatch('core/block-editor').selectBlock( id );");
+    const facts = runDeclarativePatterns(sf, 'src/c.tsx', WP_JS_PATTERNS);
+    const f = facts.find((x) => x.kind === 'store-access');
+    expect(f?.anchors[0]?.key).toBe('wp-store:core/block-editor');
+  });
+
+  it('emits a block-render target fact for registerBlockType("ns/name", ...)', () => {
+    const sf = parse('src/block.tsx', "registerBlockType('woocommerce/cart', { edit, save });");
+    const facts = runDeclarativePatterns(sf, 'src/block.tsx', WP_JS_PATTERNS);
+    const f = facts.find((x) => x.kind === 'block-render');
+    expect(f?.resolved).toBe(true);
+    expect(f?.anchors[0]?.key).toBe('block:woocommerce/cart');
+    expect(f?.anchors[0]?.role).toBe('target');
+  });
+
+  it('produces no store-access anchor when useDispatch arg is an identifier', () => {
+    const sf = parse('src/c.tsx', "const d = useDispatch( noticesStore );");
+    const facts = runDeclarativePatterns(sf, 'src/c.tsx', WP_JS_PATTERNS);
+    const withAnchor = facts.filter((x) => x.kind === 'store-access' && x.anchors.length > 0);
+    expect(withAnchor).toHaveLength(0);
+  });
 });
