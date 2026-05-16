@@ -211,29 +211,48 @@ describe('traverseTest', () => {
     expect(aEdge?.partial).toBe(false);
   });
 
-  it('e2e tests walk REST edges; unit tests do not', () => {
-    const f1: FileRow = { id: 1, path: 'tests/e2e.spec.ts', language: 'ts', vendor: false, framework: 'playwright', frameworkClass: 'e2e' };
+  it('unit tests reaching an apiFetch caller bridge to rest-endpoint', () => {
+    // Program Phase 4: the rest-call-js bridge has no framework-class gate. A
+    // unit test that imports the apiFetch caller reaches the rest-call-js fact
+    // and bridges to the rest-endpoint. An e2e spec with no static import path
+    // to the caller does not reach the fact — not because of a gate, but
+    // because the import graph has no edge to traverse.
+    const f1: FileRow = { id: 1, path: 'tests/unit.test.ts', language: 'ts', vendor: false, framework: 'jest', frameworkClass: 'unit' };
     const f2: FileRow = { id: 2, path: 'src/endpoint.php', language: 'php', vendor: false, framework: null, frameworkClass: null };
+    const f3: FileRow = { id: 3, path: 'src/caller.ts', language: 'ts', vendor: false, framework: null, frameworkClass: null };
     const td: FactRow = { id: 1, fileId: 1, kind: 'test-def', resolved: true, startLine: 1, endLine: 1, payload: {} };
-    const rcj: FactRow = { id: 2, fileId: 1, kind: 'rest-call-js', resolved: true, startLine: 1, endLine: 1, payload: {} };
-    const endpoint: FactRow = { id: 3, fileId: 2, kind: 'rest-endpoint', resolved: true, startLine: 1, endLine: 1, payload: {} };
+    const imp: FactRow = {
+      id: 2, fileId: 1, kind: 'import-edge', resolved: true, startLine: 1, endLine: 1,
+      payload: { kind: 'import-edge', specifier: './caller', resolved: true, resolvedPath: 'src/caller.ts' },
+    };
+    const rcj: FactRow = { id: 3, fileId: 3, kind: 'rest-call-js', resolved: true, startLine: 1, endLine: 1, payload: {} };
+    const endpoint: FactRow = { id: 4, fileId: 2, kind: 'rest-endpoint', resolved: true, startLine: 1, endLine: 1, payload: {} };
     const g: Graph = {
-      files: new Map([[1, f1], [2, f2]]),
-      facts: new Map([[1, td], [2, rcj], [3, endpoint]]),
-      factsByFile: new Map([[1, [td, rcj]], [2, [endpoint]]]),
+      files: new Map([[1, f1], [2, f2], [3, f3]]),
+      facts: new Map([[1, td], [2, imp], [3, rcj], [4, endpoint]]),
+      factsByFile: new Map([[1, [td, imp]], [2, [endpoint]], [3, [rcj]]]),
       anchorLinks: [
-        { factId: 2, anchorKey: k('rest:GET /x'), role: 'target' },
-        { factId: 3, anchorKey: k('rest:GET /x'), role: 'subject' },
+        { factId: 2, anchorKey: k('js-module:src/caller.ts'), role: 'module' },
+        { factId: 3, anchorKey: k('rest:GET /x'), role: 'target' },
+        { factId: 4, anchorKey: k('rest:GET /x'), role: 'subject' },
       ],
       tests: [],
     };
     const idx = buildAnchorIndex(g);
 
-    const e2e = traverseTest(g, idx, 1, 't1', 'e2e', { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32 });
-    expect(e2e.edges.some((e) => e.source === 'src/endpoint.php')).toBe(true);
+    const unit = traverseTest(g, idx, 1, 't1', 'unit', { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32 });
+    expect(unit.edges.some((e) => e.source === 'src/endpoint.php')).toBe(true);
 
-    const unit = traverseTest(g, idx, 1, 't2', 'unit', { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32 });
-    expect(unit.edges.some((e) => e.source === 'src/endpoint.php')).toBe(false);
+    // An e2e spec that does NOT import the caller never reaches the rest-call-js
+    // fact — no import edge to traverse. No gate involved.
+    const gNoImport: Graph = {
+      ...g,
+      facts: new Map([[1, td], [3, rcj], [4, endpoint]]),
+      factsByFile: new Map([[1, [td]], [2, [endpoint]], [3, [rcj]]]),
+      anchorLinks: g.anchorLinks.filter((l) => l.factId !== 2),
+    };
+    const e2e = traverseTest(gNoImport, buildAnchorIndex(gNoImport), 1, 't2', 'e2e', { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32 });
+    expect(e2e.edges.some((e) => e.source === 'src/endpoint.php')).toBe(false);
   });
 
   it('structural import edges keep BASE_CONFIDENCE (characterization — must not change)', () => {
@@ -279,9 +298,9 @@ describe('traverseTest', () => {
     const opts = { maxDepth: 25, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set<string>(), now: (): number => 0, maxWildcardMatchesPerAnchor: 32 };
 
     const gUnresolved = build(false);
-    const rUnresolved = traverseTest(gUnresolved, buildAnchorIndex(gUnresolved), 1, 't1', 'e2e', opts);
+    const rUnresolved = traverseTest(gUnresolved, buildAnchorIndex(gUnresolved), 1, 't1', 'unit', opts);
     const gResolved = build(true);
-    const rResolved = traverseTest(gResolved, buildAnchorIndex(gResolved), 1, 't1', 'e2e', opts);
+    const rResolved = traverseTest(gResolved, buildAnchorIndex(gResolved), 1, 't1', 'unit', opts);
 
     const kindsOf = (r: ReturnType<typeof traverseTest>): string[] =>
       (r.edges.find((e) => e.source === 'src/endpoint.php')?.evidence.map((e) => e.kind) ?? []).sort();
@@ -448,8 +467,9 @@ describe('traverseTest — confidence tiering', () => {
   it('prices a broad-wildcard REST bridge well below an exact match', () => {
     const g = broadWildcardGraph();
     const idx = buildAnchorIndex(g);
-    // frameworkClass 'e2e' so the rest-call-js bridge is not e2e-gated out.
-    const r = traverseTest(g, idx, 100, 't1', 'e2e', {
+    // Unit-class test: the rest-call-js bridge has no framework-class gate
+    // (program Phase 4); the broad-wildcard endpoint is priced by Phase 1.
+    const r = traverseTest(g, idx, 100, 't1', 'unit', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -470,7 +490,7 @@ describe('traverseTest — confidence tiering', () => {
     );
     const g2: Graph = { ...g, anchorLinks: exactLinks };
     const idx = buildAnchorIndex(g2);
-    const r = traverseTest(g2, idx, 100, 't1', 'e2e', {
+    const r = traverseTest(g2, idx, 100, 't1', 'unit', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,
@@ -480,6 +500,28 @@ describe('traverseTest — confidence tiering', () => {
     // rest-mediated 0.85 * exact 1 * 0.92**2 (0.8464) = 0.71944.
     expect(edge?.confidence).toBeCloseTo(0.71944);
     expect(edge?.confidence).toBeGreaterThan(0.7);
+  });
+
+  it('unit tests walk REST edges through an imported apiFetch caller', () => {
+    // Program Phase 4: a unit-class test that imports the apiFetch caller
+    // bridges rest-call-js -> rest-endpoint. broadWildcardGraph's test file is
+    // already unit-class; swap the endpoint anchor to an exact match.
+    const g = broadWildcardGraph();
+    const exactLinks = g.anchorLinks.map((l) =>
+      l.factId === 300 ? { ...l, anchorKey: k('rest:GET /wp/v2/things') } : l,
+    );
+    const g2: Graph = { ...g, anchorLinks: exactLinks };
+    const idx = buildAnchorIndex(g2);
+    const r = traverseTest(g2, idx, 100, 't1', 'unit', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    const edge = r.edges.find((e) => e.source === 'broad.php');
+    expect(edge).toBeDefined();
+    expect(edge?.evidence.some((ev) => ev.kind === 'rest-mediated')).toBe(true);
+    // rest-mediated 0.85 * exact 1 * 0.92**2 (0.8464) = 0.71944.
+    expect(edge?.confidence).toBeCloseTo(0.71944);
   });
 
   it('attenuates a bridge edge reached through a deeper import chain', () => {
@@ -519,7 +561,7 @@ describe('traverseTest — confidence tiering', () => {
     ];
     const g2: Graph = { files, facts, factsByFile, anchorLinks, tests: g.tests };
     const idx = buildAnchorIndex(g2);
-    const r = traverseTest(g2, idx, 100, 't1', 'e2e', {
+    const r = traverseTest(g2, idx, 100, 't1', 'unit', {
       maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
       hookStopList: new Set(), now: () => 0,
       maxWildcardMatchesPerAnchor: 32,

@@ -311,7 +311,13 @@ function bridgeKindFor(
       // symbol-use facts in the same file.
       return null;
     case 'rest-call-js':
-      if (frameworkClass !== 'e2e') return null;
+      // No framework-class gate (program Phase 4). e2e specs page.goto() a URL
+      // and never statically import the apiFetch caller, so gating to e2e
+      // starved this bridge (program failure mode F1). Unit tests that DO
+      // import the caller now bridge; Phase 1 tiering prices broad-wildcard
+      // fan-out (rest:GET /{*}/{*}) at the 0.25 wildcardBroad tier and
+      // literal-exact matches near full confidence, so --min-confidence is the
+      // noise filter.
       return resolved ? 'rest-mediated' : 'rest-mediated-partial';
     case 'ajax-call-js':
       // No framework-class gate (program Phase 2). AJAX actions are literal
