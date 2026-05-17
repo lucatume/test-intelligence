@@ -218,3 +218,76 @@ describe('runDeclarativePatterns', () => {
     expect((f.payload as { url?: string }).url).toBe('{*}?action=wc_x');
   });
 });
+
+describe('unresolved block stamping', () => {
+  const doActionPattern: UserPattern = {
+    match: { lang: 'ts', nodeKind: 'function-call', name: 'doAction' },
+    bind: { hook: { arg: 0, type: 'string' } },
+    emit: 'hook-fire',
+    anchor: { template: 'hook:{hook}', role: 'target' },
+  };
+  const addActionPattern: UserPattern = {
+    match: { lang: 'ts', nodeKind: 'function-call', name: 'addAction' },
+    bind: {
+      hook: { arg: 0, type: 'string' },
+      callback: { arg: 1, type: 'string', optional: true },
+    },
+    emit: 'hook-listener',
+    anchor: { template: 'hook:{hook}', role: 'subject' },
+  };
+
+  function runForSource(src: string, patterns: readonly UserPattern[]) {
+    const sf = parse('src/u.ts', src);
+    return runDeclarativePatterns(sf, 'src/u.ts', patterns);
+  }
+
+  it('stamps the enclosing class::method scope on an unresolved fact', () => {
+    const facts = runForSource(
+      'class Widget { run(h: string) { doAction(h); } }',
+      [doActionPattern],
+    );
+    const fire = facts.find((f) => f.kind === 'hook-fire');
+    expect(fire?.resolved).toBe(false);
+    const u = (fire?.payload as { unresolved?: { scope: string } }).unresolved;
+    expect(u?.scope).toBe('Widget::run');
+  });
+
+  it('stamps (file) scope for a file-scope unresolved fact', () => {
+    const facts = runForSource('doAction(h);', [doActionPattern]);
+    const u = (
+      facts.find((f) => f.kind === 'hook-fire')?.payload as {
+        unresolved?: { scope: string };
+      }
+    ).unresolved;
+    expect(u?.scope).toBe('(file)');
+  });
+
+  it('captures the unresolved expression source text', () => {
+    const facts = runForSource('addAction(`woo-${x}`, cb);', [addActionPattern]);
+    const u = (
+      facts.find((f) => f.kind === 'hook-listener')?.payload as {
+        unresolved?: { fields: { field: string; expression: string }[] };
+      }
+    ).unresolved;
+    expect(u?.fields[0]?.field).toBe('hook');
+    expect(u?.fields[0]?.expression).toBe('`woo-${x}`');
+  });
+
+  it('emits no unresolved block on a resolved fact', () => {
+    const facts = runForSource("doAction('init');", [doActionPattern]);
+    const payload = facts.find((f) => f.kind === 'hook-fire')?.payload as {
+      unresolved?: unknown;
+    };
+    expect(payload.unresolved).toBeUndefined();
+  });
+
+  it('resolves the enclosing function name for a free-function scope', () => {
+    const facts = runForSource('function fireIt(h) { doAction(h); }', [doActionPattern]);
+    const u = (
+      facts.find((f) => f.kind === 'hook-fire')?.payload as {
+        unresolved?: { scope: string };
+      }
+    ).unresolved;
+    expect(u?.scope).toBe('fireIt');
+  });
+});

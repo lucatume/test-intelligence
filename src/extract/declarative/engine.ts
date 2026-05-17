@@ -1,7 +1,8 @@
 import ts from 'typescript';
-import type { Fact, FactAnchorRef, FactLocation, FactPayload } from '../../facts/types.js';
+import type { Fact, FactAnchorRef, FactLocation, FactPayload, UnresolvedExpr } from '../../facts/types.js';
 import type { AnchorKey } from '../../types.js';
 import type { UserPattern } from './pattern.js';
+import { exprHash } from './exprHash.js';
 
 interface MatchedCall {
   readonly node: ts.CallExpression | ts.NewExpression;
@@ -102,6 +103,31 @@ function matchNode(n: ts.Node): MatchedCall | null {
   return null;
 }
 
+// Enclosing function / class::method of a node, or '(file)' for file scope.
+// Closures/arrow functions resolve to the nearest named enclosing scope —
+// mirroring the PHP worker — so the scope string is edit-stable.
+function enclosingScope(n: ts.Node): string {
+  let fnName: string | null = null;
+  // `ts.Node.parent` is typed non-optional but is undefined at the SourceFile
+  // root; cast through `unknown` so the loop terminates without a type clash.
+  let cur = n.parent as ts.Node | undefined;
+  while (cur !== undefined) {
+    if (ts.isFunctionDeclaration(cur) && cur.name !== undefined && fnName === null) {
+      fnName = cur.name.text;
+    } else if (
+      ts.isMethodDeclaration(cur) &&
+      ts.isIdentifier(cur.name) &&
+      fnName === null
+    ) {
+      fnName = cur.name.text;
+    } else if (ts.isClassDeclaration(cur) && cur.name !== undefined) {
+      return fnName !== null ? cur.name.text + '::' + fnName : cur.name.text;
+    }
+    cur = cur.parent;
+  }
+  return fnName ?? '(file)';
+}
+
 function matchesPattern(m: MatchedCall, p: UserPattern): boolean {
   if (m.name !== p.match.name) return false;
   switch (p.match.nodeKind) {
@@ -158,16 +184,22 @@ function applyPattern(
 ): Fact | null {
   const startLine = sf.getLineAndCharacterOfPosition(m.node.getStart(sf)).line + 1;
   const endLine = sf.getLineAndCharacterOfPosition(m.node.getEnd()).line + 1;
+  const scope = enclosingScope(m.node);
 
   const fields: Record<string, unknown> = { kind: p.emit };
   let resolved = true;
   const argNodes: readonly ts.Expression[] = m.node.arguments ?? [];
+  const failed: { field: string; node: ts.Expression | undefined }[] = [];
 
   for (const [fieldName, binding] of Object.entries(p.bind)) {
     const rawArg = argNodes[binding.arg];
     const argNode = rawArg !== undefined ? resolveExpression(rawArg, inits) : undefined;
     const value = argNode !== undefined ? readLiteral(argNode, binding.type, inits) : (binding.default ?? null);
-    if (value === null && binding.optional !== true) resolved = false;
+    const isWildcard = typeof value === 'string' && value.includes('{*}');
+    if ((value === null || isWildcard) && binding.optional !== true) {
+      resolved = false;
+      failed.push({ field: fieldName, node: rawArg });
+    }
     if (value !== null) fields[fieldName] = value;
   }
   if (p.transform === 'ajax-action-from-url') {
@@ -189,6 +221,21 @@ function applyPattern(
     const key = renderTemplate(p.anchor.template, fields);
     if (key !== null) anchors.push({ key: key as AnchorKey, role: p.anchor.role });
     else resolved = false;
+  }
+
+  // Phase 0: stamp the partial-fact resolution context onto an unresolved fact.
+  // Captures the un-skeletonized argument source text per failing field, the
+  // enclosing scope, and a stable content hash. Additive metadata only.
+  if (!resolved && failed.length > 0) {
+    const unresolvedFields: UnresolvedExpr[] = failed.map((f) => ({
+      field: f.field,
+      expression: f.node !== undefined ? f.node.getText(sf) : '',
+    }));
+    fields['unresolved'] = {
+      scope,
+      fields: unresolvedFields,
+      exprHash: exprHash(scope, unresolvedFields),
+    };
   }
 
   const location: FactLocation = {
