@@ -38,7 +38,7 @@ export type ParsedCommand =
       kind: 'resolve';
       sub: 'export';
       kinds: readonly string[];
-      limit: number | null;
+      limit: number;
       force: boolean;
       out: string;
     }
@@ -133,7 +133,7 @@ function parseResolveCmd(rest: readonly string[]): ParsedCommand {
       ? ['hook-fire', 'hook-listener']
       : kindsRaw.split(',').map((k) => k.trim()).filter((k) => k !== '');
     const limitRaw = getFlag(flags, '--limit');
-    let limit: number | null = null;
+    let limit = 50;
     if (limitRaw !== null) {
       const v = Number(limitRaw);
       if (Number.isFinite(v) && v > 0) limit = Math.floor(v);

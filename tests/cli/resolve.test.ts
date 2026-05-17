@@ -52,23 +52,60 @@ function seedProject(root: string, exprHash: string): void {
   db.close();
 }
 
+// Seed `count` unresolved hook-fire facts in one backing file.
+function seedManyHookFacts(root: string, count: number): void {
+  const incPath = join(root, 'inc.php');
+  mkdirSync(dirname(incPath), { recursive: true });
+  const lines: string[] = [];
+  for (let i = 1; i <= count + 20; i++) lines.push(`do_action( $hook ); // line ${String(i)}`);
+  writeFileSync(incPath, lines.join('\n') + '\n');
+
+  mkdirSync(join(root, '.ti'), { recursive: true });
+  const db = new Database(join(root, '.ti', 'store.db'));
+  applyInitialSchema(db);
+  const fileId = upsertFile(db, {
+    path: 'inc.php', language: 'php', contentHash: 'fh',
+    extractedAt: '2026-05-17T00:00:00.000Z', isTest: false,
+    framework: null, frameworkClass: null,
+  });
+  const broad = upsertAnchor(db, { key: 'hook:{*}', type: 'hook' });
+  for (let i = 0; i < count; i++) {
+    const factId = insertFact(db, {
+      fileId, kind: 'hook-fire', resolved: false,
+      startLine: 5 + i, endLine: 5 + i,
+      payload: {
+        kind: 'hook-fire', hook: '{*}',
+        unresolved: { scope: '(file)', fields: [{ field: 'hook', expression: '$hook' }], exprHash: `h${String(i)}` },
+      },
+    });
+    insertFactAnchor(db, { factId, anchorId: broad, role: 'subject' });
+  }
+  db.close();
+}
+
 describe('ti resolve', () => {
   const getTmp = useTmpDir('ti-cli-resolve-');
 
   it('export -> import -> status round-trips on a fixture store', async () => {
     const root = getTmp();
     seedProject(root, 'h1');
-    const bundlePath = join(root, 'bundle.json');
     const rxPath = join(root, 'rx.json');
     const io = captureIo();
+    mkdirSync(join(root, 'out'), { recursive: true });
 
     const expCode = await resolveCommand({
       projectRoot: root, io, sub: 'export',
-      kinds: ['hook-fire', 'hook-listener'], limit: null, force: false, out: bundlePath,
+      kinds: ['hook-fire', 'hook-listener'], limit: 50, force: false,
+      out: join(root, 'out', 'prompt'),
     });
     expect(expCode).toBe(0);
-    const bundle = JSON.parse(readFileSync(bundlePath, 'utf8')) as { units: { exprHash: string }[] };
-    expect(bundle.units.map((u) => u.exprHash)).toEqual(['h1']);
+
+    // The emitted prompt is a self-contained markdown artifact.
+    const prompt = readFileSync(join(root, 'out', 'prompt-001.md'), 'utf8');
+    expect(prompt).toContain('## Task');
+    expect(prompt).toMatch(/cite/i);
+    expect(prompt).toContain('## Unit h1');
+    expect(prompt).toContain('## Output format');
 
     writeFileSync(rxPath, JSON.stringify({
       version: 1, pass: 'llm', resolutions: [{
@@ -84,6 +121,54 @@ describe('ti resolve', () => {
 
     const statCode = await resolveCommand({ projectRoot: root, io, sub: 'status' });
     expect(statCode).toBe(0);
+  });
+
+  it('export writes one chunked prompt file per batch', async () => {
+    const root = getTmp();
+    seedManyHookFacts(root, 120);
+    mkdirSync(join(root, 'out'), { recursive: true });
+    const code = await resolveCommand({
+      projectRoot: root, io: captureIo(), sub: 'export',
+      kinds: ['hook-fire', 'hook-listener'], limit: 50, force: false,
+      out: join(root, 'out', 'prompt'),
+    });
+    expect(code).toBe(0);
+    expect(readFileSync(join(root, 'out', 'prompt-001.md'), 'utf8')).toContain('## Task');
+    expect(readFileSync(join(root, 'out', 'prompt-002.md'), 'utf8')).toContain('## Task');
+    expect(readFileSync(join(root, 'out', 'prompt-003.md'), 'utf8')).toContain('## Task');
+  });
+
+  it('export emits a single file when units fit one batch', async () => {
+    const root = getTmp();
+    seedManyHookFacts(root, 10);
+    mkdirSync(join(root, 'out'), { recursive: true });
+    const code = await resolveCommand({
+      projectRoot: root, io: captureIo(), sub: 'export',
+      kinds: ['hook-fire', 'hook-listener'], limit: 50, force: false,
+      out: join(root, 'out', 'prompt'),
+    });
+    expect(code).toBe(0);
+    const p = readFileSync(join(root, 'out', 'prompt-001.md'), 'utf8');
+    expect(p).toContain('## Task');
+    expect(p).toContain('batch 1 of 1');
+    expect(() => readFileSync(join(root, 'out', 'prompt-002.md'), 'utf8')).toThrow();
+  });
+
+  it('export with zero unresolved facts writes no files, exits 0', async () => {
+    const root = getTmp();
+    mkdirSync(join(root, '.ti'), { recursive: true });
+    const db = new Database(join(root, '.ti', 'store.db'));
+    applyInitialSchema(db);
+    db.close();
+    mkdirSync(join(root, 'out'), { recursive: true });
+    const io = captureIo();
+    const code = await resolveCommand({
+      projectRoot: root, io, sub: 'export',
+      kinds: ['hook-fire', 'hook-listener'], limit: 50, force: false,
+      out: join(root, 'out', 'prompt'),
+    });
+    expect(code).toBe(0);
+    expect(io.out()).toMatch(/nothing to resolve/i);
   });
 
   it('import of a malformed file exits 2', async () => {
@@ -109,8 +194,8 @@ describe('ti resolve', () => {
     seedProject(root, 'h1');
     const code = await resolveCommand({
       projectRoot: root, io: captureIo(), sub: 'export',
-      kinds: ['rest-call-js'] as never, limit: null, force: false,
-      out: join(root, 'b.json'),
+      kinds: ['rest-call-js'] as never, limit: 50, force: false,
+      out: join(root, 'b'),
     });
     expect(code).toBe(1);
   });

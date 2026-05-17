@@ -21,9 +21,12 @@ QUERY
   ti explain <id-or-path>         Evidence trail.
 
 RESOLVE (offline LLM-resolution pass — ti never calls an LLM)
-  ti resolve export -o <bundle.json>
+  ti resolve export -o <prefix>
                                   [--kinds=hook-fire,hook-listener] [--limit=N] [--force]
-                                  Export unresolved hook facts as a work bundle.
+                                  Emit ready-to-send LLM prompt files
+                                  <prefix>-001.md, <prefix>-002.md, ... — one per
+                                  batch of --limit units (default 50). Self-contained:
+                                  task, citation rule, output schema, embedded code.
   ti resolve import <resolutions.json>
                                   Import an externally-produced, citation-bearing
                                   resolutions file; verify each citation, apply,

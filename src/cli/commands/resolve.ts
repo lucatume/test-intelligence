@@ -7,6 +7,7 @@ import { systemClock } from '../../clock.js';
 import { openStore } from '../../store/open.js';
 import { HOOK_STOP_LIST_BUILTINS } from '../../config/parse.js';
 import { buildBundle } from '../../resolve/build-bundle.js';
+import { renderPrompt } from '../../resolve/render-prompt.js';
 import { importResolutions, type DeriveParams } from '../../resolve/import-resolutions.js';
 import { resolveStatus } from '../../resolve/status.js';
 import { parseResolutionsFile } from '../../resolve/parse.js';
@@ -21,7 +22,7 @@ export type ResolveCommandArgs =
       readonly projectRoot: string;
       readonly io: Io;
       readonly kinds: readonly string[];
-      readonly limit: number | null;
+      readonly limit: number;
       readonly force: boolean;
       readonly out: string;
     }
@@ -62,7 +63,6 @@ function exportBundle(args: Extract<ResolveCommandArgs, { sub: 'export' }>): num
   try {
     const r = buildBundle(s.value.db, {
       kinds: args.kinds as readonly FactKind[],
-      limit: args.limit,
       force: args.force,
       projectRoot: args.projectRoot,
       generatedAt: systemClock.now(),
@@ -71,14 +71,32 @@ function exportBundle(args: Extract<ResolveCommandArgs, { sub: 'export' }>): num
       args.io.stderr.write(`ti: ${r.error.message}\n`);
       return 1;
     }
-    try {
-      writeFileSync(args.out, JSON.stringify(r.value, null, 2) + '\n');
-    } catch (e) {
-      args.io.stderr.write(`ti: failed to write ${args.out}: ${(e as Error).message}\n`);
-      return 1;
+    const units = r.value.units;
+    if (units.length === 0) {
+      args.io.stdout.write('ti: resolve export — nothing to resolve\n');
+      return 0;
+    }
+    const batch = args.limit;
+    const chunkCount = Math.ceil(units.length / batch);
+    for (let i = 0; i < chunkCount; i++) {
+      const chunk = units.slice(i * batch, i * batch + batch);
+      const prompt = renderPrompt(chunk, {
+        project: r.value.project,
+        chunkIndex: i + 1,
+        chunkCount,
+      });
+      const file = `${args.out}-${String(i + 1).padStart(3, '0')}.md`;
+      try {
+        writeFileSync(file, prompt);
+      } catch (e) {
+        args.io.stderr.write(`ti: failed to write ${file}: ${(e as Error).message}\n`);
+        return 1;
+      }
     }
     args.io.stdout.write(
-      `ti: resolve export wrote ${String(r.value.units.length)} unit(s) to ${args.out}\n`,
+      `ti: resolve export wrote ${String(units.length)} unit(s) in ` +
+      `${String(chunkCount)} prompt file(s) to ${args.out}-NNN.md ` +
+      `(batch ${String(batch)})\n`,
     );
     return 0;
   } finally {

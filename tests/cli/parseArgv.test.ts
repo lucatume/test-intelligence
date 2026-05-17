@@ -29,6 +29,19 @@ describe('parseArgv', () => {
     expect(r.kind).toBe('unknown-command');
     if (r.kind === 'unknown-command') expect(r.input).toBe('frobnicate');
   });
+  it('resolve export defaults --limit to 50', () => {
+    const r = parseArgv(['resolve', 'export', '-o', 'out/prompt']);
+    expect(r.kind).toBe('resolve');
+    if (r.kind === 'resolve' && r.sub === 'export') {
+      expect(r.limit).toBe(50);
+      expect(r.out).toBe('out/prompt');
+    }
+  });
+  it('resolve export honors --limit override', () => {
+    const r = parseArgv(['resolve', 'export', '-o', 'out/prompt', '--limit=25']);
+    expect(r.kind).toBe('resolve');
+    if (r.kind === 'resolve' && r.sub === 'export') expect(r.limit).toBe(25);
+  });
   it('build parses with default normal verbosity', () => {
     expect(parseArgv(['build'])).toEqual({
       kind: 'build',
