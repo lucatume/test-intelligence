@@ -8,7 +8,7 @@ const GEN = '2026-05-17T00:00:00.000Z' as const;
 
 function params(root: string, over: Partial<Parameters<typeof buildBundle>[1]> = {}): Parameters<typeof buildBundle>[1] {
   return {
-    kinds: ['hook-fire', 'hook-listener'], limit: null, force: false,
+    kinds: ['hook-fire', 'hook-listener'], force: false,
     projectRoot: root, generatedAt: GEN, ...over,
   };
 }
@@ -47,11 +47,13 @@ describe('buildBundle', () => {
     if (r.kind === 'ok') expect(r.value.units.length).toBe(1);
   });
 
-  it('respects limit', () => {
+  it('returns every unresolved unit (no cap)', () => {
     const root = getTmp();
-    const db = fixtureWithUnresolvedHookFacts(['h1', 'h2', 'h3'], 'inc.php', root);
-    const r = buildBundle(db, params(root, { limit: 2 }));
-    if (r.kind === 'ok') expect(r.value.units.length).toBe(2);
+    const hashes = Array.from({ length: 7 }, (_, i) => `h${String(i)}`);
+    const db = fixtureWithUnresolvedHookFacts(hashes, 'inc.php', root);
+    const r = buildBundle(db, params(root));
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok') expect(r.value.units).toHaveLength(7);
   });
 
   it('prunes stale resolution rows before selecting', () => {

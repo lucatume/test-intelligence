@@ -13,7 +13,6 @@ import type {
 
 export interface BuildBundleParams {
   readonly kinds: readonly FactKind[];
-  readonly limit: number | null;
   readonly force: boolean;
   readonly projectRoot: string;
   readonly generatedAt: string;
@@ -58,7 +57,6 @@ export function buildBundle(
 
   const units: ResolveUnit[] = [];
   for (const r of rows) {
-    if (params.limit !== null && units.length >= params.limit) break;
     const payload = safeParse(r.payload);
     if (payload === null) continue;
     const unresolved = payload['unresolved'];
