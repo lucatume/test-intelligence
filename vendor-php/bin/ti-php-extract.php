@@ -766,8 +766,12 @@ final class Visitor extends NodeVisitorAbstract
         // register_block_type_from_metadata's arg 0 is a metadata directory
         // path, never a block name — ignore the bound value and rely solely on
         // the render_callback convention. register_block_type's arg 0 IS the
-        // block name, so an arg-0 literal there is authoritative.
-        $name = $fnName === 'register_block_type_from_metadata'
+        // block name, but only when it is a genuine string literal: a
+        // __DIR__ / concat skeleton also reads as a non-empty string yet names
+        // a directory, not a block, so it must fall through to the dir capture.
+        $args = $this->extractArgs($n);
+        $arg0IsStringLiteral = ($args[0] ?? null) instanceof Node\Scalar\String_;
+        $name = ($fnName === 'register_block_type_from_metadata' || !$arg0IsStringLiteral)
             ? null
             : ($payload['name'] ?? null);
         $resolved = is_string($name) && $name !== '' && !str_contains($name, '{*}');
@@ -786,6 +790,17 @@ final class Visitor extends NodeVisitorAbstract
         }
         $outPayload = ['kind' => 'block-render'];
         if (is_string($name) && $name !== '') $outPayload['name'] = $name;
+
+        // The block is still unnamed: arg 0 is (or may be) a directory path.
+        // Capture its resolved skeleton so the build-zone block.json reader can
+        // read <dir>/block.json. Only a clean, non-wildcard path is useful.
+        if (!$resolved) {
+            $dir = $this->readStringSkeleton($args[0] ?? null);
+            if (is_string($dir) && $dir !== '' && !str_contains($dir, '{*}')) {
+                $outPayload['dir'] = $this->normalizeIncludePath($dir);
+            }
+        }
+
         $this->facts[] = [
             'kind' => 'block-render',
             'resolved' => $resolved,

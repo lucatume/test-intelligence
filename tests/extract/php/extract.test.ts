@@ -978,4 +978,41 @@ ti_deletemeelephant_helper();
     expect(block?.resolved).toBe(true);
     expect(block?.anchors).toContainEqual({ key: 'block:core/quote', role: 'subject' });
   });
+
+  // --- block.json reader: directory capture ---
+
+  it('captures the resolved __DIR__ directory of register_block_type_from_metadata as payload.dir', async () => {
+    const root = getTmp();
+    write(root, 'sub/loader.php', "<?php register_block_type_from_metadata( __DIR__ . '/paragraph' );");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'sub/loader.php', worker });
+    const block = facts.find((f) => f.kind === 'block-render');
+    expect(block?.resolved).toBe(false);
+    expect(block?.anchors).toEqual([]);
+    expect((block?.payload as { dir?: string }).dir).toBe('sub/paragraph');
+  });
+
+  it('captures a bare __DIR__ directory argument', async () => {
+    const root = getTmp();
+    write(root, 'blocks/foo/index.php', "<?php register_block_type( __DIR__ );");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'blocks/foo/index.php', worker });
+    const block = facts.find((f) => f.kind === 'block-render');
+    expect((block?.payload as { dir?: string }).dir).toBe('blocks/foo');
+  });
+
+  it('omits dir when the metadata argument is a non-literal variable', async () => {
+    const root = getTmp();
+    write(root, 'var.php', "<?php function reg( $p ) { register_block_type_from_metadata( $p ); }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'var.php', worker });
+    const block = facts.find((f) => f.kind === 'block-render');
+    expect((block?.payload as { dir?: string }).dir).toBeUndefined();
+  });
+
+  it('omits dir when arg-0 already resolves the block name', async () => {
+    const root = getTmp();
+    write(root, 'lit.php', "<?php register_block_type( 'core/foo', array() );");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'lit.php', worker });
+    const block = facts.find((f) => f.kind === 'block-render');
+    expect(block?.resolved).toBe(true);
+    expect((block?.payload as { dir?: string }).dir).toBeUndefined();
+  });
 });
