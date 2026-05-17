@@ -96,7 +96,7 @@ describe('migrateToCurrent v1 -> v2', () => {
       expect(getSchemaVersion(db)).toBe(1);
       migrateToCurrent(db);
       expect(getSchemaVersion(db)).toBe(CURRENT_SCHEMA_VERSION);
-      expect(CURRENT_SCHEMA_VERSION).toBe(3);
+      expect(CURRENT_SCHEMA_VERSION).toBe(4);
     } finally { db.close(); }
   });
 
@@ -155,9 +155,9 @@ describe('migrateToCurrent v1 -> v2', () => {
     const db = makeV1Store(getTmp());
     try {
       migrateToCurrent(db);
-      expect(getSchemaVersion(db)).toBe(3);
+      expect(getSchemaVersion(db)).toBe(4);
       migrateToCurrent(db);
-      expect(getSchemaVersion(db)).toBe(3);
+      expect(getSchemaVersion(db)).toBe(4);
     } finally { db.close(); }
   });
 });
@@ -165,12 +165,13 @@ describe('migrateToCurrent v1 -> v2', () => {
 describe('migrateToCurrent v2 -> v3', () => {
   const getTmp = useTmpDir('ti-migrate-v2v3-');
 
-  it('adds the test_fact_idx index and bumps schema_version to 3', () => {
-    // A v1 store migrated forward must reach v3 with the index present.
+  it('adds the test_fact_idx index and bumps schema_version forward', () => {
+    // A v1 store migrated forward must reach the current version with the
+    // index present.
     const db = makeV1Store(getTmp());
     try {
       migrateToCurrent(db);
-      expect(getSchemaVersion(db)).toBe(3);
+      expect(getSchemaVersion(db)).toBe(4);
       const indexes = db
         .prepare("SELECT name FROM sqlite_master WHERE type='index'")
         .all() as Array<{ name: string }>;
@@ -188,6 +189,33 @@ describe('migrateToCurrent v2 -> v3', () => {
       const detail = plan.map((r) => r.detail).join(' ');
       expect(detail).toContain('test_fact_idx');
       expect(detail).not.toContain('SCAN test');
+    } finally { db.close(); }
+  });
+});
+
+describe('migrateToCurrent v3 -> v4', () => {
+  const getTmp = useTmpDir('ti-migrate-v3v4-');
+
+  it('migrates a v1 store forward to v4 adding the resolution table', () => {
+    const db = makeV1Store(getTmp());
+    try {
+      migrateToCurrent(db);
+      expect(getSchemaVersion(db)).toBe(4);
+      expect(CURRENT_SCHEMA_VERSION).toBe(4);
+      const cols = db.prepare('PRAGMA table_info(resolution)').all() as { name: string }[];
+      expect(cols.map((c) => c.name).sort()).toEqual(
+        ['cite_line', 'cite_path', 'cite_verified', 'classification',
+         'expr_hash', 'imported_at', 'pass', 'resolved_value'].sort(),
+      );
+    } finally { db.close(); }
+  });
+
+  it('migrateToCurrent is idempotent on a v4 store', () => {
+    const db = makeV1Store(getTmp());
+    try {
+      migrateToCurrent(db);
+      expect(() => { migrateToCurrent(db); }).not.toThrow();
+      expect(getSchemaVersion(db)).toBe(4);
     } finally { db.close(); }
   });
 });
