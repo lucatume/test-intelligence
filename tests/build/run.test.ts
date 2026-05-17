@@ -243,6 +243,42 @@ class Ti_ItemsController extends Ti_BaseController {
     } finally { sRes.value.close(); }
   });
 
+  it('resolves a register_block_type_from_metadata fact via its block.json', async () => {
+    // The block.json reader: the PHP call names a directory, not a block; the
+    // build-zone pass reads <dir>/block.json's "name" and re-points the fact.
+    const root = getTmp();
+    write(root, 'blocks/cart/block.json', JSON.stringify({ name: 'test/cart' }));
+    write(root, 'blocks/loader.php', `<?php
+register_block_type_from_metadata( __DIR__ . '/cart' );`);
+    const cfgRes = parseConfig({ confidence: { threshold: 0 } });
+    if (cfgRes.kind === 'err') throw new Error('cfg');
+    const r = await runBuild({
+      projectRoot: root,
+      config: cfgRes.value,
+      clock: systemClock,
+      stderr: { write: () => {} },
+      repoRoot,
+    });
+    expect(r.kind).toBe('ok');
+
+    const sRes = openStore(root);
+    if (sRes.kind !== 'ok') throw new Error('store');
+    try {
+      const fact = sRes.value.db
+        .prepare(`SELECT resolved, payload FROM fact WHERE kind = 'block-render'`)
+        .get() as { resolved: number; payload: string } | undefined;
+      expect(fact?.resolved).toBe(1);
+      expect(JSON.parse(fact?.payload ?? '{}')).toMatchObject({ name: 'test/cart' });
+      const anchor = sRes.value.db
+        .prepare(`SELECT a.key FROM fact f
+                  JOIN fact_anchor fa ON fa.fact_id = f.id AND fa.role = 'subject'
+                  JOIN anchor a ON a.id = fa.anchor_id
+                  WHERE f.kind = 'block-render'`)
+        .get() as { key: string } | undefined;
+      expect(anchor?.key).toBe('block:test/cart');
+    } finally { sRes.value.close(); }
+  });
+
   it('produces identical totals across php worker pool sizes', async () => {
     // Concurrency MUST be a performance lever, not a correctness one. Build the
     // same fixture under phpWorkers=1 and phpWorkers=4 and require the four
