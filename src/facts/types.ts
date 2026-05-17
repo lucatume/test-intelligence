@@ -14,6 +14,19 @@ export interface FactLocation {
   readonly endLine: number;
 }
 
+// Resolution context stamped on every fact emitted `resolved = 0`. One shared
+// shape across all fact kinds — the cache key the LLM-resolution pass keys on.
+export interface UnresolvedExpr {
+  readonly field: string;
+  readonly expression: string;
+}
+
+export interface UnresolvedBlock {
+  readonly scope: string;
+  readonly fields: readonly UnresolvedExpr[];
+  readonly exprHash: string;
+}
+
 // Per-kind payloads. Each FactKind has exactly one payload shape — discriminated
 // by `kind`. Fields are the minimum the derivation engine needs.
 
@@ -36,11 +49,13 @@ export interface ImportEdgePayload {
   readonly resolved: boolean;
   readonly resolvedPath?: string;
   readonly meta?: Readonly<Record<string, unknown>>;
+  readonly unresolved?: UnresolvedBlock;
 }
 
 export interface PhpIncludePayload {
   readonly kind: 'php-include';
   readonly target: string;
+  readonly unresolved?: UnresolvedBlock;
 }
 
 export interface HookListenerPayload {
@@ -48,11 +63,13 @@ export interface HookListenerPayload {
   readonly hook: string;
   readonly priority?: number;
   readonly callback?: string;
+  readonly unresolved?: UnresolvedBlock;
 }
 
 export interface HookFirePayload {
   readonly kind: 'hook-fire';
   readonly hook: string;
+  readonly unresolved?: UnresolvedBlock;
 }
 
 export interface RestEndpointPayload {
@@ -62,18 +79,16 @@ export interface RestEndpointPayload {
   readonly callback?: string;
   /** Set true when the route carried a normalized regex param (`(?P<id>…)` → `{*}`). */
   readonly routeParam?: boolean;
-  /** Present on facts left unresolved by a `$this->prop` miss — context for the
-   *  cross-file resolver: the enclosing class FQN and the unresolved property names. */
-  readonly unresolved?: {
-    readonly class: string | null;
-    readonly fields: readonly string[];
-  };
+  /** Present on facts left `resolved = 0` — the shared partial-fact resolution
+   *  context (enclosing scope, per-field unresolved expressions, stable hash). */
+  readonly unresolved?: UnresolvedBlock;
 }
 
 export interface RestCallJsPayload {
   readonly kind: 'rest-call-js';
   readonly method: string;
   readonly route: string;
+  readonly unresolved?: UnresolvedBlock;
 }
 
 export interface AjaxListenerPayload {
@@ -85,6 +100,7 @@ export interface AjaxListenerPayload {
 export interface AjaxCallJsPayload {
   readonly kind: 'ajax-call-js';
   readonly action: string;
+  readonly unresolved?: UnresolvedBlock;
 }
 
 export interface EnqueueScriptPayload {
@@ -92,6 +108,7 @@ export interface EnqueueScriptPayload {
   readonly handle: string;
   readonly src?: string;
   readonly resolvedJsModule?: string;
+  readonly unresolved?: UnresolvedBlock;
 }
 
 export interface AdminPageNavPayload {
@@ -99,12 +116,14 @@ export interface AdminPageNavPayload {
   readonly url: string;
   readonly slug: string;
   readonly method: 'goto' | 'route';
+  readonly unresolved?: UnresolvedBlock;
 }
 
 export interface AdminPageRegisterPayload {
   readonly kind: 'admin-page-register';
   readonly slug: string;
   readonly fn: 'add_menu_page' | 'add_submenu_page';
+  readonly unresolved?: UnresolvedBlock;
 }
 
 export interface StoreRegisterPayload {
@@ -131,12 +150,14 @@ export interface ShortcodePayload {
   readonly kind: 'shortcode';
   readonly tag: string;
   readonly callback?: string;
+  readonly unresolved?: UnresolvedBlock;
 }
 
 export interface BlockRenderPayload {
   readonly kind: 'block-render';
   readonly name: string;
   readonly callback?: string;
+  readonly unresolved?: UnresolvedBlock;
 }
 
 export interface TestDefPayload {

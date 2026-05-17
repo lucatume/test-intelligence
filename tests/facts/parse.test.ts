@@ -138,3 +138,63 @@ describe('parseFact', () => {
     expect(r.kind).toBe('ok');
   });
 });
+
+describe('unresolved block', () => {
+  const base = {
+    kind: 'hook-fire',
+    resolved: false,
+    location: { file: 'a.php', startLine: 1, endLine: 1 },
+    anchors: [],
+  };
+
+  it('accepts a hook-fire fact carrying a well-formed unresolved block', () => {
+    const r = parseFact({
+      ...base,
+      payload: {
+        kind: 'hook-fire',
+        hook: '{*}',
+        unresolved: {
+          scope: 'Acme\\Cls::run',
+          fields: [{ field: 'hook', expression: '$hook' }],
+          exprHash: 'abc123',
+        },
+      },
+    });
+    expect(r.kind).toBe('ok');
+  });
+
+  it('rejects an unresolved block missing exprHash', () => {
+    const r = parseFact({
+      ...base,
+      payload: {
+        kind: 'hook-fire',
+        hook: '{*}',
+        unresolved: { scope: '(file)', fields: [{ field: 'hook', expression: '$h' }] },
+      },
+    });
+    expect(r.kind).toBe('err');
+  });
+
+  it('rejects an unresolved fields entry missing expression', () => {
+    const r = parseFact({
+      ...base,
+      payload: {
+        kind: 'hook-fire',
+        hook: '{*}',
+        unresolved: { scope: '(file)', fields: [{ field: 'hook' }], exprHash: 'x' },
+      },
+    });
+    expect(r.kind).toBe('err');
+  });
+
+  it('accepts a resolved hook-fire fact with no unresolved block', () => {
+    const r = parseFact({
+      kind: 'hook-fire',
+      resolved: true,
+      location: { file: 'a.php', startLine: 1, endLine: 1 },
+      anchors: [{ key: 'hook:init', role: 'target' }],
+      payload: { kind: 'hook-fire', hook: 'init' },
+    });
+    expect(r.kind).toBe('ok');
+  });
+});

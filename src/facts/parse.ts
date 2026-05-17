@@ -41,6 +41,16 @@ const factAnchorRefSchema = P.object(
   { strict: true },
 );
 
+const unresolvedExprSchema = P.object(
+  { field: P.string, expression: P.string },
+  { strict: true },
+);
+
+const unresolvedBlockSchema = P.object(
+  { scope: P.string, fields: P.array(unresolvedExprSchema), exprHash: P.string },
+  { strict: true },
+);
+
 const symbolDefPayload = P.object(
   { kind: P.literal('symbol-def'), name: P.string, exported: P.boolean, meta: P.optional(P.record(P.unknown)) },
   { strict: true },
@@ -50,7 +60,7 @@ const symbolUsePayload = P.object(
   { strict: true },
 );
 const importEdgePayload = P.object(
-  { kind: P.literal('import-edge'), specifier: P.string, resolved: P.boolean, resolvedPath: P.optional(P.string), meta: P.optional(P.record(P.unknown)) },
+  { kind: P.literal('import-edge'), specifier: P.string, resolved: P.boolean, resolvedPath: P.optional(P.string), meta: P.optional(P.record(P.unknown)), unresolved: P.optional(unresolvedBlockSchema) },
   { strict: true },
 );
 const testDefPayload = P.object(
@@ -73,28 +83,46 @@ function passthroughPayload(kindLit: string): Schema<FactPayload> {
   };
 }
 
+// Wraps passthroughPayload, additionally validating an optional `unresolved`
+// block. Used for every fact kind that can be emitted `resolved = 0`.
+function partialFactPayload(kindLit: string): Schema<FactPayload> {
+  const inner = passthroughPayload(kindLit);
+  return {
+    parse(input): ParseResult<FactPayload> {
+      const base = inner.parse(input);
+      if (base.kind === 'err') return base;
+      const rec = input as Record<string, unknown>;
+      if ('unresolved' in rec && rec['unresolved'] !== undefined) {
+        const u = unresolvedBlockSchema.parse(rec['unresolved']);
+        if (u.kind === 'err') return prefix('unresolved', u.error);
+      }
+      return base;
+    },
+  };
+}
+
 const PAYLOAD_BY_KIND: Record<FactKind, Schema<FactPayload>> = {
   'symbol-def': symbolDefPayload as unknown as Schema<FactPayload>,
   'symbol-use': symbolUsePayload as unknown as Schema<FactPayload>,
   'import-edge': importEdgePayload as unknown as Schema<FactPayload>,
   'test-def': testDefPayload as unknown as Schema<FactPayload>,
   'parse-error': parseErrorPayload as unknown as Schema<FactPayload>,
-  'php-include': passthroughPayload('php-include'),
-  'hook-listener': passthroughPayload('hook-listener'),
-  'hook-fire': passthroughPayload('hook-fire'),
-  'rest-endpoint': passthroughPayload('rest-endpoint'),
-  'rest-call-js': passthroughPayload('rest-call-js'),
+  'php-include': partialFactPayload('php-include'),
+  'hook-listener': partialFactPayload('hook-listener'),
+  'hook-fire': partialFactPayload('hook-fire'),
+  'rest-endpoint': partialFactPayload('rest-endpoint'),
+  'rest-call-js': partialFactPayload('rest-call-js'),
   'ajax-listener': passthroughPayload('ajax-listener'),
-  'ajax-call-js': passthroughPayload('ajax-call-js'),
-  'enqueue-script': passthroughPayload('enqueue-script'),
-  'admin-page-nav': passthroughPayload('admin-page-nav'),
-  'admin-page-register': passthroughPayload('admin-page-register'),
+  'ajax-call-js': partialFactPayload('ajax-call-js'),
+  'enqueue-script': partialFactPayload('enqueue-script'),
+  'admin-page-nav': partialFactPayload('admin-page-nav'),
+  'admin-page-register': partialFactPayload('admin-page-register'),
   'store-register': passthroughPayload('store-register'),
   'store-access': passthroughPayload('store-access'),
   'script-localize': passthroughPayload('script-localize'),
   'script-localize-inline': passthroughPayload('script-localize-inline'),
-  shortcode: passthroughPayload('shortcode'),
-  'block-render': passthroughPayload('block-render'),
+  shortcode: partialFactPayload('shortcode'),
+  'block-render': partialFactPayload('block-render'),
 };
 
 export function parseFact(raw: unknown): ParseResult<Fact> {
