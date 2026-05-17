@@ -173,12 +173,19 @@ export function resolveRestEndpoints(db: Database.Database): ResolveRestSummary 
     if (p === null) continue;
     const unresolved = p['unresolved'];
     if (!isRecord(unresolved)) continue;
-    const cls = unresolved['class'];
+    const scope = unresolved['scope'];
     const fields = unresolved['fields'];
-    if (typeof cls !== 'string' || !Array.isArray(fields)) continue;
+    if (typeof scope !== 'string' || !Array.isArray(fields)) continue;
     examined++;
 
-    const fieldNames = fields.filter((f): f is string => typeof f === 'string');
+    // The shared UnresolvedBlock's `scope` is `Class\Fqn::method` for a method
+    // body; the inherited-property index is keyed by class FQN — strip a
+    // trailing `::method`.
+    const cls = scope.includes('::') ? scope.slice(0, scope.lastIndexOf('::')) : scope;
+    // `fields` is now an array of { field, expression } — pull the field names.
+    const fieldNames = fields
+      .map((f) => (isRecord(f) ? f['field'] : undefined))
+      .filter((f): f is string => typeof f === 'string');
     const route = typeof p['route'] === 'string' ? p['route'] : '';
     const method = typeof p['method'] === 'string' ? p['method'] : 'GET';
 

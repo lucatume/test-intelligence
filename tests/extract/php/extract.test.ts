@@ -769,15 +769,18 @@ ti_deletemeelephant_helper();
     expect((ifaceUse?.payload as { meta?: unknown }).meta).toBeUndefined();
   });
 
-  it('annotates rest-endpoint with unresolved class/fields when namespace is a $this->prop miss', async () => {
+  it('annotates rest-endpoint with the unresolved block when namespace is a $this->prop miss', async () => {
     const root = getTmp();
     write(root, 'ctl.php', "<?php class Ctl { public function reg(){ register_rest_route($this->namespace, '/items', []); } }");
     const facts = await extractPhpFile({ projectRoot: root, relPath: 'ctl.php', worker });
     const rest = facts.find((f) => f.kind === 'rest-endpoint');
     expect(rest?.resolved).toBe(false);
-    const u = (rest?.payload as { unresolved?: { class?: string; fields?: string[] } }).unresolved;
-    expect(u?.class).toBe('Ctl');
-    expect(u?.fields).toEqual(['namespace']);
+    const u = (rest?.payload as { unresolved?: {
+      scope?: string; fields?: { field: string; expression: string }[]; exprHash?: string;
+    } }).unresolved;
+    expect(u?.scope).toBe('Ctl::reg');
+    expect(u?.fields).toEqual([{ field: 'namespace', expression: '$this->namespace' }]);
+    expect(u?.exprHash?.length).toBe(64);
   });
 
   it('does not annotate unresolved for a non-property concat skeleton', async () => {
@@ -1014,5 +1017,104 @@ ti_deletemeelephant_helper();
     const block = facts.find((f) => f.kind === 'block-render');
     expect(block?.resolved).toBe(true);
     expect((block?.payload as { dir?: string }).dir).toBeUndefined();
+  });
+
+  it('stamps the unresolved block on a dynamic do_action', async () => {
+    const root = getTmp();
+    write(root, 'h.php', `<?php
+class Widget {
+  public function run($hook) { do_action($hook); }
+}
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h.php', worker });
+    const fire = facts.find((f) => f.kind === 'hook-fire');
+    expect(fire?.resolved).toBe(false);
+    const u = (fire?.payload as { unresolved?: {
+      scope: string; fields: { field: string; expression: string }[]; exprHash: string;
+    } }).unresolved;
+    expect(u?.scope).toBe('Widget::run');
+    expect(u?.fields[0]).toEqual({ field: 'hook', expression: '$hook' });
+    expect(typeof u?.exprHash).toBe('string');
+    expect(u?.exprHash.length).toBe(64);
+  });
+
+  it('emits no unresolved block on a literal do_action', async () => {
+    const root = getTmp();
+    write(root, 'h2.php', `<?php do_action('init');`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h2.php', worker });
+    const fire = facts.find((f) => f.kind === 'hook-fire');
+    expect(fire?.resolved).toBe(true);
+    expect((fire?.payload as { unresolved?: unknown }).unresolved).toBeUndefined();
+  });
+
+  it('captures a concat expression on add_action', async () => {
+    const root = getTmp();
+    write(root, 'h3.php', `<?php add_action('woo_' . $context, 'cb');`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h3.php', worker });
+    const listener = facts.find((f) => f.kind === 'hook-listener');
+    const u = (listener?.payload as { unresolved?: {
+      fields: { expression: string }[];
+    } }).unresolved;
+    expect(u?.fields[0]?.expression).toBe("'woo_' . $context");
+  });
+
+  it('stamps a multi-field unresolved block on a dynamic register_rest_route', async () => {
+    const root = getTmp();
+    write(root, 'r.php', `<?php
+class Api {
+  public function reg() {
+    register_rest_route($this->ns, $this->route, array());
+  }
+}
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'r.php', worker });
+    const ep = facts.find((f) => f.kind === 'rest-endpoint');
+    expect(ep?.resolved).toBe(false);
+    const u = (ep?.payload as { unresolved?: {
+      scope: string; fields: { field: string }[];
+    } }).unresolved;
+    expect(u?.scope).toBe('Api::reg');
+    expect(u?.fields.map((f) => f.field).sort()).toEqual(['ns', 'route']);
+  });
+
+  it('resolves scope for free function, file scope, and closure', async () => {
+    const root = getTmp();
+    write(root, 's.php', `<?php
+function fire_it($h) { do_action($h); }
+do_action($topLevel);
+add_action('boot', function () use ($cb) { do_action($cb); });
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 's.php', worker });
+    const fires = facts.filter((f) => f.kind === 'hook-fire' && !f.resolved);
+    const scopes = fires.map(
+      (f) => (f.payload as { unresolved?: { scope: string } }).unresolved?.scope,
+    );
+    expect(scopes.filter((s) => s === 'fire_it').length).toBe(1);
+    expect(scopes.filter((s) => s === '(file)').length).toBe(2);
+  });
+
+  it('exprHash is stable across an unrelated edit, changes on an expression edit', async () => {
+    const root = getTmp();
+    const hashOf = async (src: string): Promise<string> => {
+      write(root, 'st.php', src);
+      const facts = await extractPhpFile({ projectRoot: root, relPath: 'st.php', worker });
+      const u = (facts.find((f) => f.kind === 'hook-fire')?.payload as
+        { unresolved?: { exprHash: string } }).unresolved;
+      return u?.exprHash ?? '';
+    };
+
+    const base = await hashOf(`<?php
+class W { function run($hook) { do_action($hook); } }
+`);
+    const afterUnrelated = await hashOf(`<?php
+function brand_new_helper() { return 1; }
+class W { function run($hook) { do_action($hook); } }
+`);
+    expect(afterUnrelated).toBe(base);
+
+    const afterExprEdit = await hashOf(`<?php
+class W { function run($h) { do_action($h); } }
+`);
+    expect(afterExprEdit).not.toBe(base);
   });
 });

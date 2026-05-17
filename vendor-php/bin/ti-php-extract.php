@@ -22,6 +22,8 @@ final class Visitor extends NodeVisitorAbstract
     public array $facts = [];
     public string $file;
     public string $relFile;
+    /** Raw file source — sliced by getStart/EndFilePos for expression text. */
+    private string $code = '';
     public ?string $namespace = null;
     /** @var array<string, string> */
     public array $useAliases = [];
@@ -244,13 +246,14 @@ final class Visitor extends NodeVisitorAbstract
         return isset(self::$phpBuiltinFunctionsLower[strtolower($bare)]);
     }
 
-    public function __construct(string $file, ?string $relFile = null)
+    public function __construct(string $file, ?string $relFile = null, string $code = '')
     {
         $this->file = $file;
         // Project-relative POSIX path used in test_ids + anchor keys so
         // outputs are portable across machines. When omitted, the absolute
         // path is the fallback identifier.
         $this->relFile = $relFile ?? $file;
+        $this->code = $code;
     }
 
     public function enterNode(Node $node): void
@@ -329,19 +332,31 @@ final class Visitor extends NodeVisitorAbstract
                     'resolved' => false,
                     'location' => $this->loc($node),
                     'anchors' => [],
-                    'payload' => ['kind' => 'php-include', 'target' => '{*}'],
+                    'payload' => [
+                        'kind' => 'php-include',
+                        'target' => '{*}',
+                        'unresolved' => $this->buildUnresolvedBlock(
+                            [['field' => 'target', 'node' => $node->expr]],
+                        ),
+                    ],
                 ];
                 return;
             }
             $hasWildcard = str_contains($raw, '{*}');
             $target = $hasWildcard ? $raw : $this->normalizeIncludePath($raw);
             $resolved = !$hasWildcard;
+            $includePayload = ['kind' => 'php-include', 'target' => $target];
+            if (!$resolved) {
+                $includePayload['unresolved'] = $this->buildUnresolvedBlock(
+                    [['field' => 'target', 'node' => $node->expr]],
+                );
+            }
             $this->facts[] = [
                 'kind' => 'php-include',
                 'resolved' => $resolved,
                 'location' => $this->loc($node),
                 'anchors' => [['key' => 'php-file:' . $target, 'role' => 'target']],
-                'payload' => ['kind' => 'php-include', 'target' => $target],
+                'payload' => $includePayload,
             ];
             return;
         }
@@ -560,6 +575,77 @@ final class Visitor extends NodeVisitorAbstract
         ];
     }
 
+    /**
+     * Stable enclosing-scope string: Class\Fqn::method, function, or '(file)'.
+     * Walks past closure sentinels to the nearest named frame. The @<line>
+     * suffix on scopeStack frames is dropped — it would make the hash
+     * position-dependent.
+     */
+    private function currentScope(): string
+    {
+        $fn = null;
+        for ($i = count($this->scopeStack) - 1; $i >= 0; $i--) {
+            $frame = $this->scopeStack[$i];
+            if ($frame === "\0closure") continue;
+            $at = strrpos($frame, '@');
+            $fn = $at === false ? $frame : substr($frame, 0, $at);
+            break;
+        }
+        $class = end($this->classStack);
+        if ($class !== false) {
+            return $fn !== null ? $class . '::' . $fn : $class;
+        }
+        return $fn !== null ? $fn : '(file)';
+    }
+
+    /**
+     * Build the shared partial-fact resolution context: enclosing scope,
+     * per-field unresolved expressions (source text sliced from $code by file
+     * position), and a stable sha256 content hash. Additive metadata only.
+     *
+     * @param array<int, array{field: string, node: ?Node}> $failed
+     * @return array{scope: string, fields: list<array{field: string, expression: string}>, exprHash: string}
+     */
+    private function buildUnresolvedBlock(array $failed): array
+    {
+        $scope = $this->currentScope();
+        $fields = [];
+        foreach ($failed as $f) {
+            $expr = '';
+            $node = $f['node'];
+            if ($node !== null) {
+                $start = $node->getStartFilePos();
+                $end = $node->getEndFilePos();
+                if ($start >= 0 && $end >= $start && $this->code !== '') {
+                    $expr = substr($this->code, $start, $end - $start + 1);
+                }
+            }
+            $fields[] = ['field' => $f['field'], 'expression' => $expr];
+        }
+        return [
+            'scope' => $scope,
+            'fields' => $fields,
+            'exprHash' => $this->hashUnresolved($scope, $fields),
+        ];
+    }
+
+    /**
+     * sha256 of the canonical string: scope + '\n' + sorted field=expression
+     * lines. Mirrors the TS-side exprHash() byte-for-byte.
+     *
+     * @param list<array{field: string, expression: string}> $fields
+     */
+    private function hashUnresolved(string $scope, array $fields): string
+    {
+        $sorted = $fields;
+        usort($sorted, fn ($a, $b) => strcmp($a['field'], $b['field']));
+        $canonical = $scope . "\n";
+        foreach ($sorted as $f) {
+            $canonical .= $f['field'] . '=' . $f['expression'] . "\n";
+        }
+        return hash('sha256', $canonical);
+    }
+
     private function tryEmitDeclarative(string $nodeKind, Node $n, ?string $name, ?string $receiver): void
     {
         if ($name === null) return;
@@ -575,14 +661,18 @@ final class Visitor extends NodeVisitorAbstract
             $payload = ['kind' => $p['emit']];
             $resolved = true;
             $this->unresolvedThisProps = [];
+            $failed = [];
             foreach (($p['bind'] ?? []) as $field => $b) {
                 $i = $b['arg'];
-                $v = $this->readLiteral($args[$i] ?? null, $b['type']);
-                if ($v === null && !($b['optional'] ?? false)) $resolved = false;
-                if ($v !== null) {
-                    $payload[$field] = $v;
-                    if (is_string($v) && str_contains($v, '{*}')) $resolved = false;
+                $argNode = $args[$i] ?? null;
+                $v = $this->readLiteral($argNode, $b['type']);
+                $optional = $b['optional'] ?? false;
+                $isWild = is_string($v) && str_contains($v, '{*}');
+                if (($v === null || $isWild) && !$optional) {
+                    $resolved = false;
+                    $failed[] = ['field' => $field, 'node' => $argNode];
                 }
+                if ($v !== null) $payload[$field] = $v;
             }
             if (($p['transform'] ?? null) === 'rest-route') {
                 $this->emitRestRouteFacts($n, $payload);
@@ -607,6 +697,11 @@ final class Visitor extends NodeVisitorAbstract
                 if ($key !== null) $anchors[] = ['key' => $key, 'role' => $anchorRule['role'] ?? 'subject'];
                 else $resolved = false;
             }
+            // Phase 0: stamp the partial-fact resolution context onto an
+            // unresolved fact. Additive metadata only.
+            if (!$resolved && $failed !== []) {
+                $payload['unresolved'] = $this->buildUnresolvedBlock($failed);
+            }
             $this->facts[] = [
                 'kind' => $p['emit'],
                 'resolved' => $resolved,
@@ -623,12 +718,18 @@ final class Visitor extends NodeVisitorAbstract
         $namespace = $payload['namespace'] ?? null;
         $route = $payload['route'] ?? null;
         if (!is_string($namespace) || !is_string($route)) {
+            $args = $this->extractArgs($n);
+            $failed = [];
+            if (!is_string($namespace)) $failed[] = ['field' => 'namespace', 'node' => $args[0] ?? null];
+            if (!is_string($route)) $failed[] = ['field' => 'route', 'node' => $args[1] ?? null];
+            $payload = array_merge($payload, ['kind' => 'rest-endpoint']);
+            $payload['unresolved'] = $this->buildUnresolvedBlock($failed);
             $this->facts[] = [
                 'kind' => 'rest-endpoint',
                 'resolved' => false,
                 'location' => $this->loc($n),
                 'anchors' => [],
-                'payload' => array_merge($payload, ['kind' => 'rest-endpoint']),
+                'payload' => $payload,
             ];
             return;
         }
@@ -650,12 +751,20 @@ final class Visitor extends NodeVisitorAbstract
         if ($methods === []) $methods = ['GET'];
 
         // A $this->prop miss left a {*} in the joined input — record which
-        // properties so the cross-file resolver knows what to fill.
+        // properties so the cross-file resolver knows what to fill. The shared
+        // UnresolvedBlock carries the enclosing scope + per-property $this->
+        // expressions + a stable hash.
         $unresolved = null;
         if ($skeletonWild && $this->unresolvedThisProps !== []) {
+            $scope = $this->currentScope();
+            $fields = [];
+            foreach (array_values(array_unique($this->unresolvedThisProps)) as $prop) {
+                $fields[] = ['field' => $prop, 'expression' => '$this->' . $prop];
+            }
             $unresolved = [
-                'class'  => (end($this->classStack) ?: null),
-                'fields' => array_values(array_unique($this->unresolvedThisProps)),
+                'scope'    => $scope,
+                'fields'   => $fields,
+                'exprHash' => $this->hashUnresolved($scope, $fields),
             ];
         }
 
@@ -708,6 +817,13 @@ final class Visitor extends NodeVisitorAbstract
         }
 
         $payload['kind'] = 'enqueue-script';
+        // Phase 0: stamp the partial-fact resolution context when unresolved.
+        if (!($handleResolved && $jsModuleEmitted)) {
+            $failed = [];
+            if (!$handleResolved) $failed[] = ['field' => 'handle', 'node' => $args[0] ?? null];
+            if (!$jsModuleEmitted) $failed[] = ['field' => 'src', 'node' => $args[1] ?? null];
+            $payload['unresolved'] = $this->buildUnresolvedBlock($failed);
+        }
         $this->facts[] = [
             'kind' => 'enqueue-script',
             // resolved iff BOTH the handle anchor and a js-module anchor landed.
@@ -737,16 +853,26 @@ final class Visitor extends NodeVisitorAbstract
         }
         $fn = $name === 'add_submenu_page' ? 'add_submenu_page' : 'add_menu_page';
         $resolved = !str_contains($slug, '{*}');
+        $outPayload = [
+            'kind' => 'admin-page-register',
+            'slug' => $slug,
+            'fn' => $fn,
+        ];
+        // Phase 0: stamp the partial-fact resolution context when the slug
+        // skeleton still carries a {*} wildcard.
+        if (!$resolved) {
+            $args = $this->extractArgs($n);
+            $slugArg = $fn === 'add_submenu_page' ? 5 : 4;
+            $outPayload['unresolved'] = $this->buildUnresolvedBlock(
+                [['field' => 'slug', 'node' => $args[$slugArg] ?? null]],
+            );
+        }
         $this->facts[] = [
             'kind' => 'admin-page-register',
             'resolved' => $resolved,
             'location' => $this->loc($n),
             'anchors' => [['key' => 'wp-admin-page:' . $slug, 'role' => 'subject']],
-            'payload' => [
-                'kind' => 'admin-page-register',
-                'slug' => $slug,
-                'fn' => $fn,
-            ],
+            'payload' => $outPayload,
         ];
     }
 
@@ -799,6 +925,14 @@ final class Visitor extends NodeVisitorAbstract
             if (is_string($dir) && $dir !== '' && !str_contains($dir, '{*}')) {
                 $outPayload['dir'] = $this->normalizeIncludePath($dir);
             }
+        }
+
+        // Phase 0: stamp the partial-fact resolution context when the block
+        // name could not be resolved (arg 0 is the unresolved expression).
+        if (!$resolved) {
+            $outPayload['unresolved'] = $this->buildUnresolvedBlock(
+                [['field' => 'name', 'node' => $args[0] ?? null]],
+            );
         }
 
         $this->facts[] = [
@@ -1455,7 +1589,7 @@ while (($line = fgets($stdin)) !== false) {
             if ($code === false) { emit(['op' => 'facts', 'file' => $file, 'facts' => []]); continue; }
             $ast = $parser->parse($code);
             if ($ast === null) { emit(['op' => 'facts', 'file' => $file, 'facts' => []]); continue; }
-            $visitor = new Visitor($file, $relFile);
+            $visitor = new Visitor($file, $relFile, $code);
             $visitor->phpUnitBaseClasses = $req['phpUnitBaseClasses'] ?? ['PHPUnit\\Framework\\TestCase'];
             $visitor->prePass($ast);
             $traverser = new NodeTraverser();

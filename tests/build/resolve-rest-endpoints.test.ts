@@ -92,7 +92,7 @@ describe('resolveRestEndpoints', () => {
     const parentAnchor = upsertAnchor(db, { key: 'php-symbol:Parent_Ctl', type: 'php-symbol' });
     insertFactAnchor(db, { factId: extUseId, anchorId: parentAnchor, role: 'subject' });
 
-    const restId = insertFact(db, { fileId: childFile, kind: 'rest-endpoint', resolved: false, startLine: 2, endLine: 2, payload: { kind: 'rest-endpoint', method: 'GET', route: '/items', namespace: '{*}', unresolved: { class: 'Child_Ctl', fields: ['namespace'] } } });
+    const restId = insertFact(db, { fileId: childFile, kind: 'rest-endpoint', resolved: false, startLine: 2, endLine: 2, payload: { kind: 'rest-endpoint', method: 'GET', route: '/items', namespace: '{*}', unresolved: { scope: 'Child_Ctl', fields: [{ field: 'namespace', expression: '$this->namespace' }], exprHash: '88c8dd6f836859a25d0ef365ae8a7f9490ef07ca2459bb8abad231ccfc1a3a13' } } });
     const skelAnchor = upsertAnchor(db, { key: 'rest:GET /{*}/items', type: 'rest' });
     insertFactAnchor(db, { factId: restId, anchorId: skelAnchor, role: 'subject' });
 
@@ -114,7 +114,7 @@ describe('resolveRestEndpoints', () => {
     const db = freshDb();
     const f = upsertFile(db, { path: 'lone.php', language: 'php', contentHash: 'h', extractedAt: NOW, isTest: false, framework: null, frameworkClass: null });
     insertFact(db, { fileId: f, kind: 'symbol-def', resolved: true, startLine: 1, endLine: 1, payload: { kind: 'symbol-def', name: 'Lone_Ctl', exported: true } });
-    const restId = insertFact(db, { fileId: f, kind: 'rest-endpoint', resolved: false, startLine: 2, endLine: 2, payload: { kind: 'rest-endpoint', method: 'GET', route: '/items', namespace: '{*}', unresolved: { class: 'Lone_Ctl', fields: ['namespace'] } } });
+    const restId = insertFact(db, { fileId: f, kind: 'rest-endpoint', resolved: false, startLine: 2, endLine: 2, payload: { kind: 'rest-endpoint', method: 'GET', route: '/items', namespace: '{*}', unresolved: { scope: 'Lone_Ctl', fields: [{ field: 'namespace', expression: '$this->namespace' }], exprHash: '3b0e28016b7e0432e22eab5d9619b17ce296c10902f7cb4b2426149d15a570c3' } } });
     const a = upsertAnchor(db, { key: 'rest:GET /{*}/items', type: 'rest' });
     insertFactAnchor(db, { factId: restId, anchorId: a, role: 'subject' });
     const summary = resolveRestEndpoints(db);
@@ -136,7 +136,7 @@ describe('resolveRestEndpoints', () => {
     insertFact(db, { fileId: leafF, kind: 'symbol-def', resolved: true, startLine: 1, endLine: 1, payload: { kind: 'symbol-def', name: 'Leaf', exported: true } });
     const leafUse = insertFact(db, { fileId: leafF, kind: 'symbol-use', resolved: true, startLine: 1, endLine: 1, payload: { kind: 'symbol-use', name: 'Mid', meta: { rel: 'extends' } } });
     insertFactAnchor(db, { factId: leafUse, anchorId: upsertAnchor(db, { key: 'php-symbol:Mid', type: 'php-symbol' }), role: 'subject' });
-    const restId = insertFact(db, { fileId: leafF, kind: 'rest-endpoint', resolved: false, startLine: 2, endLine: 2, payload: { kind: 'rest-endpoint', method: 'GET', route: '/x', namespace: '{*}', unresolved: { class: 'Leaf', fields: ['namespace'] } } });
+    const restId = insertFact(db, { fileId: leafF, kind: 'rest-endpoint', resolved: false, startLine: 2, endLine: 2, payload: { kind: 'rest-endpoint', method: 'GET', route: '/x', namespace: '{*}', unresolved: { scope: 'Leaf', fields: [{ field: 'namespace', expression: '$this->namespace' }], exprHash: 'c20af1ffd6aabb52edf81f5be09381cf306bb79cee81629da615af813cc9bb39' } } });
     insertFactAnchor(db, { factId: restId, anchorId: upsertAnchor(db, { key: 'rest:GET /{*}/x', type: 'rest' }), role: 'subject' });
 
     const summary = resolveRestEndpoints(db);
