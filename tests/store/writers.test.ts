@@ -10,6 +10,9 @@ import {
   readFileExtractState,
   updateFactResolvedPayload,
   repointFactAnchor,
+  upsertResolution,
+  readResolution,
+  pruneStaleResolutions,
 } from '../../src/store/writers.js';
 import { useTmpDir } from '../helpers/tmpDir.js';
 
@@ -178,6 +181,61 @@ describe('store writers', () => {
       repointFactAnchor(db, { factId, oldAnchorId: oldAnchor, newAnchorId: newAnchor, role: 'subject' });
       const rows = db.prepare('SELECT anchor_id FROM fact_anchor WHERE fact_id = ?').all(factId) as Array<{ anchor_id: number }>;
       expect(rows).toEqual([{ anchor_id: newAnchor }]);
+    } finally { close(); }
+  });
+});
+
+describe('resolution writers', () => {
+  const getTmp = useTmpDir('ti-resolution-writers-');
+
+  it('upsertResolution + readResolution round-trip and replace on conflict', () => {
+    const s = openStore(getTmp());
+    if (s.kind === 'err') throw new Error(s.error.message);
+    const { db, close } = s.value;
+    try {
+      upsertResolution(db, {
+        exprHash: 'h1', pass: 'llm', resolvedValue: { hookName: 'save_post' },
+        classification: 'structural-rule', citePath: 'a.php', citeLine: 10,
+        citeVerified: true, importedAt: '2026-05-17T00:00:00.000Z',
+      });
+      const first = readResolution(db, 'h1', 'llm');
+      expect(first?.classification).toBe('structural-rule');
+      expect(first?.resolvedValue).toEqual({ hookName: 'save_post' });
+      expect(first?.citeVerified).toBe(true);
+
+      upsertResolution(db, {
+        exprHash: 'h1', pass: 'llm', resolvedValue: { hookName: 'save_post' },
+        classification: 'project-constant', citePath: 'a.php', citeLine: 11,
+        citeVerified: true, importedAt: '2026-05-17T00:00:01.000Z',
+      });
+      expect(readResolution(db, 'h1', 'llm')?.classification).toBe('project-constant');
+    } finally { close(); }
+  });
+
+  it('readResolution returns null for an absent row', () => {
+    const s = openStore(getTmp());
+    if (s.kind === 'err') throw new Error(s.error.message);
+    const { db, close } = s.value;
+    try {
+      expect(readResolution(db, 'missing', 'llm')).toBeNull();
+    } finally { close(); }
+  });
+
+  it('pruneStaleResolutions deletes rows whose expr_hash is not live', () => {
+    const s = openStore(getTmp());
+    if (s.kind === 'err') throw new Error(s.error.message);
+    const { db, close } = s.value;
+    try {
+      upsertResolution(db, { exprHash: 'live', pass: 'llm', resolvedValue: {},
+        classification: 'data-dependent-unresolvable', citePath: '', citeLine: 0,
+        citeVerified: false, importedAt: '2026-05-17T00:00:00.000Z' });
+      upsertResolution(db, { exprHash: 'dead', pass: 'llm', resolvedValue: {},
+        classification: 'data-dependent-unresolvable', citePath: '', citeLine: 0,
+        citeVerified: false, importedAt: '2026-05-17T00:00:00.000Z' });
+      const removed = pruneStaleResolutions(db, new Set(['live']));
+      expect(removed).toBe(1);
+      expect(readResolution(db, 'live', 'llm')).not.toBeNull();
+      expect(readResolution(db, 'dead', 'llm')).toBeNull();
     } finally { close(); }
   });
 });

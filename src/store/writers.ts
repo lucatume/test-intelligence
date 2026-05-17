@@ -247,3 +247,65 @@ export function repointFactAnchor(db: Database.Database, r: FactAnchorRepoint): 
   db.prepare('INSERT OR IGNORE INTO fact_anchor (fact_id, anchor_id, role) VALUES (?, ?, ?)')
     .run(r.factId, r.newAnchorId, r.role);
 }
+
+// --- LLM-resolution pass cache (the `resolution` table) ------------------
+
+export interface ResolutionRow {
+  readonly exprHash: string;
+  readonly pass: string;
+  readonly resolvedValue: unknown;
+  readonly classification: string;
+  readonly citePath: string;
+  readonly citeLine: number;
+  readonly citeVerified: boolean;
+  readonly importedAt: string;
+}
+
+// Insert-or-replace one resolution row, keyed on (expr_hash, pass).
+export function upsertResolution(db: Database.Database, r: ResolutionRow): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO resolution
+       (expr_hash, pass, resolved_value, classification,
+        cite_path, cite_line, cite_verified, imported_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    r.exprHash, r.pass, JSON.stringify(r.resolvedValue), r.classification,
+    r.citePath, r.citeLine, r.citeVerified ? 1 : 0, r.importedAt,
+  );
+}
+
+export function readResolution(
+  db: Database.Database, exprHash: string, pass: string,
+): ResolutionRow | null {
+  const row = db.prepare(
+    `SELECT expr_hash, pass, resolved_value, classification,
+            cite_path, cite_line, cite_verified, imported_at
+       FROM resolution WHERE expr_hash = ? AND pass = ?`,
+  ).get(exprHash, pass) as Record<string, unknown> | undefined;
+  if (row === undefined) return null;
+  return {
+    exprHash: row['expr_hash'] as string,
+    pass: row['pass'] as string,
+    resolvedValue: JSON.parse(row['resolved_value'] as string),
+    classification: row['classification'] as string,
+    citePath: row['cite_path'] as string,
+    citeLine: row['cite_line'] as number,
+    citeVerified: (row['cite_verified'] as number) === 1,
+    importedAt: row['imported_at'] as string,
+  };
+}
+
+// Delete every resolution row whose expr_hash is not in `liveHashes`. Returns
+// the number of rows removed.
+export function pruneStaleResolutions(
+  db: Database.Database, liveHashes: ReadonlySet<string>,
+): number {
+  const all = db.prepare('SELECT expr_hash FROM resolution').all() as
+    { expr_hash: string }[];
+  const del = db.prepare('DELETE FROM resolution WHERE expr_hash = ?');
+  let n = 0;
+  for (const r of all) {
+    if (!liveHashes.has(r.expr_hash)) { del.run(r.expr_hash); n++; }
+  }
+  return n;
+}

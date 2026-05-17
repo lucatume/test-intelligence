@@ -73,3 +73,20 @@ CREATE TABLE edge (
   PRIMARY KEY (test_id, source)
 );
 CREATE INDEX edge_source_idx ON edge(source);
+
+-- LLM-resolution pass cache. One row per (expr_hash, pass). cite_verified is
+-- 1 for a stored structural/project-constant row whose citation the importer
+-- re-read and confirmed; data-dependent-unresolvable rows are cache markers
+-- with cite_verified = 0 and empty cite fields.
+CREATE TABLE resolution (
+  expr_hash      TEXT NOT NULL,
+  pass           TEXT NOT NULL,
+  resolved_value TEXT NOT NULL,
+  classification TEXT NOT NULL,
+  cite_path      TEXT NOT NULL,
+  cite_line      INTEGER NOT NULL,
+  cite_verified  INTEGER NOT NULL,
+  imported_at    TEXT NOT NULL,
+  PRIMARY KEY (expr_hash, pass)
+);
+CREATE INDEX resolution_class_idx ON resolution(classification);

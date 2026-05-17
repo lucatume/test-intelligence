@@ -5,7 +5,7 @@ import type Database from 'better-sqlite3';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 
 export function readCurrentSchema(): string {
   return readFileSync(join(here, 'schema.sql'), 'utf8');
@@ -60,6 +60,9 @@ export function migrateToCurrent(db: Database.Database): void {
   if (current < 3) {
     migrateV2ToV3(db);
   }
+  if (current < 4) {
+    migrateV3ToV4(db);
+  }
 }
 
 function migrateV1ToV2(db: Database.Database): void {
@@ -88,6 +91,32 @@ function migrateV2ToV3(db: Database.Database): void {
     // forces a full SCAN of `test` to enforce the cascade.
     db.exec('CREATE INDEX IF NOT EXISTS test_fact_idx ON test(fact_id)');
     db.prepare('UPDATE schema_version SET version = ?').run(3);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+function migrateV3ToV4(db: Database.Database): void {
+  db.exec('BEGIN');
+  try {
+    // Additive: the LLM-resolution pass cache. No data migration.
+    db.exec(`
+      CREATE TABLE resolution (
+        expr_hash      TEXT NOT NULL,
+        pass           TEXT NOT NULL,
+        resolved_value TEXT NOT NULL,
+        classification TEXT NOT NULL,
+        cite_path      TEXT NOT NULL,
+        cite_line      INTEGER NOT NULL,
+        cite_verified  INTEGER NOT NULL,
+        imported_at    TEXT NOT NULL,
+        PRIMARY KEY (expr_hash, pass)
+      );
+      CREATE INDEX resolution_class_idx ON resolution(classification);
+    `);
+    db.prepare('UPDATE schema_version SET version = ?').run(4);
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');
