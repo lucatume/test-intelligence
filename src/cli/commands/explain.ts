@@ -78,14 +78,19 @@ export function explainCommand(args: ExplainCommandArgs): number {
           source: e.source,
           confidence: e.confidence,
           partial: e.partial !== 0,
-          evidence: (provByEdge.get(`${e.test_id}|${e.source}`) ?? []).map((p) => ({
-            factId: p.fact_id,
-            factKind: p.fact_kind,
-            filePath: p.file_path,
-            startLine: p.fact_start_line,
-            resolved: p.fact_resolved !== 0,
-            payload: tryParse(p.payload),
-          })),
+          evidence: (provByEdge.get(`${e.test_id}|${e.source}`) ?? []).map((p) => {
+            const payload = tryParse(p.payload);
+            const resolvedBy = resolvedByOf(payload);
+            return {
+              factId: p.fact_id,
+              factKind: p.fact_kind,
+              filePath: p.file_path,
+              startLine: p.fact_start_line,
+              resolved: p.fact_resolved !== 0,
+              ...(resolvedBy !== null ? { resolvedBy } : {}),
+              payload,
+            };
+          }),
         })),
       };
       args.io.stdout.write(JSON.stringify(out) + '\n');
@@ -98,8 +103,12 @@ export function explainCommand(args: ExplainCommandArgs): number {
       );
       const ev = provByEdge.get(`${e.test_id}|${e.source}`) ?? [];
       for (const p of ev) {
-        const payload = compact(tryParse(p.payload));
-        args.io.stdout.write(`    ${p.file_path}:${String(p.fact_start_line)} ${p.fact_kind} ${payload}\n`);
+        const parsed = tryParse(p.payload);
+        const resolvedBy = resolvedByOf(parsed);
+        const tag = resolvedBy !== null ? ` [resolvedBy=${resolvedBy}]` : '';
+        args.io.stdout.write(
+          `    ${p.file_path}:${String(p.fact_start_line)} ${p.fact_kind}${tag} ${compact(parsed)}\n`,
+        );
       }
     }
     return 0;
@@ -120,4 +129,15 @@ function compact(v: unknown): string {
   if (v === null || v === undefined) return '';
   if (typeof v === 'string') return v;
   return JSON.stringify(v);
+}
+
+// Surface `payload.meta.resolvedBy` (e.g. 'llm-pass') so an LLM-resolved fact
+// is distinguishable from an extractor-resolved one. Extractor facts carry no
+// `meta.resolvedBy` — the field is simply omitted for them.
+function resolvedByOf(payload: unknown): string | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const meta = (payload as Record<string, unknown>)['meta'];
+  if (typeof meta !== 'object' || meta === null) return null;
+  const rb = (meta as Record<string, unknown>)['resolvedBy'];
+  return typeof rb === 'string' ? rb : null;
 }

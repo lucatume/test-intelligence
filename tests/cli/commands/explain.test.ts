@@ -72,6 +72,49 @@ describe('explainCommand', () => {
     expect(parsed.edges[0]?.evidence[0]?.factKind).toBe('symbol-def');
   });
 
+  it('shows resolvedBy llm-pass on an LLM-resolved fact', () => {
+    const root = getTmp();
+    const s = openStore(root);
+    if (s.kind === 'err') throw new Error(s.error.message);
+    const { db, close } = s.value;
+    const fId = upsertFile(db, {
+      path: 'inc.php', language: 'php', contentHash: 'h',
+      extractedAt: 't', isTest: false, framework: null, frameworkClass: null,
+    });
+    const tFileId = upsertFile(db, {
+      path: 'tests/hook.test.php', language: 'php', contentHash: 'h',
+      extractedAt: 't', isTest: true, framework: 'phpunit', frameworkClass: 'unit',
+    });
+    const hookFact = insertFact(db, {
+      fileId: fId, kind: 'hook-fire', resolved: true, startLine: 5, endLine: 5,
+      payload: {
+        kind: 'hook-fire', hook: 'save_post', unresolved_expression: '$hook',
+        meta: { resolvedBy: 'llm-pass', resolutionHash: 'h1' },
+      },
+    });
+    const tFact = insertFact(db, {
+      fileId: tFileId, kind: 'test-def', resolved: true, startLine: 1, endLine: 1,
+      payload: { kind: 'test-def', framework: 'phpunit', testId: 'phpunit:tests/hook.test.php::t' },
+    });
+    insertTest(db, {
+      testId: 'phpunit:tests/hook.test.php::t', fileId: tFileId,
+      framework: 'phpunit', frameworkClass: 'unit', factId: tFact,
+    });
+    insertEdge(db, {
+      testId: 'phpunit:tests/hook.test.php::t', source: 'inc.php',
+      confidence: 0.56, partial: false, evidence: [], derivedAt: 't',
+      provenance: [hookFact],
+    });
+    close();
+
+    const t = makeIo();
+    const code = explainCommand({
+      projectRoot: root, io: t.io, target: 'inc.php', format: 'json',
+    });
+    expect(code).toBe(0);
+    expect(t.out).toContain('llm-pass');
+  });
+
   it('exits 0 with stderr notice when target has no edges', () => {
     const root = getTmp();
     seed(root);

@@ -20,6 +20,17 @@ QUERY
                                   [--format=args|json|ndjson] [--min-confidence=<n>] [--strict]
   ti explain <id-or-path>         Evidence trail.
 
+RESOLVE (offline LLM-resolution pass — ti never calls an LLM)
+  ti resolve export -o <bundle.json>
+                                  [--kinds=hook-fire,hook-listener] [--limit=N] [--force]
+                                  Export unresolved hook facts as a work bundle.
+  ti resolve import <resolutions.json>
+                                  Import an externally-produced, citation-bearing
+                                  resolutions file; verify each citation, apply,
+                                  re-derive. The model step that produces the file
+                                  is external — ti does not run it.
+  ti resolve status               Unresolved / cached / classification report.
+
 DEBUG / INTROSPECTION
   ti config                       Print effective merged config.
   ti build|update --timing        Append a per-phase timing breakdown.

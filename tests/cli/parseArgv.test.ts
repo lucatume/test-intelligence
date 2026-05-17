@@ -83,4 +83,26 @@ describe('parseArgv', () => {
   it('ignores positional args after the verb (deferred to dispatcher)', () => {
     expect(parseArgv(['init', '--force'])).toEqual({ kind: 'init' });
   });
+
+  it('parses resolve export with a space-separated -o flag', () => {
+    const r = parseArgv(['resolve', 'export', '--kinds=hook-fire,hook-listener',
+      '--limit=20', '-o', '/tmp/b.json']);
+    expect(r.kind).toBe('resolve');
+    if (r.kind === 'resolve' && r.sub === 'export') {
+      expect(r.out).toBe('/tmp/b.json');
+      expect(r.limit).toBe(20);
+      expect(r.kinds).toEqual(['hook-fire', 'hook-listener']);
+    }
+  });
+
+  it('parses resolve import and status sub-verbs', () => {
+    const imp = parseArgv(['resolve', 'import', 'rx.json']);
+    expect(imp).toEqual({ kind: 'resolve', sub: 'import', input: 'rx.json' });
+    const st = parseArgv(['resolve', 'status']);
+    expect(st).toEqual({ kind: 'resolve', sub: 'status' });
+  });
+
+  it('rejects an unknown resolve sub-verb', () => {
+    expect(parseArgv(['resolve', 'frobnicate']).kind).toBe('unknown-command');
+  });
 });

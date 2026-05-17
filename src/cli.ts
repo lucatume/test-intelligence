@@ -81,6 +81,21 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         target: cmd.target,
         format: cmd.format,
       });
+    case 'resolve': {
+      const { resolveCommand } = await import('./cli/commands/resolve.js');
+      if (cmd.sub === 'export') {
+        return resolveCommand({
+          sub: 'export', projectRoot: process.cwd(), io,
+          kinds: cmd.kinds, limit: cmd.limit, force: cmd.force, out: cmd.out,
+        });
+      }
+      if (cmd.sub === 'import') {
+        return resolveCommand({
+          sub: 'import', projectRoot: process.cwd(), io, input: cmd.input,
+        });
+      }
+      return resolveCommand({ sub: 'status', projectRoot: process.cwd(), io });
+    }
     case 'not-implemented':
       io.stderr.write(`ti: ${cmd.verb} is not yet implemented in this build\n`);
       return 1;

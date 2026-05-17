@@ -34,6 +34,16 @@ export type ParsedCommand =
   | { kind: 'clean'; all: boolean; force: boolean }
   | { kind: 'migrate' }
   | { kind: 'explain'; target: string; format: 'args' | 'json' }
+  | {
+      kind: 'resolve';
+      sub: 'export';
+      kinds: readonly string[];
+      limit: number | null;
+      force: boolean;
+      out: string;
+    }
+  | { kind: 'resolve'; sub: 'import'; input: string }
+  | { kind: 'resolve'; sub: 'status' }
   | { kind: 'not-implemented'; verb: string }
   | { kind: 'unknown-command'; input: string };
 
@@ -67,6 +77,7 @@ export function parseArgv(argv: readonly string[]): ParsedCommand {
     if (target === undefined) return { kind: 'unknown-command', input: 'explain (missing target)' };
     return { kind: 'explain', target, format: pickFormat(rest) };
   }
+  if (first === 'resolve') return parseResolveCmd(rest);
   if (RESERVED_VERBS.has(first)) return { kind: 'not-implemented', verb: first };
   return { kind: 'unknown-command', input: first };
 }
@@ -114,6 +125,32 @@ function parseSourcesCmd(rest: readonly string[]): ParsedCommand {
   };
 }
 
+function parseResolveCmd(rest: readonly string[]): ParsedCommand {
+  const [sub, ...flags] = rest;
+  if (sub === 'export') {
+    const kindsRaw = getFlag(flags, '--kinds');
+    const kinds = kindsRaw === null
+      ? ['hook-fire', 'hook-listener']
+      : kindsRaw.split(',').map((k) => k.trim()).filter((k) => k !== '');
+    const limitRaw = getFlag(flags, '--limit');
+    let limit: number | null = null;
+    if (limitRaw !== null) {
+      const v = Number(limitRaw);
+      if (Number.isFinite(v) && v > 0) limit = Math.floor(v);
+    }
+    const out = getValueFlag(flags, '-o') ?? getValueFlag(flags, '--out');
+    if (out === null) return { kind: 'unknown-command', input: 'resolve export (missing -o)' };
+    return { kind: 'resolve', sub: 'export', kinds, limit, force: flags.includes('--force'), out };
+  }
+  if (sub === 'import') {
+    const input = flags.find((a) => !a.startsWith('-'));
+    if (input === undefined) return { kind: 'unknown-command', input: 'resolve import (missing file)' };
+    return { kind: 'resolve', sub: 'import', input };
+  }
+  if (sub === 'status') return { kind: 'resolve', sub: 'status' };
+  return { kind: 'unknown-command', input: `resolve ${sub ?? ''}`.trim() };
+}
+
 function pickTiming(args: readonly string[]): TimingFlags {
   let emit = false;
   let topN = 0;
@@ -159,6 +196,20 @@ function pickMinConfidence(args: readonly string[]): number {
 function getFlag(args: readonly string[], key: string): string | null {
   for (const a of args) {
     if (a.startsWith(`${key}=`)) return a.slice(key.length + 1);
+  }
+  return null;
+}
+
+// `--key=value` OR the space-separated `--key value` form.
+function getValueFlag(args: readonly string[], key: string): string | null {
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === undefined) continue;
+    if (a.startsWith(`${key}=`)) return a.slice(key.length + 1);
+    if (a === key) {
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith('-')) return next;
+    }
   }
   return null;
 }
