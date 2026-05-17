@@ -17,6 +17,7 @@ config     = src/config/**
 facts      = src/facts/**
 extract    = src/extract/**
 derive     = src/derive/**
+resolve    = src/resolve/**
 query      = src/query/**          (Plan F; pre-registered)
 emit       = src/emit/**           (Plan F; pre-registered)
 discover   = src/discover/**
@@ -36,11 +37,12 @@ barrel     → barrel, config, foundation
 facts      → facts, anchors, foundation
 extract    → extract, anchors, facts, foundation, store
 derive     → derive, anchors, facts, foundation, store
+resolve    → resolve, store, anchors, facts, foundation, derive
 query      → query, store, anchors, foundation
 emit       → emit, foundation
 discover   → discover, config, foundation
 build      → build, discover, extract, derive, store, config, foundation, facts, anchors
-cli        → cli, config, store, anchors, query, emit, foundation, build, discover
+cli        → cli, config, store, anchors, query, emit, foundation, build, discover, resolve
 cli-entry  → cli, cli-entry, foundation
 ```
 
@@ -68,6 +70,7 @@ Cycles are additionally forbidden by `import/no-cycle`.
 - `extract/` — orchestration plus per-language extractors. `extract/ts/` uses the TS Compiler API in-process with synthesized `CompilerOptions` (merging `paths`/`baseUrl` from `tsconfig.json` / `jsconfig.json`). `extract/php/` runs a long-lived `php` subprocess against `vendor-php/bin/ti-php-extract.php` (nikic/php-parser) using a JSON-line protocol. `extract/declarative/` matches user-supplied + built-in (WP) call patterns against ASTs; patterns may declare an `anchor: { template, role }` to synthesize anchor keys. Built-ins: `WP_PHP_PATTERNS` (sent to the worker on startup) and `WP_JS_PATTERNS` (run through the in-process TS engine). `extract/declarative/derive-ajax-listener.ts` is a post-pass that promotes `wp_ajax_*` hook listeners to `ajax-listener` facts. `extractFile(input)` dispatches by language and returns `Result<Fact[], ExtractError>`; pass a `phpWorker` to enable PHP extraction.
 - `derive/` — pure reachability engine. `loadGraph(db)` snapshots files/facts/anchors into memory; `buildAnchorIndex(graph)` precomputes `anchor → facts` by role + `factId → links`. `traverseTest(graph, index, testFactId, ...)` performs the BFS for one test producing `Edge[]` with framework-class gating, hook stop-list, depth + time bounding, confidence combination per spec §Confidence. `derive(db, params, clock)` is the top-level orchestrator: snapshot → per-test traverse → write edges via the store helpers inside a single transaction. The caller (`build/`) passes in the resolved `params` (max depth, max millis, threshold, hook stop-list) — `derive/` cannot import from `config/`.
 - `build/` — orchestration glue. `runBuild(opts)` opens the store, acquires the lock, optionally spawns the PHP worker, iterates discovered (or user-listed) files through `extractFile`, writes facts/anchors/tests, then calls `derive`. Returns a `BuildSummary` (files/facts/tests/edges + elapsed millis). The only zone that imports `discover` + `extract` + `derive` together. CLI verbs `ti build` and `ti update` are thin wrappers around `runBuild`; `update` differs only by `onlyPaths`.
+- `resolve/` — the offline LLM-resolution pass (`ti resolve export|import|status`). `buildBundle(db, params)` exports `resolved = 0` `hook-fire` / `hook-listener` facts (keyed by the Phase-0 `payload.unresolved.exprHash`) as a `ResolveBundle`. `importResolutions(db, file, ctx)` parses an externally-produced `ResolutionsFile`, re-reads every citation to verify the claimed hook token, applies verified resolutions to the fact (`updateFactResolvedPayload` + `repointFactAnchor`, stamped `meta.resolvedBy = 'llm-pass'`), caches them in the `resolution` table, then re-runs `derive`. `resolveStatus(db)` reports unresolved/cached/stale counts. `parse.ts` is the single `unknown` boundary for both JSON contracts. `ti` never calls an LLM.
 
 ## Adding a new unit
 
