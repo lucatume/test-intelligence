@@ -224,12 +224,18 @@ function enqueueDownstream(
   const bridgeKind = bridgeKindFor(fact.kind, fact.resolved, fact.payload, options.hookStopList);
   if (bridgeKind === null) return;
 
+  // The bridge initiator was resolved by the LLM pass — attenuate every edge
+  // it produces by LLM_RESOLUTION (the resolution is a code-cited judgment,
+  // not a measured extractor anchor).
+  const llmSourced = isLlmResolved(fact.payload);
+
   const links = index.linksByFact.get(fact.id) ?? [];
   for (const link of links) {
     for (const partner of complementaryFactsForRole(index, link.anchorKey, link.role, options.maxWildcardMatchesPerAnchor)) {
       const partnerDepth = depth + 1;
-      // Attenuate: precision tier from the match, distance from BFS depth.
-      const c = evidenceConfidence(bridgeKind, partner.precision, partnerDepth, true);
+      // Attenuate: precision tier from the match, distance from BFS depth,
+      // and LLM_RESOLUTION when the initiating fact is llm-pass sourced.
+      const c = evidenceConfidence(bridgeKind, partner.precision, partnerDepth, true, llmSourced);
       // Record bridge evidence for the partner's file even when the partner is
       // already enqueued via another path. Without this, evidence kinds emitted
       // via the bridge (hook-mediated, shortcode-render, …) are lost whenever a
@@ -285,6 +291,14 @@ function enqueueEnqueueSiblings(
       arrivalPrecision: 'exact', arrivalIsBridge: false,
     });
   }
+}
+
+// True when the fact's payload carries `meta.resolvedBy === 'llm-pass'` — the
+// LLM-resolution pass filled it. Edges it initiates are LLM_RESOLUTION-priced.
+function isLlmResolved(payload: Readonly<Record<string, unknown>>): boolean {
+  const meta = payload['meta'];
+  return typeof meta === 'object' && meta !== null
+    && (meta as Record<string, unknown>)['resolvedBy'] === 'llm-pass';
 }
 
 function bridgeKindFor(

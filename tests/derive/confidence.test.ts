@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { BASE_CONFIDENCE, combineConfidence, MATCH_PRECISION, DISTANCE_DECAY, DISTANCE_FLOOR, evidenceConfidence } from '../../src/derive/confidence.js';
+import { BASE_CONFIDENCE, combineConfidence, MATCH_PRECISION, DISTANCE_DECAY, DISTANCE_FLOOR, evidenceConfidence, LLM_RESOLUTION, llmAttenuated } from '../../src/derive/confidence.js';
 
 describe('confidence', () => {
   it('combines two paths independently: c = 1 - (1-a)(1-b)', () => {
@@ -84,5 +84,32 @@ describe('attenuated combination', () => {
   it('a single broad-wildcard observation stays weak', () => {
     const one = evidenceConfidence('rest-mediated', 'wildcardBroad', 2, true);
     expect(combineConfidence([one])).toBeLessThan(0.25);
+  });
+});
+
+describe('LLM_RESOLUTION', () => {
+  it('is between wildcardPrefixed (0.6) and exact (1)', () => {
+    expect(LLM_RESOLUTION).toBeGreaterThan(0.6);
+    expect(LLM_RESOLUTION).toBeLessThan(1);
+  });
+
+  it('llmAttenuated multiplies a confidence by the factor', () => {
+    expect(llmAttenuated(0.85)).toBeCloseTo(0.85 * LLM_RESOLUTION);
+  });
+
+  it('llmAttenuated clamps into [0,1]', () => {
+    expect(llmAttenuated(2)).toBeLessThanOrEqual(1);
+    expect(llmAttenuated(-1)).toBe(0);
+  });
+
+  it('evidenceConfidence applies the factor when the contributing fact is llm-pass sourced', () => {
+    const plain = evidenceConfidence('hook-mediated', 'exact', 1, true);
+    const llm = evidenceConfidence('hook-mediated', 'exact', 1, true, true);
+    expect(llm).toBeCloseTo(plain * LLM_RESOLUTION);
+  });
+
+  it('evidenceConfidence is unchanged when not llm-pass sourced', () => {
+    expect(evidenceConfidence('hook-mediated', 'exact', 1, true, false))
+      .toBeCloseTo(evidenceConfidence('hook-mediated', 'exact', 1, true));
   });
 });

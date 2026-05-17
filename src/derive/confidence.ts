@@ -57,28 +57,49 @@ export const DISTANCE_DECAY = 0.92;
 /** Lower bound for the distance factor — a bridge never decays below this. */
 export const DISTANCE_FLOOR = 0.3;
 
+// --- LLM-resolution-pass attenuation ------------------------------------
+
+/**
+ * Attenuation for an edge whose contributing fact is tagged
+ * `meta.resolvedBy === 'llm-pass'`. An LLM resolution is a code-cited
+ * judgment, not a measured fact: priced below an exact extractor anchor (1)
+ * and above a wildcard guess (`wildcardPrefixed` 0.6). One more multiplicative
+ * factor in `evidenceConfidence`. Provisional value — benchmarked in the
+ * plan's final task.
+ */
+export const LLM_RESOLUTION = 0.7;
+
+/** Multiply a confidence by `LLM_RESOLUTION`, clamped to [0, 1]. */
+export function llmAttenuated(confidence: number): number {
+  return Math.max(0, Math.min(1, confidence * LLM_RESOLUTION));
+}
+
 /**
  * Attenuated base confidence for one piece of evidence.
  *
- * @param kind      the EdgeKind — selects BASE_CONFIDENCE.
- * @param precision match-precision tier; `exact` for structural / exact matches.
- * @param depth     BFS depth at which the partner fact was reached.
- * @param isBridge  distance decay applies to bridge kinds only. Structural
- *                  kinds (js-import, php-include, symbol-call*) pass `false`
- *                  and keep full BASE_CONFIDENCE regardless of depth — a deep
- *                  import chain is still a real dependency.
+ * @param kind       the EdgeKind — selects BASE_CONFIDENCE.
+ * @param precision  match-precision tier; `exact` for structural / exact matches.
+ * @param depth      BFS depth at which the partner fact was reached.
+ * @param isBridge   distance decay applies to bridge kinds only. Structural
+ *                   kinds (js-import, php-include, symbol-call*) pass `false`
+ *                   and keep full BASE_CONFIDENCE regardless of depth — a deep
+ *                   import chain is still a real dependency.
+ * @param llmSourced when true, the contributing fact was resolved by the
+ *                   LLM-resolution pass — multiply in `LLM_RESOLUTION`.
  */
 export function evidenceConfidence(
   kind: EdgeKind,
   precision: keyof MatchPrecision,
   depth: number,
   isBridge: boolean,
+  llmSourced = false,
 ): number {
   const base = BASE_CONFIDENCE[kind];
   const p = MATCH_PRECISION[precision];
   const distance = isBridge
     ? Math.max(DISTANCE_FLOOR, DISTANCE_DECAY ** depth)
     : 1;
-  const c = base * p * distance;
+  const llm = llmSourced ? LLM_RESOLUTION : 1;
+  const c = base * p * distance * llm;
   return Math.max(0, Math.min(1, c));
 }
