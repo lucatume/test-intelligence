@@ -1264,4 +1264,30 @@ if ( in_array( $action, $post, true ) ) {
     expect(keys).toEqual(['hook:wp_ajax_save_widget', 'hook:wp_ajax_widgets_order']);
     expect(facts.filter((f) => f.kind === 'hook-listener').every((f) => f.resolved)).toBe(true);
   });
+
+  it('unrolls the WP core admin-ajax.php registration shape', async () => {
+    const root = getTmp();
+    write(root, 'admin-ajax.php', `<?php
+$core_get = array( 'fetch_list', 'ajax_tag_search' );
+$core_post = array( 'oembed_cache' );
+$core_post = array_merge( $core_post, array( 'image_editor' ) );
+if ( ! empty( $_GET['action'] ) && in_array( $_GET['action'], $core_get, true ) ) {
+  add_action( 'wp_ajax_' . $_GET['action'], 'cb', 1 );
+}
+if ( ! empty( $_POST['action'] ) && in_array( $_POST['action'], $core_post, true ) ) {
+  add_action( 'wp_ajax_' . $_POST['action'], 'cb', 1 );
+}`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'admin-ajax.php', worker });
+    const keys = facts
+      .filter((f) => f.kind === 'hook-listener')
+      .flatMap((f) => f.anchors.map((a) => a.key))
+      .sort();
+    expect(keys).toEqual([
+      'hook:wp_ajax_ajax_tag_search',
+      'hook:wp_ajax_fetch_list',
+      'hook:wp_ajax_image_editor',
+      'hook:wp_ajax_oembed_cache',
+    ]);
+    expect(facts.filter((f) => f.kind === 'hook-listener').every((f) => f.resolved)).toBe(true);
+  });
 });
