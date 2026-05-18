@@ -1739,6 +1739,25 @@ final class Visitor extends NodeVisitorAbstract
             }
             return $out;
         }
+        if ($node instanceof Node\Scalar\Encapsed) {
+            $acc = [''];
+            foreach ($node->parts as $part) {
+                if ($part instanceof Node\Scalar\EncapsedStringPart) {
+                    $piece = [$part->value];
+                } else {
+                    $piece = $this->expandSkeleton($part);
+                }
+                if ($piece === null) return null;
+                $next = [];
+                foreach ($acc as $a) {
+                    foreach ($piece as $p) {
+                        $next[] = $a . $p;
+                    }
+                }
+                $acc = $next;
+            }
+            return $acc;
+        }
         return null;
     }
 }

@@ -1164,4 +1164,16 @@ foreach ( $events as $event ) {
     expect(keys).toEqual(['hook:wp_ajax_apply_coupon', 'hook:wp_ajax_remove_coupon']);
     expect(listeners.every((f) => f.resolved)).toBe(true);
   });
+
+  it('unrolls an interpolated (encapsed) hook name', async () => {
+    const root = getTmp();
+    write(root, 'ajax.php', `<?php
+foreach ( array( 'checkout' ) as $event ) {
+  do_action( "wp_ajax_{$event}_done" );
+}`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'ajax.php', worker });
+    const fire = facts.find((f) => f.kind === 'hook-fire');
+    expect(fire?.resolved).toBe(true);
+    expect(fire?.anchors[0]?.key).toBe('hook:wp_ajax_checkout_done');
+  });
 });
