@@ -48,6 +48,22 @@ final class Visitor extends NodeVisitorAbstract
     private array $scopeStack = [];
     /** @var list<string> Property names hit as $this->prop misses during the current arg-binding cycle. */
     private array $unresolvedThisProps = [];
+    /**
+     * Array-literal-valued local variables, keyed <scope> => <varName> =>
+     * list<string>. Populated flow-sensitively during the main walk from
+     * `$var = array(...)` assignments. Source for foreach / in_array unrolling.
+     * @var array<string, array<string, list<string>>>
+     */
+    private array $localArrays = [];
+    /**
+     * Stack of active enumeration bindings. Each frame maps the source text of
+     * an enumerated expression (a foreach value-variable, or an in_array
+     * needle) to the list of string literals it ranges over. Pushed on
+     * entering a Foreach_ / If_ node, popped on leaving it — so a loop
+     * variable reused across sibling loops never cross-contaminates.
+     * @var list<array<string, list<string>>>
+     */
+    private array $enumStack = [];
 
     /** @var array<string, true> Static PHP language built-ins. */
     private const PHP_BUILTIN_CLASSES = [
@@ -360,6 +376,18 @@ final class Visitor extends NodeVisitorAbstract
             ];
             return;
         }
+        if ($node instanceof Node\Stmt\Foreach_) {
+            $frame = [];
+            if ($node->valueVar instanceof Node\Expr\Variable && is_string($node->valueVar->name)) {
+                $values = $this->resolveArraySource($node->expr);
+                $key = $this->nodeText($node->valueVar);
+                if ($values !== null && $values !== [] && $key !== null) {
+                    $frame[$key] = $values;
+                }
+            }
+            $this->enumStack[] = $frame;
+            return;
+        }
         if ($node instanceof Node\Expr\FuncCall) {
             $name = $this->funcName($node);
             $this->tryEmitDeclarative('function-call', $node, $name, null);
@@ -432,6 +460,9 @@ final class Visitor extends NodeVisitorAbstract
         }
         if ($node instanceof Node\Stmt\ClassMethod && !empty($this->classStack)) {
             array_pop($this->scopeStack);
+        }
+        if ($node instanceof Node\Stmt\Foreach_) {
+            array_pop($this->enumStack);
         }
         if ($node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) {
             array_pop($this->scopeStack);
@@ -689,6 +720,47 @@ final class Visitor extends NodeVisitorAbstract
             if (($p['transform'] ?? null) === 'block-render') {
                 $this->emitBlockRenderFact($n, $payload, $name);
                 return;
+            }
+            // Fan-out (PHP dynamic-registration unrolling): inside an
+            // enclosing foreach loop or in_array(...) membership guard that
+            // enumerates an array literal, a string-typed bound field whose
+            // argument is built from the enumerated variable expands into one
+            // fully-resolved fact per value — instead of one {*} skeleton
+            // fact. Only the plain-anchor path fans out; transform patterns
+            // have already returned above. Guarded on a non-empty enumeration
+            // frame so call sites outside any unroll context are byte-for-byte
+            // unchanged.
+            $inEnum = false;
+            foreach ($this->enumStack as $enumFrame) {
+                if ($enumFrame !== []) { $inEnum = true; break; }
+            }
+            if ($inEnum) {
+                $fanTpl = is_array($p['anchor'] ?? null) ? ($p['anchor']['template'] ?? '') : null;
+                $fanRole = is_array($p['anchor'] ?? null) ? ($p['anchor']['role'] ?? 'subject') : 'subject';
+                foreach (($p['bind'] ?? []) as $field => $b) {
+                    if (($b['type'] ?? null) !== 'string') continue;
+                    $expanded = $this->expandSkeleton($args[$b['arg']] ?? null);
+                    if ($expanded === null || $expanded === []) continue;
+                    foreach ($expanded as $value) {
+                        $fanPayload = $payload;
+                        $fanPayload[$field] = $value;
+                        $fanAnchors = [];
+                        if ($fanTpl !== null) {
+                            $key = $this->renderAnchorKey($fanTpl, $fanPayload);
+                            if ($key !== null) {
+                                $fanAnchors[] = ['key' => $key, 'role' => $fanRole];
+                            }
+                        }
+                        $this->facts[] = [
+                            'kind' => $p['emit'],
+                            'resolved' => true,
+                            'location' => $this->loc($n),
+                            'anchors' => $fanAnchors,
+                            'payload' => $fanPayload,
+                        ];
+                    }
+                    return;
+                }
             }
             $anchors = [];
             $anchorRule = $p['anchor'] ?? null;
@@ -1563,6 +1635,89 @@ final class Visitor extends NodeVisitorAbstract
             return (string) $payload[$m[1]];
         }, $tpl);
         return $ok ? $out : null;
+    }
+
+    /** Source text of a node, sliced from $code by file position, or null. */
+    private function nodeText(?Node $node): ?string
+    {
+        if ($node === null || $this->code === '') return null;
+        $start = $node->getStartFilePos();
+        $end = $node->getEndFilePos();
+        if ($start < 0 || $end < $start) return null;
+        return substr($this->code, $start, $end - $start + 1);
+    }
+
+    /**
+     * String-literal element values of an array literal. Non-string elements
+     * are skipped, so the result is a sound subset of the runtime array.
+     *
+     * @return list<string>
+     */
+    private function arrayLiteralStrings(Node\Expr\Array_ $arr): array
+    {
+        $out = [];
+        foreach ($arr->items as $item) {
+            if (!$item instanceof Node\ArrayItem) continue;
+            if ($item->value instanceof Node\Scalar\String_) {
+                $out[] = $item->value->value;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Resolve a node to a flat list of string literals when it is a statically
+     * known array of strings (an array literal, or — later tasks — a variable
+     * bound to one, or an array_merge of such). Null when not resolvable.
+     *
+     * @return list<string>|null
+     */
+    private function resolveArraySource(?Node $node): ?array
+    {
+        if ($node === null) return null;
+        if ($node instanceof Node\Expr\Array_) {
+            return $this->arrayLiteralStrings($node);
+        }
+        return null;
+    }
+
+    /**
+     * Expand an expression to the full list of literal strings it can take
+     * when a variable in it is bound by an enclosing foreach / in_array
+     * enumeration (the $enumStack). Returns null when the node is not a clean
+     * enumerable expression — the caller then falls back to the single-value
+     * readStringSkeleton path. Never yields a {*} wildcard: an unresolvable
+     * sub-expression collapses the whole result to null.
+     *
+     * @return list<string>|null
+     */
+    private function expandSkeleton(?Node $node): ?array
+    {
+        if ($node === null) return null;
+        // An expression whose source text matches an active enumeration
+        // binding expands to that binding's value set. Innermost frame wins.
+        $text = $this->nodeText($node);
+        if ($text !== null) {
+            for ($i = count($this->enumStack) - 1; $i >= 0; $i--) {
+                if (isset($this->enumStack[$i][$text])) {
+                    return $this->enumStack[$i][$text];
+                }
+            }
+        }
+        if ($node instanceof Node\Scalar\String_) return [$node->value];
+        if ($node instanceof Node\Expr\BinaryOp\Concat) {
+            $left = $this->expandSkeleton($node->left);
+            $right = $this->expandSkeleton($node->right);
+            if ($left === null || $right === null) return null;
+            $out = [];
+            foreach ($left as $l) {
+                foreach ($right as $r) {
+                    $out[] = $l . $r;
+                }
+            }
+            return $out;
+        }
+        return null;
     }
 }
 

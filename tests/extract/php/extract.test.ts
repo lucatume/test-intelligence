@@ -1135,4 +1135,19 @@ class W { function run($h) { do_action($h); } }
 `);
     expect(afterExprEdit).not.toBe(base);
   });
+
+  // --- PHP dynamic-registration unrolling ---
+
+  it('unrolls a foreach over an inline array literal into one hook-listener per element', async () => {
+    const root = getTmp();
+    write(root, 'ajax.php', `<?php
+foreach ( array( 'add_to_cart', 'remove_from_cart' ) as $event ) {
+  add_action( 'wp_ajax_' . $event, 'cb' );
+}`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'ajax.php', worker });
+    const listeners = facts.filter((f) => f.kind === 'hook-listener');
+    const keys = listeners.flatMap((f) => f.anchors.map((a) => a.key)).sort();
+    expect(keys).toEqual(['hook:wp_ajax_add_to_cart', 'hook:wp_ajax_remove_from_cart']);
+    expect(listeners.every((f) => f.resolved)).toBe(true);
+  });
 });
