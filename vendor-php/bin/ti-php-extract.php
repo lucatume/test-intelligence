@@ -376,6 +376,13 @@ final class Visitor extends NodeVisitorAbstract
             ];
             return;
         }
+        // Record `$var = array(...)` for foreach / in_array unrolling, keyed
+        // by enclosing named scope. Flow-sensitive, last write wins. Unlike H1
+        // `localVars`, assignments at any nesting depth are recorded — a
+        // closure body's array literal must resolve for a foreach inside that
+        // same closure; the accepted cost is a closure-body reassignment
+        // shadowing a same-named enclosing-scope array. The early return ends
+        // handling of this node; the traverser still descends into the RHS.
         if ($node instanceof Node\Expr\Assign
             && $node->var instanceof Node\Expr\Variable
             && is_string($node->var->name)) {

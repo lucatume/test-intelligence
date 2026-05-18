@@ -1159,10 +1159,9 @@ foreach ( $events as $event ) {
   add_action( 'wp_ajax_' . $event, 'cb' );
 }`);
     const facts = await extractPhpFile({ projectRoot: root, relPath: 'ajax.php', worker });
-    const keys = facts
-      .filter((f) => f.kind === 'hook-listener')
-      .flatMap((f) => f.anchors.map((a) => a.key))
-      .sort();
+    const listeners = facts.filter((f) => f.kind === 'hook-listener');
+    const keys = listeners.flatMap((f) => f.anchors.map((a) => a.key)).sort();
     expect(keys).toEqual(['hook:wp_ajax_apply_coupon', 'hook:wp_ajax_remove_coupon']);
+    expect(listeners.every((f) => f.resolved)).toBe(true);
   });
 });
