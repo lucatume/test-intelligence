@@ -1262,5 +1262,6 @@ if ( in_array( $action, $post, true ) ) {
       .flatMap((f) => f.anchors.map((a) => a.key))
       .sort();
     expect(keys).toEqual(['hook:wp_ajax_save_widget', 'hook:wp_ajax_widgets_order']);
+    expect(facts.filter((f) => f.kind === 'hook-listener').every((f) => f.resolved)).toBe(true);
   });
 });

@@ -1702,8 +1702,8 @@ final class Visitor extends NodeVisitorAbstract
 
     /**
      * Resolve a node to a flat list of string literals when it is a statically
-     * known array of strings (an array literal, or — later tasks — a variable
-     * bound to one, or an array_merge of such). Null when not resolvable.
+     * known array of strings: an array literal, a variable bound to one, or an
+     * array_merge of such. Null when not resolvable.
      *
      * @return list<string>|null
      */
