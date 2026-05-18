@@ -1743,6 +1743,7 @@ final class Visitor extends NodeVisitorAbstract
             $acc = [''];
             foreach ($node->parts as $part) {
                 if ($part instanceof Node\Scalar\EncapsedStringPart) {
+                    // Literal segment — always a singleton.
                     $piece = [$part->value];
                 } else {
                     $piece = $this->expandSkeleton($part);

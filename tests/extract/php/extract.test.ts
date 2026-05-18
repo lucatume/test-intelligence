@@ -1168,12 +1168,13 @@ foreach ( $events as $event ) {
   it('unrolls an interpolated (encapsed) hook name', async () => {
     const root = getTmp();
     write(root, 'ajax.php', `<?php
-foreach ( array( 'checkout' ) as $event ) {
+foreach ( array( 'checkout', 'payment' ) as $event ) {
   do_action( "wp_ajax_{$event}_done" );
 }`);
     const facts = await extractPhpFile({ projectRoot: root, relPath: 'ajax.php', worker });
-    const fire = facts.find((f) => f.kind === 'hook-fire');
-    expect(fire?.resolved).toBe(true);
-    expect(fire?.anchors[0]?.key).toBe('hook:wp_ajax_checkout_done');
+    const fires = facts.filter((f) => f.kind === 'hook-fire');
+    const keys = fires.flatMap((f) => f.anchors.map((a) => a.key)).sort();
+    expect(keys).toEqual(['hook:wp_ajax_checkout_done', 'hook:wp_ajax_payment_done']);
+    expect(fires.every((f) => f.resolved)).toBe(true);
   });
 });
