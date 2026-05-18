@@ -376,6 +376,19 @@ final class Visitor extends NodeVisitorAbstract
             ];
             return;
         }
+        if ($node instanceof Node\Stmt\If_) {
+            $frame = [];
+            $guard = $this->findInArrayGuard($node->cond);
+            if ($guard !== null) {
+                $values = $this->resolveArraySource($guard[1]);
+                $key = $this->nodeText($guard[0]);
+                if ($values !== null && $values !== [] && $key !== null) {
+                    $frame[$key] = $values;
+                }
+            }
+            $this->enumStack[] = $frame;
+            return;
+        }
         // Record `$var = array(...)` for foreach / in_array unrolling, keyed
         // by enclosing named scope. Flow-sensitive, last write wins. Unlike H1
         // `localVars`, assignments at any nesting depth are recorded — a
@@ -478,6 +491,9 @@ final class Visitor extends NodeVisitorAbstract
             array_pop($this->scopeStack);
         }
         if ($node instanceof Node\Stmt\Foreach_) {
+            array_pop($this->enumStack);
+        }
+        if ($node instanceof Node\Stmt\If_) {
             array_pop($this->enumStack);
         }
         if ($node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) {
@@ -1758,6 +1774,35 @@ final class Visitor extends NodeVisitorAbstract
                 $acc = $next;
             }
             return $acc;
+        }
+        return null;
+    }
+
+    /**
+     * Search a condition expression for an in_array($needle, $haystack) call,
+     * descending through binary operators (&&, ||) and ! so a guard like
+     * `! empty($x) && in_array($x, $list)` is found. Returns [needleNode,
+     * haystackNode] for the first match, or null.
+     *
+     * @return array{0: Node, 1: Node}|null
+     */
+    private function findInArrayGuard(Node $cond): ?array
+    {
+        if ($cond instanceof Node\Expr\FuncCall
+            && $cond->name instanceof Node\Name
+            && strtolower($cond->name->toString()) === 'in_array') {
+            $args = $this->extractArgs($cond);
+            if (isset($args[0], $args[1])) {
+                return [$args[0], $args[1]];
+            }
+            return null;
+        }
+        if ($cond instanceof Node\Expr\BinaryOp) {
+            return $this->findInArrayGuard($cond->left)
+                ?? $this->findInArrayGuard($cond->right);
+        }
+        if ($cond instanceof Node\Expr\BooleanNot) {
+            return $this->findInArrayGuard($cond->expr);
         }
         return null;
     }

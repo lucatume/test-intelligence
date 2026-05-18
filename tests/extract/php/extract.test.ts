@@ -1214,4 +1214,20 @@ class Ti_WC_AJAX {
     expect(keys).not.toContain('hook:wc_ajax_feature_product');
     expect(facts.filter((f) => f.kind === 'hook-listener').every((f) => f.resolved)).toBe(true);
   });
+
+  it('unrolls an in_array membership guard', async () => {
+    const root = getTmp();
+    write(root, 'ajax.php', `<?php
+function ti_register( $action ) {
+  if ( in_array( $action, array( 'oembed_cache', 'image_editor' ), true ) ) {
+    add_action( 'wp_ajax_' . $action, 'cb' );
+  }
+}`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'ajax.php', worker });
+    const keys = facts
+      .filter((f) => f.kind === 'hook-listener')
+      .flatMap((f) => f.anchors.map((a) => a.key))
+      .sort();
+    expect(keys).toEqual(['hook:wp_ajax_image_editor', 'hook:wp_ajax_oembed_cache']);
+  });
 });
