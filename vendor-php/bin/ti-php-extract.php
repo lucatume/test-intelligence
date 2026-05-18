@@ -376,6 +376,15 @@ final class Visitor extends NodeVisitorAbstract
             ];
             return;
         }
+        if ($node instanceof Node\Expr\Assign
+            && $node->var instanceof Node\Expr\Variable
+            && is_string($node->var->name)) {
+            $values = $this->resolveArraySource($node->expr);
+            if ($values !== null) {
+                $this->localArrays[$this->currentScope()][$node->var->name] = $values;
+            }
+            return;
+        }
         if ($node instanceof Node\Stmt\Foreach_) {
             $frame = [];
             if ($node->valueVar instanceof Node\Expr\Variable && is_string($node->valueVar->name)) {
@@ -1680,6 +1689,9 @@ final class Visitor extends NodeVisitorAbstract
         if ($node === null) return null;
         if ($node instanceof Node\Expr\Array_) {
             return $this->arrayLiteralStrings($node);
+        }
+        if ($node instanceof Node\Expr\Variable && is_string($node->name)) {
+            return $this->localArrays[$this->currentScope()][$node->name] ?? null;
         }
         return null;
     }

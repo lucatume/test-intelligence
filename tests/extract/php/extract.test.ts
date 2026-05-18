@@ -1150,4 +1150,19 @@ foreach ( array( 'add_to_cart', 'remove_from_cart' ) as $event ) {
     expect(keys).toEqual(['hook:wp_ajax_add_to_cart', 'hook:wp_ajax_remove_from_cart']);
     expect(listeners.every((f) => f.resolved)).toBe(true);
   });
+
+  it('unrolls a foreach over an array-literal variable', async () => {
+    const root = getTmp();
+    write(root, 'ajax.php', `<?php
+$events = array( 'apply_coupon', 'remove_coupon' );
+foreach ( $events as $event ) {
+  add_action( 'wp_ajax_' . $event, 'cb' );
+}`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'ajax.php', worker });
+    const keys = facts
+      .filter((f) => f.kind === 'hook-listener')
+      .flatMap((f) => f.anchors.map((a) => a.key))
+      .sort();
+    expect(keys).toEqual(['hook:wp_ajax_apply_coupon', 'hook:wp_ajax_remove_coupon']);
+  });
 });
