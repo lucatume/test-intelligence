@@ -729,7 +729,10 @@ final class Visitor extends NodeVisitorAbstract
             // fact. Only the plain-anchor path fans out; transform patterns
             // have already returned above. Guarded on a non-empty enumeration
             // frame so call sites outside any unroll context are byte-for-byte
-            // unchanged.
+            // unchanged. Fan-out targets the FIRST expandable string-typed
+            // bind field and then returns; every WP hook pattern binds exactly
+            // one string field, so a pattern binding two would need this loop
+            // restructured.
             $inEnum = false;
             foreach ($this->enumStack as $enumFrame) {
                 if ($enumFrame !== []) { $inEnum = true; break; }
