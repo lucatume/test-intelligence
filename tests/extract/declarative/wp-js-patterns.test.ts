@@ -77,6 +77,17 @@ describe('WP_JS_PATTERNS', () => {
     expect(fire?.anchors[0]?.key).toBe('hook:the_value');
   });
 
+  it('resolves applyFilters with a same-file `as const` hook constant', () => {
+    const sf = parse(
+      'src/a.ts',
+      "const MENU_ITEMS_HOOK = 'woocommerce_navigation_menu_items' as const; applyFilters( MENU_ITEMS_HOOK, x );",
+    );
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
+    const fire = facts.find((f) => f.kind === 'hook-fire');
+    expect(fire?.resolved).toBe(true);
+    expect(fire?.anchors[0]?.key).toBe('hook:woocommerce_navigation_menu_items');
+  });
+
   it('emits hook-listener for wp.hooks.addAction (two-segment receiver)', () => {
     const sf = parse('src/a.ts', "wp.hooks.addAction('my_event', 'ns', cb);");
     const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);

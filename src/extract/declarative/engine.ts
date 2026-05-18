@@ -39,6 +39,23 @@ export function runDeclarativePatterns(
 
 type LiteralInitMap = ReadonlyMap<string, ts.Expression>;
 
+// Strips runtime-inert wrappers — `as const` / `as T`, `satisfies`, grouping
+// parentheses, the non-null `!` — to expose the underlying expression. `as
+// const` on a string constant is idiomatic modern TS; without this its
+// initializer is an `AsExpression`, not a `StringLiteral`, and the constant
+// never enters the resolution map.
+function unwrap(n: ts.Expression): ts.Expression {
+  if (
+    ts.isAsExpression(n) ||
+    ts.isSatisfiesExpression(n) ||
+    ts.isParenthesizedExpression(n) ||
+    ts.isNonNullExpression(n)
+  ) {
+    return unwrap(n.expression);
+  }
+  return n;
+}
+
 function isLiteralInitializer(n: ts.Expression): boolean {
   return (
     ts.isObjectLiteralExpression(n) ||
@@ -54,14 +71,12 @@ function isLiteralInitializer(n: ts.Expression): boolean {
 function buildLiteralInitMap(sf: ts.SourceFile): LiteralInitMap {
   const map = new Map<string, ts.Expression>();
   const visit = (n: ts.Node): void => {
-    if (
-      ts.isVariableDeclaration(n) &&
-      ts.isIdentifier(n.name) &&
-      n.initializer !== undefined &&
-      isLiteralInitializer(n.initializer)
-    ) {
-      // Last-writer-wins: a later declaration overwrites an earlier one.
-      map.set(n.name.text, n.initializer);
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer !== undefined) {
+      const init = unwrap(n.initializer);
+      if (isLiteralInitializer(init)) {
+        // Last-writer-wins: a later declaration overwrites an earlier one.
+        map.set(n.name.text, init);
+      }
     }
     ts.forEachChild(n, visit);
   };
@@ -72,11 +87,12 @@ function buildLiteralInitMap(sf: ts.SourceFile): LiteralInitMap {
 // Resolves a bare identifier to its same-file literal initializer (depth-1: if
 // the initializer is itself an identifier, it is not chased further).
 function resolveExpression(n: ts.Expression, inits: LiteralInitMap): ts.Expression {
-  if (ts.isIdentifier(n)) {
-    const init = inits.get(n.text);
+  const u = unwrap(n);
+  if (ts.isIdentifier(u)) {
+    const init = inits.get(u.text);
     if (init !== undefined && !ts.isIdentifier(init)) return init;
   }
-  return n;
+  return u;
 }
 
 function matchNode(n: ts.Node): MatchedCall | null {
@@ -275,10 +291,10 @@ function containsWildcard(v: unknown): boolean {
 
 // Folds a `+` chain over string operands into a {*}-skeleton, preserving the
 // literal segments. Returns null only when the chain has no string literal.
-function foldConcat(n: ts.Expression): string | null {
+function foldConcat(expr: ts.Expression): string | null {
+  const n = unwrap(expr);
   if (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) return n.text;
   if (ts.isTemplateExpression(n)) return templateLiteralSkeleton(n);
-  if (ts.isParenthesizedExpression(n)) return foldConcat(n.expression);
   if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.PlusToken) {
     const left = foldConcat(n.left);
     const right = foldConcat(n.right);
