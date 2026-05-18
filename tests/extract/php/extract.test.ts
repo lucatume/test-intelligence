@@ -1177,4 +1177,41 @@ foreach ( array( 'checkout', 'payment' ) as $event ) {
     expect(keys).toEqual(['hook:wp_ajax_checkout_done', 'hook:wp_ajax_payment_done']);
     expect(fires.every((f) => f.resolved)).toBe(true);
   });
+
+  it('unrolls the woocommerce class-wc-ajax.php registration shape', async () => {
+    const root = getTmp();
+    write(root, 'class-wc-ajax.php', `<?php
+class Ti_WC_AJAX {
+  public static function add_ajax_events() {
+    $nopriv = array( 'get_refreshed_fragments', 'add_to_cart' );
+    foreach ( $nopriv as $event ) {
+      add_action( 'wp_ajax_woocommerce_' . $event, array( __CLASS__, $event ) );
+      add_action( 'wp_ajax_nopriv_woocommerce_' . $event, array( __CLASS__, $event ) );
+      add_action( 'wc_ajax_' . $event, array( __CLASS__, $event ) );
+    }
+    $admin = array( 'feature_product' );
+    foreach ( $admin as $event ) {
+      add_action( 'wp_ajax_woocommerce_' . $event, array( __CLASS__, $event ) );
+    }
+  }
+}`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'class-wc-ajax.php', worker });
+    const keys = facts
+      .filter((f) => f.kind === 'hook-listener')
+      .flatMap((f) => f.anchors.map((a) => a.key))
+      .sort();
+    // nopriv block: 2 events x 3 add_action calls; admin block: 1 event x 1.
+    expect(keys).toEqual([
+      'hook:wc_ajax_add_to_cart',
+      'hook:wc_ajax_get_refreshed_fragments',
+      'hook:wp_ajax_nopriv_woocommerce_add_to_cart',
+      'hook:wp_ajax_nopriv_woocommerce_get_refreshed_fragments',
+      'hook:wp_ajax_woocommerce_add_to_cart',
+      'hook:wp_ajax_woocommerce_feature_product',
+      'hook:wp_ajax_woocommerce_get_refreshed_fragments',
+    ]);
+    // No cross-contamination between the two loops' value sets.
+    expect(keys).not.toContain('hook:wc_ajax_feature_product');
+    expect(facts.filter((f) => f.kind === 'hook-listener').every((f) => f.resolved)).toBe(true);
+  });
 });
