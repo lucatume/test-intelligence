@@ -1716,6 +1716,19 @@ final class Visitor extends NodeVisitorAbstract
         if ($node instanceof Node\Expr\Variable && is_string($node->name)) {
             return $this->localArrays[$this->currentScope()][$node->name] ?? null;
         }
+        if ($node instanceof Node\Expr\FuncCall
+            && $node->name instanceof Node\Name
+            && strtolower($node->name->toString()) === 'array_merge') {
+            $out = [];
+            foreach ($this->extractArgs($node) as $arg) {
+                $part = $this->resolveArraySource($arg);
+                if ($part === null) return null;
+                foreach ($part as $s) {
+                    $out[] = $s;
+                }
+            }
+            return $out;
+        }
         return null;
     }
 

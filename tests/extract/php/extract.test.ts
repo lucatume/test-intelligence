@@ -1247,4 +1247,20 @@ function ti_register( $action ) {
     expect(listeners[0]?.resolved).toBe(false);
     expect((listeners[0]?.payload as { hook?: string }).hook).toBe('wp_ajax_{*}');
   });
+
+  it('resolves an array_merge-built whitelist for an in_array guard', async () => {
+    const root = getTmp();
+    write(root, 'ajax.php', `<?php
+$post = array( 'save_widget' );
+$post = array_merge( $post, array( 'widgets_order' ) );
+if ( in_array( $action, $post, true ) ) {
+  add_action( 'wp_ajax_' . $action, 'cb' );
+}`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'ajax.php', worker });
+    const keys = facts
+      .filter((f) => f.kind === 'hook-listener')
+      .flatMap((f) => f.anchors.map((a) => a.key))
+      .sort();
+    expect(keys).toEqual(['hook:wp_ajax_save_widget', 'hook:wp_ajax_widgets_order']);
+  });
 });
