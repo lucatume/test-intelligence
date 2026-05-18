@@ -850,6 +850,24 @@ ti_deletemeelephant_helper();
     expect(hook?.anchors).toContainEqual({ key: 'hook:admin_print_styles-block-editor-assets', role: 'target' });
   });
 
+  it('resolves __FUNCTION__ in a concatenated hook name (method scope)', async () => {
+    const root = getTmp();
+    write(root, 'h1fn.php', "<?php class WC_Cart { function get_cart() { do_action( 'woocommerce_cart_' . __FUNCTION__ ); } }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h1fn.php', worker });
+    const hook = facts.find((f) => f.kind === 'hook-fire');
+    expect(hook?.resolved).toBe(true);
+    expect(hook?.anchors).toContainEqual({ key: 'hook:woocommerce_cart_get_cart', role: 'target' });
+  });
+
+  it('resolves __FUNCTION__ in a concatenated hook name (function scope)', async () => {
+    const root = getTmp();
+    write(root, 'h1fnf.php', "<?php function ti_fire() { do_action( 'ti_event_' . __FUNCTION__ ); }");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'h1fnf.php', worker });
+    const hook = facts.find((f) => f.kind === 'hook-fire');
+    expect(hook?.resolved).toBe(true);
+    expect(hook?.anchors).toContainEqual({ key: 'hook:ti_event_ti_fire', role: 'target' });
+  });
+
   it('resolves an add_action hook from a local-variable assignment', async () => {
     const root = getTmp();
     write(root, 'h1add.php', "<?php function ti_listen() { $h = 'wp_ajax_thing'; add_action( $h, 'cb' ); }");

@@ -1189,6 +1189,14 @@ final class Visitor extends NodeVisitorAbstract
         if ($node instanceof Node\Scalar\MagicConst\File) {
             return $this->relFile;
         }
+        if ($node instanceof Node\Scalar\MagicConst\Function_) {
+            // PHP `__FUNCTION__` is the enclosing function/method name (empty
+            // at file scope). Scope-stack entries are "name@line".
+            $scope = end($this->scopeStack);
+            if ($scope === false) return '';
+            $at = strrpos($scope, '@');
+            return $at === false ? $scope : substr($scope, 0, $at);
+        }
         if ($node instanceof Node\Expr\ConstFetch) {
             $name = $node->name->toString();
             if (isset($this->defines[$name])) return $this->defines[$name];
