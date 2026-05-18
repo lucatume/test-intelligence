@@ -1230,4 +1230,21 @@ function ti_register( $action ) {
       .sort();
     expect(keys).toEqual(['hook:wp_ajax_image_editor', 'hook:wp_ajax_oembed_cache']);
   });
+
+  it('does not unroll a negated in_array (exclusion guard)', async () => {
+    const root = getTmp();
+    write(root, 'ajax.php', `<?php
+function ti_register( $action ) {
+  if ( ! in_array( $action, array( 'oembed_cache', 'image_editor' ), true ) ) {
+    add_action( 'wp_ajax_' . $action, 'cb' );
+  }
+}`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'ajax.php', worker });
+    const listeners = facts.filter((f) => f.kind === 'hook-listener');
+    // The needle is NOT in the whitelist inside the if body — binding it would
+    // be unsound, so the hook stays an unresolved skeleton.
+    expect(listeners).toHaveLength(1);
+    expect(listeners[0]?.resolved).toBe(false);
+    expect((listeners[0]?.payload as { hook?: string }).hook).toBe('wp_ajax_{*}');
+  });
 });

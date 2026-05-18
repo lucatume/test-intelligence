@@ -1780,9 +1780,12 @@ final class Visitor extends NodeVisitorAbstract
 
     /**
      * Search a condition expression for an in_array($needle, $haystack) call,
-     * descending through binary operators (&&, ||) and ! so a guard like
-     * `! empty($x) && in_array($x, $list)` is found. Returns [needleNode,
-     * haystackNode] for the first match, or null.
+     * descending through binary operators (&&, ||) so a guard like
+     * `! empty($x) && in_array($x, $list)` is found — the `! empty(...)` side
+     * yields no match, the in_array side does. A negated in_array — an
+     * exclusion guard — is deliberately NOT matched: inside its `if` body the
+     * needle is NOT in the list, so binding the whitelist would be unsound.
+     * Returns [needleNode, haystackNode] for the first match, or null.
      *
      * @return array{0: Node, 1: Node}|null
      */
@@ -1800,9 +1803,6 @@ final class Visitor extends NodeVisitorAbstract
         if ($cond instanceof Node\Expr\BinaryOp) {
             return $this->findInArrayGuard($cond->left)
                 ?? $this->findInArrayGuard($cond->right);
-        }
-        if ($cond instanceof Node\Expr\BooleanNot) {
-            return $this->findInArrayGuard($cond->expr);
         }
         return null;
     }
