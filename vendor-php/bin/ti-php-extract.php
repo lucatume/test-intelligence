@@ -753,6 +753,10 @@ final class Visitor extends NodeVisitorAbstract
                 $this->emitBlockRenderFact($n, $payload, $name);
                 return;
             }
+            if (($p['transform'] ?? null) === 'localize-data') {
+                $this->emitLocalizeFact($n, $payload);
+                return;
+            }
             // Fan-out (PHP dynamic-registration unrolling): inside an
             // enclosing foreach loop or in_array(...) membership guard that
             // enumerates an array literal, a string-typed bound field whose
@@ -938,6 +942,40 @@ final class Visitor extends NodeVisitorAbstract
             'location' => $this->loc($n),
             'anchors' => $anchors,
             'payload' => $payload,
+        ];
+    }
+
+    /**
+     * Emit a script-localize fact. Beyond the handle (already bound into
+     * $payload), capture arg 1 (the JS object name) and arg 2 (the data
+     * array) so the JS-side localize channel can resolve `<object>.<key>`.
+     *
+     * @param array<string, mixed> $payload
+     */
+    private function emitLocalizeFact(Node $n, array $payload): void
+    {
+        $args = $this->extractArgs($n);
+        $objName = ($args[1] ?? null) instanceof Node\Scalar\String_
+            ? $args[1]->value : null;
+        $data = ($args[2] ?? null) instanceof Node\Expr\Array_
+            ? $this->readAssocStringArray($args[2]) : [];
+
+        $handle = $payload['handle'] ?? null;
+        $resolved = is_string($handle) && $handle !== '' && !str_contains($handle, '{*}');
+        $anchors = [];
+        if (is_string($handle) && $handle !== '') {
+            $anchors[] = ['key' => 'script-handle:' . $handle, 'role' => 'subject'];
+        }
+        $outPayload = ['kind' => 'script-localize', 'handle' => $handle];
+        if ($objName !== null) $outPayload['objectName'] = $objName;
+        if ($data !== []) $outPayload['data'] = $data;
+
+        $this->facts[] = [
+            'kind' => 'script-localize',
+            'resolved' => $resolved,
+            'location' => $this->loc($n),
+            'anchors' => $anchors,
+            'payload' => $outPayload,
         ];
     }
 

@@ -92,6 +92,7 @@ export const WP_PHP_PATTERNS: readonly PhpPatternWithAnchor[] = [
     bind: { handle: { arg: 0, type: 'string' } },
     emit: 'script-localize',
     anchor: { template: 'script-handle:{handle}', role: 'subject' },
+    transform: 'localize-data',
   },
   {
     match: { lang: 'php', nodeKind: 'function-call', name: 'add_shortcode' },
