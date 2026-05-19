@@ -1,6 +1,7 @@
 import ts from 'typescript';
 import { CompilerOptionsResolver } from '../extract/ts/compiler.js';
 
+// Matches forward-slash separators; ti targets macOS/Linux only.
 const EXCLUDED_RE = /(\/node_modules\/|\/vendor\/|\/dist\/|\/build\/|\.min\.|\/\.git\/)/;
 
 export interface ResolutionProgram {
@@ -18,6 +19,9 @@ export function buildResolutionProgram(
   projectRoot: string,
 ): ResolutionProgram {
   const resolver = new CompilerOptionsResolver(projectRoot);
+  // One ts.Program takes one CompilerOptions bag. The caller must pass
+  // seedAbsFiles that share a single tsconfig scope; for seeds spanning
+  // multiple nested tsconfigs, build one program per scope.
   const baseOptions = resolver.forFile(seedAbsFiles[0] ?? projectRoot);
   const options: ts.CompilerOptions = {
     ...baseOptions,
@@ -28,6 +32,10 @@ export function buildResolutionProgram(
 
   const defaultHost = ts.createCompilerHost(options);
 
+  // All three overrides are defensive: any of them may be called independently
+  // by the TypeScript compiler. getSourceFile returning undefined is what
+  // actually keeps excluded files out of the program; fileExists and readFile
+  // are belt-and-suspenders.
   const host: ts.CompilerHost = {
     ...defaultHost,
     fileExists(fileName: string): boolean {
