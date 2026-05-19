@@ -301,6 +301,11 @@ function isModulePrivateFunction(
   const sf = fn.getSourceFile();
   const visit = (n: ts.Node): void => {
     if (escapes) return;
+    // `export { go }` / `export { go as alias }` — the local target escapes.
+    if (ts.isExportSpecifier(n)) {
+      const target = checker.getExportSpecifierLocalTargetSymbol(n);
+      if (target === fnSym) { escapes = true; return; }
+    }
     if (ts.isIdentifier(n) && checker.getSymbolAtLocation(n) === fnSym) {
       const parent = n.parent;
       const isCallee = ts.isCallExpression(parent) && parent.expression === n;

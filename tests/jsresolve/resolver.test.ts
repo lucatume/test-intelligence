@@ -86,4 +86,10 @@ describe('resolveExpression', () => {
       'a.js': "export function go(c) { apiFetch(c); }\ngo({ path: '/local' });",
     }, 'a.js')).toBe(null);
   });
+
+  it('does not bind a parameter of a statement-form exported function', () => {
+    expect(resolveApiFetchArg({
+      'a.js': "function go(c) { apiFetch(c); }\ngo({ path: '/local' });\nexport { go };",
+    }, 'a.js')).toBe(null);
+  });
 });
