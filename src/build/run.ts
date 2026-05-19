@@ -30,6 +30,7 @@ import { derive } from '../derive/derive.js';
 import { resolveRestEndpoints } from './resolve-rest-endpoints.js';
 import { resolveEnqueueScripts } from './resolve-enqueue-scripts.js';
 import { resolveBlockJson } from './resolve-block-json.js';
+import { runJsResolve } from '../jsresolve/index.js';
 import { HOOK_STOP_LIST_BUILTINS, type ValidatedConfig } from '../config/parse.js';
 import type { BuildOptions, BuildSummary, BuildError, BuildTimings, SlowFile } from './types.js';
 import type { DiscoveredFile } from '../discover/types.js';
@@ -255,6 +256,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
           projectRoot: opts.projectRoot,
         });
         resolveBlockJson(db, { projectRoot: opts.projectRoot });
+        runJsResolve(db, { projectRoot: opts.projectRoot });
         db.exec('COMMIT');
       } catch (e) {
         try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
