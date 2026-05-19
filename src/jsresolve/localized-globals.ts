@@ -77,10 +77,10 @@ export function buildLocalizedGlobals(db: Database.Database): LocalizedGlobals {
       if (entries === undefined || entries.length === 0) return null;
 
       // Find the entry whose handle enqueues jsFile.
-      // Unique-name fast path: if there is only one entry and its handle has no
-      // enqueue-script facts at all (i.e. the handle is never listed in
-      // handleToFiles), fall back to returning the data unconditionally so that
-      // callers who only localize but never explicitly enqueue still get a result.
+      // Fast path: when the object is localized exactly once AND ti recorded no
+      // enqueue-script facts for that handle, there is no file→handle link to
+      // scope against, so return the data unconditionally. When the handle DOES
+      // have enqueue facts, the strict `files.has(jsFile)` check always applies.
       if (entries.length === 1 && entries[0] !== undefined) {
         const entry = entries[0];
         const files = handleToFiles.get(entry.handle);

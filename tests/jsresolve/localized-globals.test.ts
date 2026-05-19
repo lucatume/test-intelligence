@@ -6,7 +6,8 @@ import { buildLocalizedGlobals } from '../../src/jsresolve/localized-globals.js'
 
 const EPOCH = '2026-05-19T00:00:00.000Z';
 
-function seed(): Database.Database {
+function seed(opts: { enqueue?: boolean } = {}): Database.Database {
+  const enqueue = opts.enqueue ?? true;
   const db = new Database(':memory:');
   applyInitialSchema(db);
 
@@ -49,22 +50,24 @@ function seed(): Database.Database {
   insertFactAnchor(db, { factId: localizeFactId, anchorId: localizeAnchorId, role: 'subject' });
 
   // enqueue-script fact: links handle=app to js-module:assets/app.js
-  const enqueueFactId = insertFact(db, {
-    fileId: phpFileId,
-    kind: 'enqueue-script',
-    resolved: true,
-    startLine: 5,
-    endLine: 5,
-    payload: { kind: 'enqueue-script', handle: 'app' },
-  });
+  if (enqueue) {
+    const enqueueFactId = insertFact(db, {
+      fileId: phpFileId,
+      kind: 'enqueue-script',
+      resolved: true,
+      startLine: 5,
+      endLine: 5,
+      payload: { kind: 'enqueue-script', handle: 'app' },
+    });
 
-  insertFactAnchor(db, { factId: enqueueFactId, anchorId: localizeAnchorId, role: 'subject' });
+    insertFactAnchor(db, { factId: enqueueFactId, anchorId: localizeAnchorId, role: 'subject' });
 
-  const jsModuleAnchorId = upsertAnchor(db, {
-    key: 'js-module:assets/app.js',
-    type: 'js-module',
-  });
-  insertFactAnchor(db, { factId: enqueueFactId, anchorId: jsModuleAnchorId, role: 'target' });
+    const jsModuleAnchorId = upsertAnchor(db, {
+      key: 'js-module:assets/app.js',
+      type: 'js-module',
+    });
+    insertFactAnchor(db, { factId: enqueueFactId, anchorId: jsModuleAnchorId, role: 'target' });
+  }
 
   return db;
 }
@@ -78,5 +81,10 @@ describe('buildLocalizedGlobals', () => {
   it('does not resolve for a file not enqueued under that handle', () => {
     const idx = buildLocalizedGlobals(seed());
     expect(idx.lookup('wcSettings', 'assets/other.js')).toBe(null);
+  });
+
+  it('resolves unconditionally when the handle has no enqueue-script facts', () => {
+    const idx = buildLocalizedGlobals(seed({ enqueue: false }));
+    expect(idx.lookup('wcSettings', 'assets/anything.js')).toEqual({ action: 'do_thing' });
   });
 });
