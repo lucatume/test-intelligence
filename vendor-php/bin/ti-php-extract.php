@@ -1701,6 +1701,26 @@ final class Visitor extends NodeVisitorAbstract
     }
 
     /**
+     * Read a PHP associative array literal `array('k' => 'v', ...)` into a
+     * key->value map, keeping only entries whose key AND value are string
+     * literals. A non-string-literal value (int, expression, nested array) is
+     * skipped — the result is a sound subset.
+     *
+     * @return array<string, string>
+     */
+    private function readAssocStringArray(Node\Expr\Array_ $arr): array
+    {
+        $out = [];
+        foreach ($arr->items as $item) {
+            if (!$item instanceof Node\ArrayItem) continue;
+            if (!$item->key instanceof Node\Scalar\String_) continue;
+            if (!$item->value instanceof Node\Scalar\String_) continue;
+            $out[$item->key->value] = $item->value->value;
+        }
+        return $out;
+    }
+
+    /**
      * Resolve a node to a flat list of string literals when it is a statically
      * known array of strings: an array literal, a variable bound to one, or an
      * array_merge of such. Null when not resolvable.

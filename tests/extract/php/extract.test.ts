@@ -1290,4 +1290,23 @@ if ( ! empty( $_POST['action'] ) && in_array( $_POST['action'], $core_post, true
     ]);
     expect(facts.filter((f) => f.kind === 'hook-listener').every((f) => f.resolved)).toBe(true);
   });
+
+  it('captures wp_localize_script object name and string data entries', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+wp_localize_script( 'my-handle', 'myData', array(
+  'action' => 'do_thing',
+  'nonce'  => 'abc',
+  'count'  => 5,
+) );`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const loc = facts.find((f) => f.kind === 'script-localize');
+    expect(loc).toBeDefined();
+    expect((loc?.payload as { handle?: string }).handle).toBe('my-handle');
+    expect((loc?.payload as { objectName?: string }).objectName).toBe('myData');
+    expect((loc?.payload as { data?: Record<string, string> }).data).toEqual({
+      action: 'do_thing',
+      nonce: 'abc',
+    });
+  });
 });
