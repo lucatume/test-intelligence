@@ -36,7 +36,8 @@ export interface UserPattern {
     | 'ajax-action-from-url'
     | 'admin-page-slug-from-url'
     | 'admin-page-slug'
-    | 'block-render';
+    | 'block-render'
+    | 'localize-data';
 }
 
 const ALL_FACT_KINDS: readonly FactKind[] = [
