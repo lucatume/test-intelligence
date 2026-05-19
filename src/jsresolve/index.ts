@@ -6,6 +6,7 @@ import { buildResolutionProgram, type ResolutionProgram } from './program.js';
 import { resolveExpression, type ResolvedValue } from './resolver.js';
 import { buildLocalizedGlobals } from './localized-globals.js';
 import { AXIOS_METHODS as AXIOS_METHOD_NAMES } from '../extract/declarative/wp-js-patterns.js';
+import { ACTION_IN_URL } from '../extract/declarative/engine.js';
 import { type Result, ok, err } from '../result.js';
 import {
   upsertAnchor, insertFactAnchor, repointFactAnchor, updateFactResolvedPayload,
@@ -83,33 +84,50 @@ function normRestPath(raw: string): string {
   return p;
 }
 
+// Unwrap a ResolvedValue string-node or bare string to a plain string. Returns
+// null for any other shape. Used by extractRestPath and extractAjaxAction to
+// avoid repeating the same two-branch unwrap inline.
+function asString(v: ResolvedValue | string): string | null {
+  if (typeof v === 'string') return v;
+  if (v.kind === 'string') return v.value;
+  return null;
+}
+
 // Extract a string from a ResolvedValue for a rest-call-js fact.
 // Drills the `path` property of an object if needed.
 function extractRestPath(v: ResolvedValue): string | null {
-  if (v.kind === 'string') return v.value;
+  const direct = asString(v);
+  if (direct !== null) return direct;
   if (v.kind === 'object') {
     const p = v.props['path'];
-    if (typeof p === 'string') return p;
-    if (p !== undefined && typeof p === 'object' && p.kind === 'string') return p.value;
+    if (p !== undefined) return asString(p);
   }
   return null;
 }
 
 // Extract a string from a ResolvedValue for an ajax-call-js fact.
 // Handles: direct string (action arg), object with `action` prop, or object with `data.action`.
+// When the resolved string looks like a URL, ACTION_IN_URL extracts the action
+// token (e.g. "https://…?action=wc_x" → "wc_x"). A bare action token never
+// contains "?action=" / "&action=", so this only fires for URL-shaped strings.
 function extractAjaxAction(v: ResolvedValue): string | null {
-  if (v.kind === 'string') return v.value;
+  const direct = asString(v);
+  if (direct !== null) {
+    const m = ACTION_IN_URL.exec(direct);
+    return m !== null && m[1] !== undefined ? m[1] : direct;
+  }
   if (v.kind === 'object') {
     // Try `action` property directly (e.g. ajax.post(action, data))
     const action = v.props['action'];
-    if (typeof action === 'string') return action;
-    if (action !== undefined && typeof action === 'object' && action.kind === 'string') return action.value;
+    if (action !== undefined) {
+      const s = asString(action);
+      if (s !== null) return s;
+    }
     // Try `data.action` nested (e.g. jQuery.ajax({ data: { action: '...' } }))
     const data = v.props['data'];
     if (data !== undefined && typeof data !== 'string' && data.kind === 'object') {
       const nestedAction = data.props['action'];
-      if (typeof nestedAction === 'string') return nestedAction;
-      if (nestedAction !== undefined && typeof nestedAction === 'object' && nestedAction.kind === 'string') return nestedAction.value;
+      if (nestedAction !== undefined) return asString(nestedAction);
     }
   }
   return null;
@@ -193,6 +211,10 @@ export function runJsResolve(db: Database.Database, opts: JsResolveOptions): JsR
         resolvedStr = extractRestPath(v);
       } else {
         // ajax-call-js: try arg 0 first, then arg 1 (data arg in jQuery.post, $.get, etc.)
+        // This is a heuristic — it does not consult the pattern that actually matched.
+        // It works for the current WP_JS_PATTERNS set: url-first patterns ($.post, $.get)
+        // keep the action in arg 0 (URL) or arg 1 (data object); action-first patterns
+        // (wp.ajax.post) keep it in arg 0 as a bare string.
         resolvedStr = extractAjaxAction(v);
         if (resolvedStr === null) {
           const arg1 = call.arguments[1];
@@ -259,6 +281,7 @@ export function runJsResolve(db: Database.Database, opts: JsResolveOptions): JsR
 
       if (row.kind === 'rest-call-js') {
         payload['route'] = resolvedStr;
+        payload['method'] = restMethodForCall(call);
       } else {
         payload['action'] = resolvedStr;
       }

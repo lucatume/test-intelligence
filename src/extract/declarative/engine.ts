@@ -162,7 +162,7 @@ function matchesPattern(m: MatchedCall, p: UserPattern): boolean {
   }
 }
 
-const ACTION_IN_URL = /[?&]action=([A-Za-z0-9_-]+)/;
+export const ACTION_IN_URL = /[?&]action=([A-Za-z0-9_-]+)/;
 
 // Pulls an `action=<token>` substring out of a bound `url` skeleton into
 // `fields.action`. Used by patterns whose AJAX action lives in the request URL.

@@ -195,6 +195,127 @@ describe('runJsResolve', () => {
     });
   });
 
+  describe('resolves ajax-action-from-url facts interprocedurally (issue 1)', () => {
+    const getTmp = useTmpDir('ti-jsresolve-ajax-url-');
+
+    it('extracts the action token from a cross-file URL and produces ajax:<token> anchor', async () => {
+      const root = getTmp();
+
+      // Fixture: constants.js exports a URL that embeds the action in a query
+      // param; caller.js imports it and calls $.post with no data.action arg.
+      // At extraction time the URL is an unresolved identifier, so the engine
+      // cannot extract the action — the fact is unresolved with no anchor.
+      // runJsResolve resolves the URL interprocedurally and must extract the
+      // action token from it, NOT return the raw URL as the anchor key.
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(
+        join(root, 'src/constants.js'),
+        `export const AJAX_URL = 'https://example.com/wp-admin/admin-ajax.php?action=wc_x';\n`,
+      );
+      writeFileSync(
+        join(root, 'src/caller.js'),
+        `import { AJAX_URL } from './constants.js';\n$.post(AJAX_URL);\n`,
+      );
+
+      const db = freshDb();
+      const opts = synthesizeCompilerOptions(root);
+
+      const callerFacts = await extractTsFile({
+        projectRoot: root, relPath: 'src/caller.js', language: 'js',
+        framework: null, compilerOptions: opts, patterns: WP_JS_PATTERNS,
+      });
+
+      // The ajax-action-from-url pattern produces an unresolved ajax-call-js fact
+      // (no anchor, because the action couldn't be extracted from the cross-file URL).
+      const unresolvedFact = callerFacts.find(
+        (f) => f.kind === 'ajax-call-js' && !f.resolved && f.anchors.length === 0,
+      );
+      expect(unresolvedFact, 'expected an unresolved ajax-call-js fact with no anchor').toBeDefined();
+      if (unresolvedFact === undefined) return;
+
+      const factId = seedFact(db, 'src/caller.js', unresolvedFact);
+
+      const summary = runJsResolve(db, { projectRoot: root });
+      expect(summary.resolved).toBe(1);
+
+      // The resolved anchor must be ajax:wc_x, NOT a URL-shaped key.
+      const anchorKeys = (
+        db
+          .prepare(
+            `SELECT a.key FROM fact_anchor fa JOIN anchor a ON a.id = fa.anchor_id
+             WHERE fa.fact_id = ? AND fa.role = 'target'`,
+          )
+          .all(factId) as { key: string }[]
+      ).map((r) => r.key);
+      expect(anchorKeys).toEqual(['ajax:wc_x']);
+
+      // The payload action must also be the bare token.
+      const row = db
+        .prepare('SELECT resolved, payload FROM fact WHERE id = ?')
+        .get(factId) as { resolved: number; payload: string };
+      expect(row.resolved).toBe(1);
+      const payload = JSON.parse(row.payload) as Record<string, unknown>;
+      expect(payload['action']).toBe('wc_x');
+
+      db.close();
+    });
+  });
+
+  describe('resolved rest-call-js payload keeps method in sync (issue 2)', () => {
+    const getTmp = useTmpDir('ti-jsresolve-rest-method-');
+
+    it('sets payload.method to match the anchor key method on resolution', async () => {
+      const root = getTmp();
+
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(join(root, 'src/cfg.js'), `export const PRODUCTS_PATH = '/wc/v3/products';\n`);
+      writeFileSync(
+        join(root, 'src/caller.js'),
+        `import { PRODUCTS_PATH } from './cfg.js';\napiFetch({ path: PRODUCTS_PATH });\n`,
+      );
+
+      const db = freshDb();
+      const opts = synthesizeCompilerOptions(root);
+
+      const callerFacts = await extractTsFile({
+        projectRoot: root, relPath: 'src/caller.js', language: 'js',
+        framework: null, compilerOptions: opts, patterns: WP_JS_PATTERNS,
+      });
+      const callerRest = callerFacts.find((f) => f.kind === 'rest-call-js');
+      expect(callerRest).toBeDefined();
+      if (callerRest === undefined) return;
+
+      const factId = seedFact(db, 'src/caller.js', callerRest);
+
+      const summary = runJsResolve(db, { projectRoot: root });
+      expect(summary.resolved).toBe(1);
+
+      // The anchor key is rest:GET /wc/v3/products; the payload method must
+      // also be GET (not whatever the original unresolved payload said).
+      const anchorKeys = (
+        db
+          .prepare(
+            `SELECT a.key FROM fact_anchor fa JOIN anchor a ON a.id = fa.anchor_id
+             WHERE fa.fact_id = ? AND fa.role = 'target'`,
+          )
+          .all(factId) as { key: string }[]
+      ).map((r) => r.key);
+      expect(anchorKeys).toEqual(['rest:GET /wc/v3/products']);
+
+      const row = db
+        .prepare('SELECT resolved, payload FROM fact WHERE id = ?')
+        .get(factId) as { resolved: number; payload: string };
+      expect(row.resolved).toBe(1);
+      const payload = JSON.parse(row.payload) as Record<string, unknown>;
+      expect(payload['method']).toBe('GET');
+      // The method in payload matches the method token in the anchor key.
+      const anchorMethod = (anchorKeys[0] ?? '').split(':')[1]?.split(' ')[0];
+      expect(payload['method']).toBe(anchorMethod);
+
+      db.close();
+    });
+  });
+
   // Drift guard: restMethodForCall hand-re-encodes the REST method of each
   // rest-call-js pattern in WP_JS_PATTERNS. A future pattern it does not cover
   // turns this red.
