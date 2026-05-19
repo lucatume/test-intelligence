@@ -6,7 +6,7 @@ import { buildResolutionProgram } from './program.js';
 import { resolveExpression, type ResolvedValue } from './resolver.js';
 import { buildLocalizedGlobals } from './localized-globals.js';
 import {
-  upsertAnchor, repointFactAnchor, updateFactResolvedPayload,
+  upsertAnchor, insertFactAnchor, repointFactAnchor, updateFactResolvedPayload,
 } from '../store/writers.js';
 
 interface WorklistRow {
@@ -40,6 +40,43 @@ function findCallAtLine(sf: ts.SourceFile, targetLine: number): ts.CallExpressio
   };
   walk(sf);
   return found;
+}
+
+// Callee → REST method, a faithful re-encoding of the anchor templates in
+// WP_JS_PATTERNS (src/extract/declarative/wp-js-patterns.ts): `apiFetch` and
+// `fetch` both hardcode GET; `axios.<m>` carries the method in the method
+// name. The per-file extractor renders the method into the anchor template at
+// extraction time; here the old anchor is usually absent, so the method is
+// recovered from the located call's callee instead.
+const AXIOS_METHODS: ReadonlySet<string> = new Set(['get', 'post', 'put', 'patch', 'delete']);
+
+function restMethodForCall(call: ts.CallExpression): string {
+  const callee = call.expression;
+  if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name)) {
+    const recv = callee.expression;
+    const name = callee.name.text;
+    if (ts.isIdentifier(recv) && recv.text === 'axios' && AXIOS_METHODS.has(name)) {
+      return name.toUpperCase();
+    }
+  }
+  // apiFetch(...) / fetch(...) — WP_JS_PATTERNS hardcodes GET for both.
+  return 'GET';
+}
+
+// REST-path normalization mirroring `norm_rest_path` in /tmp/bakeoff/harness.py
+// and `parseRest` in src/anchors/parse.ts: strip scheme+host, drop everything
+// up to and including a `/wp-json` segment, force a leading slash, collapse
+// repeated slashes, and trim a trailing slash. This makes a caller key align
+// with the PHP `rest-endpoint` listener key (`rest:GET /<namespace><route>`).
+function normRestPath(raw: string): string {
+  let p = raw.trim();
+  p = p.replace(/^[a-z]+:\/\/[^/]+/, '');
+  const i = p.indexOf('/wp-json');
+  if (i !== -1) p = p.slice(i + '/wp-json'.length);
+  if (!p.startsWith('/')) p = '/' + p;
+  p = p.replace(/\/+/g, '/');
+  if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
+  return p;
 }
 
 // Extract a string from a ResolvedValue for a rest-call-js fact.
@@ -156,22 +193,13 @@ export function runJsResolve(db: Database.Database, opts: JsResolveOptions): JsR
       // Only resolve when the result is a clean literal with no dynamic part.
       if (resolvedStr === null || resolvedStr.includes('{*}')) continue;
 
-      // Find the placeholder anchor(s) for this fact.
-      const oldAnchors = oldAnchorStmt.all(row.id) as OldAnchorRow[];
-      if (oldAnchors.length === 0) continue;
-
-      // Build the new anchor key by replacing `{*}` in the old key.
-      // For rest-call-js the old key is e.g. `rest:GET {*}` or `rest:GET /{*}`.
-      // For ajax-call-js the old key is `ajax:{*}`.
-      const oldAnchor = oldAnchors[0];
-      if (oldAnchor === undefined) continue;
-
+      // Build the resolved anchor key matching the PHP-listener keys
+      // (`ajax-listener` → `ajax:<action>`, `rest-endpoint` → `rest:<M> <path>`).
+      // The method cannot be read from a (usually absent) old anchor — derive
+      // it from the located call's callee.
       let newKey: string;
       if (row.kind === 'rest-call-js') {
-        // Extract the method from the old key prefix (e.g. `rest:GET ` before `{*}`).
-        const prefixMatch = /^(rest:[A-Z]+ )/.exec(oldAnchor.key);
-        const prefix = prefixMatch?.[1] ?? 'rest:GET ';
-        newKey = prefix + resolvedStr;
+        newKey = `rest:${restMethodForCall(call)} ${normRestPath(resolvedStr)}`;
       } else {
         newKey = `ajax:${resolvedStr}`;
       }
@@ -181,13 +209,23 @@ export function runJsResolve(db: Database.Database, opts: JsResolveOptions): JsR
         type: row.kind === 'rest-call-js' ? 'rest' : 'ajax',
       });
 
-      for (const oa of oldAnchors) {
-        repointFactAnchor(db, {
-          factId: row.id,
-          oldAnchorId: oa.anchor_id,
-          newAnchorId,
-          role: oa.role,
-        });
+      // The fact may or may not carry a `{*}` placeholder anchor. When it does
+      // (template-literal / `+`-concat shapes) repoint it; when it does not —
+      // the dominant case for an unresolvable identifier argument, which leaves
+      // the fact with zero anchors — insert a fresh `target` link. The
+      // ajax-call-js / rest-call-js patterns all declare role 'target'.
+      const oldAnchors = oldAnchorStmt.all(row.id) as OldAnchorRow[];
+      if (oldAnchors.length > 0) {
+        for (const oa of oldAnchors) {
+          repointFactAnchor(db, {
+            factId: row.id,
+            oldAnchorId: oa.anchor_id,
+            newAnchorId,
+            role: oa.role,
+          });
+        }
+      } else {
+        insertFactAnchor(db, { factId: row.id, anchorId: newAnchorId, role: 'target' });
       }
 
       // Build the updated payload: fill the route/action field, remove unresolved block,
