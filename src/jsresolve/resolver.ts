@@ -30,6 +30,11 @@ export function resolveExpression(
 type Memo = WeakMap<ts.Node, ResolvedValue>;
 
 function resolveNode(node: ts.Expression, checker: ts.TypeChecker, ctx: ResolveCtx, memo: Memo): ResolvedValue {
+  // Depth check runs BEFORE the memo is consulted or written. This keeps the
+  // memo sound despite MAX_DEPTH making a result technically depth-dependent:
+  // a node's value is written to the memo only on a path that did not hit the
+  // cap, so a cached value is always the full, depth-independent result and is
+  // safe to reuse at any depth.
   if (ctx.depth > MAX_DEPTH) return UNRESOLVED;
 
   const cached = memo.get(node);
@@ -173,11 +178,21 @@ function resolveSymbol(
   const decls = resolved.declarations;
   if (decls === undefined || decls.length === 0) return UNRESOLVED;
 
+  // A symbol with multiple declarations resolves only when they agree: if two
+  // declarations resolve to differing values the symbol is ambiguous →
+  // unresolved (mirrors the every-return-path rule in resolveCallReturn). The
+  // common single-declaration case (a `const` / import) is unaffected.
+  let result: ResolvedValue = UNRESOLVED;
   for (const decl of decls) {
     const value = resolveDeclaration(decl, checker, ctx, memo);
-    if (value.kind !== 'unresolved') return value;
+    if (value.kind === 'unresolved') continue;
+    if (result.kind === 'unresolved') {
+      result = value;
+    } else if (!sameValue(result, value)) {
+      return UNRESOLVED;
+    }
   }
-  return UNRESOLVED;
+  return result;
 }
 
 function resolveDeclaration(
@@ -217,9 +232,11 @@ function resolveDeclaration(
   return UNRESOLVED;
 }
 
-// A parameter resolves only when the enclosing function is called from exactly
-// one place and that call passes a resolvable argument in the matching slot.
-// More than one distinct call site is ambiguous → unresolved.
+// A parameter resolves from same-file call sites only when the enclosing
+// function is *module-private* — not exported and never used as a value — so
+// the resolver can prove it has seen every call site. If exactly one such call
+// site passes a resolvable argument in the matching slot, the parameter binds
+// to it; more than one distinct call site is ambiguous → unresolved.
 function resolveParameter(
   param: ts.ParameterDeclaration,
   checker: ts.TypeChecker,
@@ -244,11 +261,59 @@ function resolveParameter(
   const fnSym = fn.name !== undefined ? checker.getSymbolAtLocation(fn.name) : undefined;
   if (fnSym === undefined) return resolveParamDefault(param, checker, ctx, memo);
 
+  // Unsound for non-module-private functions: an exported function (or one
+  // whose name escapes as a value) can be called from modules absent from the
+  // scoped program, so a same-file call-site scan is not exhaustive. Without a
+  // provably complete scan, a parameter must not bind.
+  if (!isModulePrivateFunction(fn, fnSym, checker)) {
+    return resolveParamDefault(param, checker, ctx, memo);
+  }
+
   const argNodes = collectCallArguments(fnSym, fn, index, checker);
   if (argNodes.length === 1 && argNodes[0] !== undefined) {
     return resolveNode(argNodes[0], checker, descend(ctx), memo);
   }
   return resolveParamDefault(param, checker, ctx, memo);
+}
+
+// A function is module-private when its call sites can be fully enumerated
+// within its own source file: it carries no `export` modifier (an
+// `export default` counts as exported) and its name is never referenced as a
+// value — i.e. every identifier resolving to its symbol appears only as the
+// callee of a CallExpression. If the name escapes (passed as a callback,
+// assigned, returned, …) the function may be called from anywhere and the
+// same-file scan is incomplete.
+function isModulePrivateFunction(
+  fn: ts.SignatureDeclaration,
+  fnSym: ts.Symbol,
+  checker: ts.TypeChecker,
+): boolean {
+  const modifiers = ts.canHaveModifiers(fn) ? ts.getModifiers(fn) : undefined;
+  if (modifiers !== undefined) {
+    for (const mod of modifiers) {
+      if (mod.kind === ts.SyntaxKind.ExportKeyword || mod.kind === ts.SyntaxKind.DefaultKeyword) {
+        return false;
+      }
+    }
+  }
+
+  let escapes = false;
+  const sf = fn.getSourceFile();
+  const visit = (n: ts.Node): void => {
+    if (escapes) return;
+    if (ts.isIdentifier(n) && checker.getSymbolAtLocation(n) === fnSym) {
+      const parent = n.parent;
+      const isCallee = ts.isCallExpression(parent) && parent.expression === n;
+      const isOwnName = parent === fn;
+      if (!isCallee && !isOwnName) {
+        escapes = true;
+        return;
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return !escapes;
 }
 
 function resolveParamDefault(
@@ -263,11 +328,10 @@ function resolveParamDefault(
   return UNRESOLVED;
 }
 
-// Find every call of `fn` and collect the argument expression in slot `index`.
-// Scans the source files the function symbol's references reach by walking the
-// program from the function's own source file outward is too broad; instead
-// walk the containing source file (the common interprocedural case for a
-// locally-defined helper threaded a config object).
+// Collect the argument expression in slot `index` from every call of `fn`.
+// Only the function's own source file is scanned. The caller has already
+// proven `fn` is module-private (see `isModulePrivateFunction`), so the home
+// file holds every call site and this scan is exhaustive.
 function collectCallArguments(
   fnSym: ts.Symbol,
   fn: ts.SignatureDeclaration,

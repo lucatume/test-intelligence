@@ -80,4 +80,10 @@ describe('resolveExpression', () => {
       { 'a.js': "function go(id) { apiFetch({ path: '/wc/v3/' + id }); }" }, 'a.js',
     )).toBe(null);
   });
+
+  it('does not bind a parameter of an exported function (callers may be off-program)', () => {
+    expect(resolveApiFetchArg({
+      'a.js': "export function go(c) { apiFetch(c); }\ngo({ path: '/local' });",
+    }, 'a.js')).toBe(null);
+  });
 });
