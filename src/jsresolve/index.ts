@@ -2,9 +2,11 @@ import { join } from 'node:path';
 import ts from 'typescript';
 import type Database from 'better-sqlite3';
 import type { JsResolveOptions, JsResolveSummary } from './types.js';
-import { buildResolutionProgram } from './program.js';
+import { buildResolutionProgram, type ResolutionProgram } from './program.js';
 import { resolveExpression, type ResolvedValue } from './resolver.js';
 import { buildLocalizedGlobals } from './localized-globals.js';
+import { AXIOS_METHODS as AXIOS_METHOD_NAMES } from '../extract/declarative/wp-js-patterns.js';
+import { type Result, ok, err } from '../result.js';
 import {
   upsertAnchor, insertFactAnchor, repointFactAnchor, updateFactResolvedPayload,
 } from '../store/writers.js';
@@ -47,10 +49,11 @@ function findCallAtLine(sf: ts.SourceFile, targetLine: number): ts.CallExpressio
 // `fetch` both hardcode GET; `axios.<m>` carries the method in the method
 // name. The per-file extractor renders the method into the anchor template at
 // extraction time; here the old anchor is usually absent, so the method is
-// recovered from the located call's callee instead.
-const AXIOS_METHODS: ReadonlySet<string> = new Set(['get', 'post', 'put', 'patch', 'delete']);
+// recovered from the located call's callee instead. The axios method set is
+// imported from the pattern module so a new axios method stays in sync.
+const AXIOS_METHODS: ReadonlySet<string> = new Set(AXIOS_METHOD_NAMES);
 
-function restMethodForCall(call: ts.CallExpression): string {
+export function restMethodForCall(call: ts.CallExpression): string {
   const callee = call.expression;
   if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name)) {
     const recv = callee.expression;
@@ -63,10 +66,11 @@ function restMethodForCall(call: ts.CallExpression): string {
   return 'GET';
 }
 
-// REST-path normalization mirroring `norm_rest_path` in /tmp/bakeoff/harness.py
-// and `parseRest` in src/anchors/parse.ts: strip scheme+host, drop everything
-// up to and including a `/wp-json` segment, force a leading slash, collapse
-// repeated slashes, and trim a trailing slash. This makes a caller key align
+// REST-path normalization: the caller-side counterpart of `parseRest` in
+// src/anchors/parse.ts (the authoritative `rest:` anchor-key contract). It is
+// not a copy of `parseRest` — in addition it strips a scheme+host prefix and a
+// mid-string `/wp-json` segment, then forces a leading slash, collapses
+// repeated slashes, and trims a trailing slash. This makes a caller key align
 // with the PHP `rest-endpoint` listener key (`rest:GET /<namespace><route>`).
 function normRestPath(raw: string): string {
   let p = raw.trim();
@@ -111,6 +115,21 @@ function extractAjaxAction(v: ResolvedValue): string | null {
   return null;
 }
 
+// Wrap the fallible program build in a Result. buildResolutionProgram is
+// Task-5 code with a throwing signature; a build failure (bad tsconfig,
+// unreadable seed) is an expected failure mode, not an invariant violation,
+// so it is captured here rather than propagated as a throw.
+function tryBuildResolutionProgram(
+  seedAbsFiles: readonly string[],
+  projectRoot: string,
+): Result<ResolutionProgram, Error> {
+  try {
+    return ok(buildResolutionProgram(seedAbsFiles, projectRoot));
+  } catch (e) {
+    return err(e instanceof Error ? e : new Error(String(e)));
+  }
+}
+
 // Post-extraction, pre-derive cross-file pass: resolve unresolved
 // ajax-call-js / rest-call-js caller arguments interprocedurally and flip
 // the facts to resolved.
@@ -129,16 +148,12 @@ export function runJsResolve(db: Database.Database, opts: JsResolveOptions): JsR
   // Step 2: build the ts.Program over the distinct seed files.
   const seedAbsFiles = [...new Set(worklist.map((r) => join(projectRoot, r.path)))];
 
-  let program: ts.Program;
-  let checker: ts.TypeChecker;
-  try {
-    const rp = buildResolutionProgram(seedAbsFiles, projectRoot);
-    program = rp.program;
-    checker = rp.checker;
-  } catch {
-    // Program build failed — leave all facts unresolved.
+  const programResult = tryBuildResolutionProgram(seedAbsFiles, projectRoot);
+  if (programResult.kind === 'err') {
+    // Program build failed — degrade: leave all facts unresolved.
     return { examined: worklist.length, resolved: 0 };
   }
+  const { program, checker } = programResult.value;
 
   // Step 3: build the localized-globals index.
   const localized = buildLocalizedGlobals(db);
@@ -152,6 +167,8 @@ export function runJsResolve(db: Database.Database, opts: JsResolveOptions): JsR
   let resolved = 0;
 
   for (const row of worklist) {
+    // Plan-mandated non-fatal per-fact skip: a fact that throws during
+    // resolution is skipped, not fatal — this is not a convention violation.
     try {
       const absPath = join(projectRoot, row.path);
       const sf = program.getSourceFile(absPath);

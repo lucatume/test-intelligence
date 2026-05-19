@@ -1,6 +1,6 @@
 import type { UserPattern } from './pattern.js';
 
-const AXIOS_METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
+export const AXIOS_METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
 
 const axiosPatterns: readonly UserPattern[] = AXIOS_METHODS.map((method) => ({
   match: { lang: 'ts' as const, nodeKind: 'method-call' as const, name: method, receiver: 'axios' },

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { runJsResolve } from '../../src/jsresolve/index.js';
+import ts from 'typescript';
+import { runJsResolve, restMethodForCall } from '../../src/jsresolve/index.js';
 import Database from 'better-sqlite3';
 import { applyInitialSchema } from '../../src/store/migrations.js';
 import { upsertFile, insertFact, upsertAnchor, insertFactAnchor } from '../../src/store/writers.js';
@@ -134,5 +135,97 @@ describe('runJsResolve', () => {
 
       db.close();
     });
+
+    it('repoints an existing {*}-placeholder anchor when the template folds to a literal', async () => {
+      const root = getTmp();
+
+      // Fixture: cfg.js exports a path segment; caller.js builds the apiFetch
+      // path with a template literal that references the cross-file constant.
+      // At extract time SEG is unresolved, so the engine renders the path as
+      // the skeleton `/wc/v3/{*}` and emits a `rest:GET /wc/v3/{*}` anchor.
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(join(root, 'src/cfg.js'), `export const SEG = 'products';\n`);
+      writeFileSync(
+        join(root, 'src/caller.js'),
+        `import { SEG } from './cfg.js';\napiFetch({ path: \`/wc/v3/\${SEG}\` });\n`,
+      );
+
+      const db = freshDb();
+      const opts = synthesizeCompilerOptions(root);
+
+      const callerFacts = await extractTsFile({
+        projectRoot: root, relPath: 'src/caller.js', language: 'js',
+        framework: null, compilerOptions: opts, patterns: WP_JS_PATTERNS,
+      });
+      const callerRest = callerFacts.find((f) => f.kind === 'rest-call-js');
+      expect(callerRest).toBeDefined();
+      if (callerRest === undefined) return;
+
+      // Sanity-check: the real extractor seeds a {*}-bearing anchor, so the
+      // test genuinely exercises the repoint branch (not the insert branch).
+      expect(callerRest.resolved).toBe(false);
+      expect(callerRest.anchors.map((a) => a.key)).toEqual(['rest:GET /wc/v3/{*}']);
+
+      const factId = seedFact(db, 'src/caller.js', callerRest);
+
+      const summary = runJsResolve(db, { projectRoot: root });
+      expect(summary).toEqual({ examined: 1, resolved: 1 });
+
+      // The fact is resolved.
+      const row = db
+        .prepare('SELECT resolved, payload FROM fact WHERE id = ?')
+        .get(factId) as { resolved: number; payload: string };
+      expect(row.resolved).toBe(1);
+      const payload = JSON.parse(row.payload) as Record<string, unknown>;
+      expect((payload['meta'] as Record<string, unknown>)['resolvedBy']).toBe('js-interprocedural');
+
+      // The {*} anchor link was repointed: old key gone, literal key present.
+      const anchorKeys = (
+        db
+          .prepare(
+            `SELECT a.key FROM fact_anchor fa JOIN anchor a ON a.id = fa.anchor_id
+             WHERE fa.fact_id = ?`,
+          )
+          .all(factId) as { key: string }[]
+      ).map((r) => r.key);
+      expect(anchorKeys).not.toContain('rest:GET /wc/v3/{*}');
+      expect(anchorKeys).toContain('rest:GET /wc/v3/products');
+
+      db.close();
+    });
+  });
+
+  // Drift guard: restMethodForCall hand-re-encodes the REST method of each
+  // rest-call-js pattern in WP_JS_PATTERNS. A future pattern it does not cover
+  // turns this red.
+  it('restMethodForCall covers every rest-call-js pattern in WP_JS_PATTERNS', () => {
+    const restPatterns = WP_JS_PATTERNS.filter((p) => p.emit === 'rest-call-js');
+    expect(restPatterns.length).toBeGreaterThan(0);
+
+    for (const pattern of restPatterns) {
+      // The method is the token between `rest:` and the first space in the
+      // pattern's anchor template (`rest:<METHOD> <route-binding>`).
+      const template = pattern.anchor?.template ?? '';
+      const m = /^rest:(\S+)\s/.exec(template);
+      expect(m, `pattern template "${template}" must start with rest:<METHOD> `).not.toBeNull();
+      const expectedMethod = m?.[1] ?? '';
+
+      // Build the callee the pattern matches: a bare identifier for a
+      // function-call, or `<receiver>.<name>` for a method-call.
+      const { name, receiver } = pattern.match;
+      const calleeSrc = receiver !== undefined ? `${receiver}.${name}` : name;
+      const sf = ts.createSourceFile(
+        'p.ts', `${calleeSrc}();`, ts.ScriptTarget.Latest, true,
+      );
+      const stmt = sf.statements[0];
+      expect(stmt !== undefined && ts.isExpressionStatement(stmt)
+        && ts.isCallExpression(stmt.expression)).toBe(true);
+      const call = (stmt as ts.ExpressionStatement).expression as ts.CallExpression;
+
+      expect(
+        restMethodForCall(call),
+        `restMethodForCall(${calleeSrc}) should yield ${expectedMethod}`,
+      ).toBe(expectedMethod);
+    }
   });
 });
