@@ -949,6 +949,8 @@ final class Visitor extends NodeVisitorAbstract
      * Emit a script-localize fact. Beyond the handle (already bound into
      * $payload), capture arg 1 (the JS object name) and arg 2 (the data
      * array) so the JS-side localize channel can resolve `<object>.<key>`.
+     * resolved is true only when both the handle and the object name are
+     * statically known — without the object name the fact is not actionable.
      *
      * @param array<string, mixed> $payload
      */
@@ -960,12 +962,12 @@ final class Visitor extends NodeVisitorAbstract
         $data = ($args[2] ?? null) instanceof Node\Expr\Array_
             ? $this->readAssocStringArray($args[2]) : [];
 
+        // Handle is always a string: a dynamic/missing arg 0 degrades to the
+        // {*} skeleton (mirrors the sibling emit*Fact methods), never null.
         $handle = $payload['handle'] ?? null;
-        $resolved = is_string($handle) && $handle !== '' && !str_contains($handle, '{*}');
-        $anchors = [];
-        if (is_string($handle) && $handle !== '') {
-            $anchors[] = ['key' => 'script-handle:' . $handle, 'role' => 'subject'];
-        }
+        if (!is_string($handle) || $handle === '') $handle = '{*}';
+        $resolved = !str_contains($handle, '{*}') && $objName !== null;
+
         $outPayload = ['kind' => 'script-localize', 'handle' => $handle];
         if ($objName !== null) $outPayload['objectName'] = $objName;
         if ($data !== []) $outPayload['data'] = $data;
@@ -974,7 +976,7 @@ final class Visitor extends NodeVisitorAbstract
             'kind' => 'script-localize',
             'resolved' => $resolved,
             'location' => $this->loc($n),
-            'anchors' => $anchors,
+            'anchors' => [['key' => 'script-handle:' . $handle, 'role' => 'subject']],
             'payload' => $outPayload,
         ];
     }
