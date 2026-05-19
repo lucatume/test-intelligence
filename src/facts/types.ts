@@ -139,9 +139,9 @@ export interface StoreAccessPayload {
 export interface ScriptLocalizePayload {
   readonly kind: 'script-localize';
   readonly handle: string;
-  // The JS global object the data is attached to (arg 2 of wp_localize_script).
+  /** The JS global object the data is attached to (arg 2 of wp_localize_script). */
   readonly objectName?: string;
-  // Statically known string-literal entries of the data array (arg 3).
+  /** Statically known string-literal entries of the data array (arg 3). */
   readonly data?: Readonly<Record<string, string>>;
 }
 

@@ -216,8 +216,9 @@ describe('script-localize payload', () => {
     const result = parseFact(raw);
     expect(result.kind).toBe('ok');
     if (result.kind !== 'ok') throw new Error('expected ok');
-    const p = result.value.payload as { objectName?: string; data?: Record<string, string> };
-    expect(p.objectName).toBe('myData');
-    expect(p.data?.action).toBe('do_thing');
+    const payload = result.value.payload;
+    if (payload.kind !== 'script-localize') throw new Error('expected script-localize payload');
+    expect(payload.objectName).toBe('myData');
+    expect(payload.data?.action).toBe('do_thing');
   });
 });
