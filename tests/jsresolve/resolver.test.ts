@@ -92,4 +92,24 @@ describe('resolveExpression', () => {
       'a.js': "function go(c) { apiFetch(c); }\ngo({ path: '/local' });\nexport { go };",
     }, 'a.js')).toBe(null);
   });
+
+  it('resolves a localized-global member access via ctx.localized', () => {
+    const root = getTmp();
+    writeFileSync(join(root, 'a.js'), "wp.ajax.post(wcSettings.action);");
+    const { program, checker } = buildResolutionProgram([join(root, 'a.js')], root);
+    const sf = program.getSourceFile(join(root, 'a.js'));
+    if (sf === undefined) throw new Error('source file not found');
+    let arg: ts.Expression | undefined;
+    const walk = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && n.arguments[0]) arg ??= n.arguments[0];
+      ts.forEachChild(n, walk);
+    };
+    walk(sf);
+    if (arg === undefined) throw new Error('no call expression found');
+    const v = resolveExpression(arg, checker, {
+      depth: 0, projectRoot: root,
+      localized: (obj) => (obj === 'wcSettings' ? { action: 'do_thing' } : null),
+    });
+    expect(v).toEqual({ kind: 'string', value: 'do_thing' });
+  });
 });

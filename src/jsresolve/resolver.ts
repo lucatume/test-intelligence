@@ -101,6 +101,27 @@ function computeNode(node: ts.Expression, checker: ts.TypeChecker, ctx: ResolveC
     return resolveCallReturn(node, checker, ctx, memo);
   }
 
+  // PropertyAccessExpression — check if the object is a free (undeclared)
+  // identifier and consult ctx.localized for a wp_localize_script value.
+  if (ts.isPropertyAccessExpression(node) && ctx.localized !== undefined) {
+    const obj = node.expression;
+    if (ts.isIdentifier(obj) && checker.getSymbolAtLocation(obj) === undefined) {
+      const sf = node.getSourceFile();
+      const absPath = sf.fileName;
+      const rel = absPath.startsWith(ctx.projectRoot + '/')
+        ? absPath.slice(ctx.projectRoot.length + 1)
+        : absPath;
+      const data = ctx.localized(obj.text, rel);
+      if (data !== null) {
+        const propName = node.name.text;
+        const strVal = data[propName];
+        if (strVal !== undefined) {
+          return { kind: 'string', value: strVal };
+        }
+      }
+    }
+  }
+
   return UNRESOLVED;
 }
 
