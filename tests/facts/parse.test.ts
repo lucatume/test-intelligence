@@ -198,3 +198,26 @@ describe('unresolved block', () => {
     expect(r.kind).toBe('ok');
   });
 });
+
+describe('script-localize payload', () => {
+  it('parses a script-localize fact carrying objectName and data', () => {
+    const raw = {
+      kind: 'script-localize',
+      resolved: true,
+      location: { file: 'plugin.php', startLine: 1, endLine: 1 },
+      anchors: [{ key: 'script-handle:my-handle', role: 'subject' }],
+      payload: {
+        kind: 'script-localize',
+        handle: 'my-handle',
+        objectName: 'myData',
+        data: { action: 'do_thing', nonce_field: 'x' },
+      },
+    };
+    const result = parseFact(raw);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') throw new Error('expected ok');
+    const p = result.value.payload as { objectName?: string; data?: Record<string, string> };
+    expect(p.objectName).toBe('myData');
+    expect(p.data?.action).toBe('do_thing');
+  });
+});
