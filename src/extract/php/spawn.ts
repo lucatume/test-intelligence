@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { resolve } from 'node:path';
 import { err, ok, type Result } from '../../result.js';
+import type { WpPatternWrapper } from '../../types.js';
 import { Protocol } from './protocol.js';
 
 export interface PhpWorker {
@@ -21,6 +22,7 @@ export interface SpawnError {
 export interface SpawnOptions {
   readonly repoRoot: string;
   readonly php?: string;
+  readonly wpPatternWrappers?: readonly WpPatternWrapper[];
 }
 
 export function hasPhpAvailable(): boolean {
@@ -44,13 +46,19 @@ export function startPhpWorker(opts: SpawnOptions): Result<PhpWorker, SpawnError
   }
   const proto = new Protocol(child);
 
+  const configWrappers = opts.wpPatternWrappers ?? [];
+
   const workerApi: PhpWorker = {
     async ping(): Promise<boolean> {
       const r = await proto.request({ op: 'ping' });
       return (r as { op?: string }).op === 'pong';
     },
     async registerPatterns(patterns): Promise<number> {
-      const r = await proto.request({ op: 'register-patterns', patterns });
+      const r = await proto.request({
+        op: 'register-patterns',
+        patterns,
+        ...(configWrappers.length > 0 ? { wpPatternWrappers: configWrappers } : {}),
+      });
       return (r as { count?: number }).count ?? 0;
     },
     async extract(absFile, phpUnitBaseClasses, relFile): Promise<unknown> {

@@ -83,8 +83,9 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       const setupStart = opts.clock.nowMillis();
       const repoRoot = opts.repoRoot ?? resolveRepoRoot();
       const phpWorkers = resolvePhpWorkers(opts.config.concurrency.phpWorkers);
+      const wpPatternWrappers = opts.config.wpPatternWrappers;
       if (mayHavePhp(opts) && hasPhpAvailable()) {
-        const wRes = startPhpWorkerPool({ repoRoot, size: phpWorkers });
+        const wRes = startPhpWorkerPool({ repoRoot, size: phpWorkers, wpPatternWrappers });
         if (wRes.kind === 'ok') {
           worker = wRes.value;
           await worker.registerPatterns(WP_PHP_PATTERNS);

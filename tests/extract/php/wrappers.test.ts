@@ -6,6 +6,7 @@ import { startPhpWorker, hasPhpAvailable, type PhpWorker } from '../../../src/ex
 import { extractPhpFile, flushDeferredPhpFacts } from '../../../src/extract/php/extract.js';
 import { WP_PHP_PATTERNS } from '../../../src/extract/declarative/wp-php-patterns.js';
 import { useTmpDir } from '../../helpers/tmpDir.js';
+import type { WpPatternWrapper } from '../../../src/types.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
@@ -213,6 +214,34 @@ register_my_route( '/items', array( 'methods' => 'DELETE' ) );
     const rest = facts.filter((f) => f.kind === 'rest-endpoint');
     expect(rest).toHaveLength(1);
     expect(rest[0]?.anchors[0]?.key).toBe('rest:DELETE /my-plugin/v1/items');
+  });
+
+  it('uses a user-configured wrapper before any file defines one', async () => {
+    const userWrapper: WpPatternWrapper = {
+      name: 'my_external_wrapper',
+      wraps: 'register_rest_route',
+      argSpecs: [
+        { kind: 'fixed', value: 'external/v1' },
+        { kind: 'param', wrapperParamIdx: 0 },
+        { kind: 'fixed', value: { methods: 'POST' } },
+      ],
+    };
+    const startRes = startPhpWorker({ repoRoot, wpPatternWrappers: [userWrapper] });
+    if (startRes.kind !== 'ok') throw new Error(startRes.error.message);
+    const localWorker = startRes.value;
+    try {
+      await localWorker.registerPatterns(WP_PHP_PATTERNS);
+      const root = getTmp();
+      write(root, 'caller.php', "<?php my_external_wrapper( '/items' );");
+      const facts = await extractPhpFile({ projectRoot: root, relPath: 'caller.php', worker: localWorker });
+      const finalFacts = await localWorker.flushDeferred();
+      const all = [...facts, ...(finalFacts as { facts?: { kind: string; anchors: { key: string }[] }[] }).facts ?? []];
+      const rest = all.filter((f) => (f as { kind: string }).kind === 'rest-endpoint');
+      expect(rest).toHaveLength(1);
+      expect((rest[0] as { anchors: { key: string }[] }).anchors[0]?.key).toBe('rest:POST /external/v1/items');
+    } finally {
+      await localWorker.shutdown();
+    }
   });
 
   it('flows WP_REST_Server::EDITABLE through the merged options to multi-fact fan-out', async () => {

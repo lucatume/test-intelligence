@@ -1498,6 +1498,24 @@ final class Visitor extends NodeVisitorAbstract
     }
 
     /**
+     * Return the current wrapperIndex (for reset-state preservation).
+     * @return array<string, list<array<string, mixed>>>
+     */
+    public function getWrapperIndex(): array
+    {
+        return $this->wrapperIndex;
+    }
+
+    /**
+     * Directly set the wrapperIndex (used to restore config-source entries after reset-state).
+     * @param array<string, list<array<string, mixed>>> $index
+     */
+    public function setWrapperIndex(array $index): void
+    {
+        $this->wrapperIndex = $index;
+    }
+
+    /**
      * Reset all per-file state. Does NOT reset $wrapperIndex, $deferredWrapperCalls,
      * or $patternCallees — those persist across files for cross-file synthesis.
      */
@@ -1839,7 +1857,9 @@ final class Visitor extends NodeVisitorAbstract
                     'wraps'        => $wrappedName,
                     'defFile'      => $this->file,
                     'defStartLine' => $stmt->getStartLine(),
+                    'defEndLine'   => $stmt->getEndLine(),
                     'argSpecs'     => $argSpecs,
+                    'source'       => 'auto',
                 ];
                 $scopeKey = $name . '@' . ($stmt->getStartLine() ?: 0);
                 $this->wrapperScopes[$scopeKey] = true;
@@ -2265,6 +2285,70 @@ final class Visitor extends NodeVisitorAbstract
     }
 
     /**
+     * Seed the wrapperIndex from user-configured wrapper definitions (source='config').
+     * The protocol uses json_decode(..., true) so wrappers arrive as assoc arrays.
+     * Existing config-source entries for the same wrapper name are replaced so that
+     * calling this method multiple times (e.g. after reset-state) is idempotent.
+     *
+     * @param list<mixed> $wrappers  Raw JSON-decoded wrapper arrays from the protocol.
+     */
+    public function seedConfigWrappers(array $wrappers): void
+    {
+        foreach ($wrappers as $w) {
+            if (!is_array($w)) continue;
+            $name = $w['name'] ?? null;
+            if (!is_string($name) || $name === '') continue;
+            $wraps = $w['wraps'] ?? null;
+            if (!is_string($wraps) || $wraps === '') continue;
+            $argSpecs = $this->argSpecsFromJson($w['argSpecs'] ?? []);
+            // Remove existing config-source entries for this wrapper name before re-adding,
+            // so repeated calls (e.g. registerPatterns called after reset-state) stay idempotent.
+            if (isset($this->wrapperIndex[$name])) {
+                $this->wrapperIndex[$name] = array_values(
+                    array_filter($this->wrapperIndex[$name], fn($e) => ($e['source'] ?? 'auto') !== 'config')
+                );
+            }
+            $this->wrapperIndex[$name][] = [
+                'wraps'        => $wraps,
+                'defFile'      => '<config>',
+                'defStartLine' => 0,
+                'defEndLine'   => 0,
+                'argSpecs'     => $argSpecs,
+                'source'       => 'config',
+            ];
+        }
+    }
+
+    /**
+     * Convert JSON-decoded argSpecs (assoc arrays from json_decode(..., true)) to
+     * the internal PHP array format.
+     *
+     * @param mixed $specs
+     * @return list<array<string, mixed>>
+     */
+    private function argSpecsFromJson(mixed $specs): array
+    {
+        if (!is_array($specs)) return [];
+        $out = [];
+        foreach ($specs as $s) {
+            if (!is_array($s)) continue;
+            $kind = $s['kind'] ?? null;
+            if ($kind === 'fixed') {
+                $value = $s['value'] ?? null;
+                $out[] = ['kind' => 'fixed', 'value' => $value];
+            } elseif ($kind === 'param') {
+                $out[] = ['kind' => 'param', 'wrapperParamIdx' => (int)($s['wrapperParamIdx'] ?? 0)];
+            } elseif ($kind === 'merge') {
+                $defaults = is_array($s['defaults'] ?? null) ? $s['defaults'] : [];
+                $out[] = ['kind' => 'merge', 'defaults' => $defaults, 'callerParamIdx' => (int)($s['callerParamIdx'] ?? 0)];
+            } elseif ($kind === 'unresolved') {
+                $out[] = ['kind' => 'unresolved'];
+            }
+        }
+        return $out;
+    }
+
+    /**
      * Replay deferred wrapper calls against the current (now-complete) wrapper index.
      * Returns the facts synthesized during this replay. Calls whose callee is still
      * absent from the index remain in $deferredWrapperCalls for a subsequent flush.
@@ -2491,6 +2575,9 @@ while (($line = fgets($stdin)) !== false) {
     if ($op === 'shutdown') exit(0);
     if ($op === 'register-patterns') {
         Patterns::$entries = $req['patterns'] ?? [];
+        if (isset($req['wpPatternWrappers']) && is_array($req['wpPatternWrappers'])) {
+            $visitor->seedConfigWrappers($req['wpPatternWrappers']);
+        }
         emit(['op' => 'registered', 'count' => count(Patterns::$entries)]);
         continue;
     }
@@ -2540,7 +2627,16 @@ while (($line = fgets($stdin)) !== false) {
         continue;
     }
     if ($op === 'reset-state') {
+        // Preserve config-source wrappers across reset; drop auto-source ones.
+        $keptWrappers = [];
+        foreach ($visitor->getWrapperIndex() as $name => $entries) {
+            $configEntries = array_values(array_filter($entries, fn($e) => ($e['source'] ?? 'auto') === 'config'));
+            if ($configEntries !== []) $keptWrappers[$name] = $configEntries;
+        }
         $visitor = new Visitor('', null, '');
+        if ($keptWrappers !== []) {
+            $visitor->setWrapperIndex($keptWrappers);
+        }
         emit(['op' => 'reset-ok']);
         continue;
     }
