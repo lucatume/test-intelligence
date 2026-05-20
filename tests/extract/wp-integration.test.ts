@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +27,12 @@ describe.skipIf(!hasPhpAvailable())('WP integration: hooks/REST/AJAX/scripts + J
     const r = startPhpWorker({ repoRoot });
     if (r.kind !== 'ok') throw new Error(r.error.message);
     worker = r.value;
+    await worker.registerPatterns(WP_PHP_PATTERNS);
+  });
+  beforeEach(async () => {
+    // Reset cross-file wrapper state between tests so accumulated wrapperIndex
+    // entries from prior tests don't cause duplicate or missing synthesis.
+    await worker.resetState();
     await worker.registerPatterns(WP_PHP_PATTERNS);
   });
   afterAll(async () => { await worker.shutdown(); });

@@ -473,7 +473,6 @@ final class Visitor extends NodeVisitorAbstract
                     'callee'    => $name,
                     'argNodes'  => $callerArgs,
                     'file'      => $this->file,
-                    'relFile'   => $this->relFile,
                     'startLine' => $node->getStartLine(),
                     'endLine'   => $node->getEndLine(),
                     'callNode'  => $node,
@@ -2141,11 +2140,9 @@ final class Visitor extends NodeVisitorAbstract
                 $remaining[] = $stub;
                 continue;
             }
-            // Temporarily swap per-file context so location stamps are correct.
+            // Temporarily swap the absolute file path so location stamps are correct.
             $savedFile = $this->file;
-            $savedRelFile = $this->relFile;
             $this->file = $stub['file'];
-            $this->relFile = $stub['relFile'];
             $countBefore = count($this->facts);
             $this->synthesizeWrappedCall($stub['callee'], $stub['argNodes'], $stub['callNode']);
             // Collect the facts that were just appended.
@@ -2153,7 +2150,6 @@ final class Visitor extends NodeVisitorAbstract
                 $newFacts[] = $this->facts[$i];
             }
             $this->file = $savedFile;
-            $this->relFile = $savedRelFile;
         }
         $this->deferredWrapperCalls = $remaining;
         return $newFacts;

@@ -448,15 +448,16 @@ function toAsyncIterator<T>(src: AsyncIterable<T> | Iterable<T>): AsyncIterator<
   return wrapped;
 }
 
-// Resolve the PHP worker pool size. Default: cpus-2 clamped to [1,8] — most
-// developer laptops have 8-12 cores, leaving headroom for the main thread and
-// the OS. 0 / negative is treated as 1 so the single-worker fallback is always
-// available.
-function resolvePhpWorkers(configured: number | undefined): number {
-  if (configured === undefined) {
-    return Math.min(Math.max(cpus().length - 2, 1), 8);
-  }
-  return Math.max(configured, 1);
+// Resolve the PHP worker pool size.
+// MUST remain 1: $wrapperIndex and $deferredWrapperCalls are per-worker
+// state. With N>1 workers, a wrapper-def file and its call sites can land on
+// different workers; neither worker can synthesize the cross-file fact and
+// deferred stubs are silently dropped. TS files still process concurrently
+// via the lane loop, so mixed TS/PHP projects retain parallelism.
+// The configured value is ignored; lift this cap only after the wrapper index
+// is shared across workers.
+function resolvePhpWorkers(_configured: number | undefined): number {
+  return 1;
 }
 
 // Resolve the derive worker_threads pool size. Default: cpus-2 clamped to
