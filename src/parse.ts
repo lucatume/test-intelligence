@@ -234,3 +234,19 @@ export function literal<const L extends string>(value: L): Schema<L> {
 // Extract the output type of a Schema.
 export type Infer<S> = S extends Schema<infer T> ? T : never;
 
+// union: tries each schema in order and returns the first that succeeds.
+// All schemas must produce the same output type T.
+export function union<T>(schemas: readonly Schema<T>[], typeName_: string): Schema<T> {
+  return {
+    parse(input) {
+      const allErrors: ValidationError[] = [];
+      for (const s of schemas) {
+        const r = s.parse(input);
+        if (r.kind === 'ok') return r;
+        allErrors.push(...r.error);
+      }
+      return err([{ path: [], message: `expected ${typeName_}` }]);
+    },
+  };
+}
+

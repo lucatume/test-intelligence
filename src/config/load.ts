@@ -15,6 +15,7 @@ const CONFIG_KEYS = new Set([
   'ignore',
   'vendor',
   'allowSymlinkTargets',
+  'wpPatternWrappers',
 ]);
 
 function hasNoDefaultExport(mod: unknown): boolean {

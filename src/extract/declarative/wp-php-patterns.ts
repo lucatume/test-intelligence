@@ -1,4 +1,7 @@
 import type { UserPattern } from './pattern.js';
+import { WP_PHP_PATTERN_NAMES } from '../../types.js';
+
+export { WP_PHP_PATTERN_NAMES };
 
 // Anchor templates are interpolated server-side (PHP worker). Field names in
 // {curlies} reference payload fields produced by the binding step.

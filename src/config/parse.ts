@@ -1,6 +1,8 @@
 import * as P from '../parse.js';
-import type { ParseResult } from '../parse.js';
-import { ok } from '../result.js';
+import type { ParseResult, ValidationError } from '../parse.js';
+import { ok, err } from '../result.js';
+import type { ArgSpec, WpPatternWrapper } from '../types.js';
+import { WP_PHP_PATTERN_NAMES } from '../types.js';
 
 export type FrameworkClass = 'unit' | 'e2e';
 
@@ -92,6 +94,7 @@ export interface ValidatedConfig {
   readonly ignoreDefaults: IgnoreDefaultsConfig;
   readonly vendor: readonly string[];
   readonly allowSymlinkTargets: readonly string[];
+  readonly wpPatternWrappers: readonly WpPatternWrapper[];
 }
 
 // UserConfig is the recursively-relaxed shape that users write — defaults fill in ValidatedConfig.
@@ -109,6 +112,7 @@ export type UserConfig = Partial<{
   ignoreDefaults: Partial<IgnoreDefaultsConfig>;
   vendor: readonly string[];
   allowSymlinkTargets: readonly string[];
+  wpPatternWrappers: readonly WpPatternWrapper[];
 }>;
 
 const DEFAULT_PHPUNIT_BASE_CLASSES: readonly string[] = ['PHPUnit\\Framework\\TestCase'];
@@ -339,6 +343,94 @@ const ignoreDefaultsSchema = P.object(
   { strict: true },
 );
 
+// ArgSpec discriminated-union schema. Each variant switches on `kind`.
+const argSpecSchema: P.Schema<ArgSpec> = {
+  parse(input) {
+    if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+      return err([{ path: [], message: `expected object, got ${input === null ? 'null' : Array.isArray(input) ? 'array' : typeof input}` }]);
+    }
+    const obj = input as Record<string, unknown>;
+    const kind = obj['kind'];
+    switch (kind) {
+      case 'fixed': {
+        if (!Object.prototype.hasOwnProperty.call(obj, 'value')) {
+          return err([{ path: ['value'], message: 'missing required field' }]);
+        }
+        return ok({ kind: 'fixed' as const, value: obj['value'] as ArgSpec & { kind: 'fixed' } extends { value: infer V } ? V : never });
+      }
+      case 'param': {
+        const idx = obj['wrapperParamIdx'];
+        if (typeof idx !== 'number') {
+          return err([{ path: ['wrapperParamIdx'], message: 'expected number' }]);
+        }
+        return ok({ kind: 'param' as const, wrapperParamIdx: idx });
+      }
+      case 'merge': {
+        const defaults = obj['defaults'];
+        if (defaults === null || typeof defaults !== 'object' || Array.isArray(defaults)) {
+          return err([{ path: ['defaults'], message: 'expected object' }]);
+        }
+        const callerIdx = obj['callerParamIdx'];
+        if (typeof callerIdx !== 'number') {
+          return err([{ path: ['callerParamIdx'], message: 'expected number' }]);
+        }
+        return ok({ kind: 'merge' as const, defaults: defaults as Readonly<Record<string, unknown>>, callerParamIdx: callerIdx });
+      }
+      case 'unresolved': {
+        return ok({ kind: 'unresolved' as const });
+      }
+      default: {
+        const render = typeof kind === 'string' ? `"${kind}"` : String(kind);
+        return err([{ path: ['kind'], message: `expected one of [fixed, param, merge, unresolved], got ${render}` }]);
+      }
+    }
+  },
+};
+
+const wpPatternWrapperSchema: P.Schema<WpPatternWrapper> = {
+  parse(input) {
+    if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+      return err([{ path: [], message: `expected object, got ${input === null ? 'null' : Array.isArray(input) ? 'array' : typeof input}` }]);
+    }
+    const obj = input as Record<string, unknown>;
+    const errors: ValidationError[] = [];
+
+    const name = obj['name'];
+    if (typeof name !== 'string') {
+      errors.push({ path: ['name'], message: 'expected string' });
+    }
+    const wraps = obj['wraps'];
+    if (typeof wraps !== 'string') {
+      errors.push({ path: ['wraps'], message: 'expected string' });
+    } else if (!WP_PHP_PATTERN_NAMES.has(wraps)) {
+      errors.push({ path: ['wraps'], message: `"${wraps}" is not a known WP PHP pattern name` });
+    }
+    const rawArgSpecs = obj['argSpecs'];
+    if (!Array.isArray(rawArgSpecs)) {
+      errors.push({ path: ['argSpecs'], message: 'expected array' });
+    }
+    if (errors.length) return err(errors);
+
+    const argSpecs: ArgSpec[] = [];
+    const specsArray = rawArgSpecs as unknown[];
+    for (let i = 0; i < specsArray.length; i++) {
+      const r = argSpecSchema.parse(specsArray[i]);
+      if (r.kind === 'err') {
+        errors.push(...r.error.map((e) => ({ path: ['argSpecs', i, ...e.path] as (string | number)[], message: e.message })));
+      } else {
+        argSpecs.push(r.value);
+      }
+    }
+    if (errors.length) return err(errors);
+
+    return ok({
+      name: name as string,
+      wraps: wraps as string,
+      argSpecs,
+    });
+  },
+};
+
 const rootSchema = P.object(
   {
     tests: P.optional(testsSchema),
@@ -352,6 +444,7 @@ const rootSchema = P.object(
     ignoreDefaults: P.optional(ignoreDefaultsSchema),
     vendor: P.optional(P.array(P.string)),
     allowSymlinkTargets: P.optional(P.array(P.string)),
+    wpPatternWrappers: P.optional(P.array(wpPatternWrapperSchema)),
   },
   { strict: true },
 );
@@ -426,6 +519,7 @@ export function parseConfig(raw: unknown): ParseResult<ValidatedConfig> {
     ignoreDefaults: resolveIgnoreDefaults(r.ignoreDefaults),
     vendor: r.vendor ?? DEFAULT_VENDOR,
     allowSymlinkTargets: r.allowSymlinkTargets ?? [],
+    wpPatternWrappers: r.wpPatternWrappers ?? [],
   };
   return ok(value);
 }

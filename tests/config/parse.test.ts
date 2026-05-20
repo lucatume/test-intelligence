@@ -67,6 +67,56 @@ describe('parseConfig — build.outputDirs', () => {
   });
 });
 
+describe('parseConfig — wpPatternWrappers', () => {
+  it('parses a valid wpPatternWrappers entry', () => {
+    const input = {
+      wpPatternWrappers: [
+        {
+          name: 'register_my_route',
+          wraps: 'register_rest_route',
+          argSpecs: [
+            { kind: 'fixed', value: 'my-plugin/v1' },
+            { kind: 'param', wrapperParamIdx: 0 },
+            { kind: 'merge', defaults: { methods: 'POST' }, callerParamIdx: 1 },
+          ],
+        },
+      ],
+    };
+    const result = parseConfig(input);
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.wpPatternWrappers).toHaveLength(1);
+    expect(result.value.wpPatternWrappers[0]?.argSpecs).toHaveLength(3);
+  });
+
+  it('rejects an argSpec with unknown kind', () => {
+    const input = {
+      wpPatternWrappers: [
+        { name: 'x', wraps: 'register_rest_route', argSpecs: [{ kind: 'nope' }] },
+      ],
+    };
+    const result = parseConfig(input);
+    expect(result.kind).toBe('err');
+  });
+
+  it('rejects wraps not in WP_PHP_PATTERNS', () => {
+    const input = {
+      wpPatternWrappers: [
+        { name: 'x', wraps: 'register_made_up_function', argSpecs: [] },
+      ],
+    };
+    const result = parseConfig(input);
+    expect(result.kind).toBe('err');
+  });
+
+  it('treats missing wpPatternWrappers as an empty list', () => {
+    const result = parseConfig({});
+    expect(result.kind).toBe('ok');
+    if (result.kind !== 'ok') return;
+    expect(result.value.wpPatternWrappers).toHaveLength(0);
+  });
+});
+
 describe('parseConfig — overrides', () => {
   it('honours tests.classes path globs', () => {
     const r = parseConfig({

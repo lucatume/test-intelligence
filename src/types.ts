@@ -90,3 +90,37 @@ export const ALL_ANCHOR_TYPES = [
   'block',
   'test',
 ] as const satisfies readonly AnchorType[];
+
+// Valid function names that may appear as the `wraps` field of a WpPatternWrapper.
+// Kept in foundation so both config/ and extract/ can reference it without a
+// cross-zone import violation.
+export const WP_PHP_PATTERN_NAMES: ReadonlySet<string> = new Set([
+  'add_action',
+  'add_filter',
+  'do_action',
+  'apply_filters',
+  'register_rest_route',
+  'wp_enqueue_script',
+  'wp_register_script',
+  'wp_enqueue_style',
+  'wp_register_style',
+  'wp_localize_script',
+  'add_shortcode',
+  'do_shortcode',
+  'register_block_type',
+  'register_block_type_from_metadata',
+  'add_menu_page',
+  'add_submenu_page',
+]);
+
+export type ArgSpec =
+  | { readonly kind: 'fixed'; readonly value: string | number | boolean | ReadonlyArray<unknown> | Readonly<Record<string, unknown>> }
+  | { readonly kind: 'param'; readonly wrapperParamIdx: number }
+  | { readonly kind: 'merge'; readonly defaults: Readonly<Record<string, unknown>>; readonly callerParamIdx: number }
+  | { readonly kind: 'unresolved' };
+
+export interface WpPatternWrapper {
+  readonly name: string;
+  readonly wraps: string;
+  readonly argSpecs: ReadonlyArray<ArgSpec>;
+}
