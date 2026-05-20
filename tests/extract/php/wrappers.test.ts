@@ -214,4 +214,22 @@ register_my_route( '/items', array( 'methods' => 'DELETE' ) );
     expect(rest).toHaveLength(1);
     expect(rest[0]?.anchors[0]?.key).toBe('rest:DELETE /my-plugin/v1/items');
   });
+
+  it('flows WP_REST_Server::EDITABLE through the merged options to multi-fact fan-out', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+function register_my_route( $route, $extras = array() ) {
+    $opts = array_merge( array( 'methods' => 'POST' ), $extras );
+    register_rest_route( 'my-plugin/v1', $route, $opts );
+}
+register_my_route( '/items', array( 'methods' => WP_REST_Server::EDITABLE ) );
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual([
+      'rest:PATCH /my-plugin/v1/items',
+      'rest:POST /my-plugin/v1/items',
+      'rest:PUT /my-plugin/v1/items',
+    ]);
+  });
 });

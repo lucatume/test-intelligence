@@ -2340,17 +2340,32 @@ final class Visitor extends NodeVisitorAbstract
             if ($spec['kind'] === 'merge') {
                 $callerArgIdx = $spec['callerParamIdx'];
                 $callerArg = $callerArgs[$callerArgIdx] ?? null;
-                $merged = $spec['defaults'];
-                if ($callerArg !== null) {
-                    $callerLit = $this->readArgLiteralValue($callerArg->value);
-                    if (is_array($callerLit)) {
-                        // PHP array_merge semantics: string keys later-wins, int keys appended.
-                        foreach ($callerLit as $k => $vv) {
-                            $merged[$k] = $vv;
-                        }
+                $callerArrayNode = ($callerArg !== null && $callerArg->value instanceof Node\Expr\Array_)
+                    ? $callerArg->value : null;
+
+                // Start with defaults as fresh AST items.
+                $itemsByKey = [];        // key => Node\ArrayItem
+                $orderedKeys = [];
+                foreach ($spec['defaults'] as $k => $v) {
+                    if (!is_string($k)) continue; // v1: keyed items only
+                    $itemsByKey[$k] = new Node\ArrayItem(
+                        $this->literalToNode($v),
+                        new Node\Scalar\String_($k),
+                    );
+                    $orderedKeys[] = $k;
+                }
+                // Overlay caller items (caller wins for string keys). Preserves ClassConstFetch.
+                if ($callerArrayNode !== null) {
+                    foreach ($callerArrayNode->items as $item) {
+                        if (!$item instanceof Node\ArrayItem) continue;
+                        if (!$item->key instanceof Node\Scalar\String_) continue;
+                        $k = $item->key->value;
+                        $itemsByKey[$k] = $item;
+                        if (!in_array($k, $orderedKeys, true)) $orderedKeys[] = $k;
                     }
                 }
-                $out[] = new Node\Arg($this->literalToNode($merged));
+                $itemsOut = array_map(fn($k) => $itemsByKey[$k], $orderedKeys);
+                $out[] = new Node\Arg(new Node\Expr\Array_($itemsOut));
                 continue;
             }
         }
