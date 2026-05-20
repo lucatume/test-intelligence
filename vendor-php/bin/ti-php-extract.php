@@ -1516,6 +1516,18 @@ final class Visitor extends NodeVisitorAbstract
     }
 
     /**
+     * Return true when the wrapperIndex already has at least one config-source
+     * entry for $name. Used by buildWrapperIndex to let config win on collision.
+     */
+    private function hasConfigWrapper(string $name): bool
+    {
+        foreach ($this->wrapperIndex[$name] ?? [] as $entry) {
+            if (($entry['source'] ?? 'auto') === 'config') return true;
+        }
+        return false;
+    }
+
+    /**
      * Reset all per-file state. Does NOT reset $wrapperIndex, $deferredWrapperCalls,
      * or $patternCallees — those persist across files for cross-file synthesis.
      */
@@ -1853,16 +1865,23 @@ final class Visitor extends NodeVisitorAbstract
                 }
                 if (!$hasParam) continue;
                 $name = $stmt->name->name;
-                $this->wrapperIndex[$name][] = [
-                    'wraps'        => $wrappedName,
-                    'defFile'      => $this->file,
-                    'defStartLine' => $stmt->getStartLine(),
-                    'defEndLine'   => $stmt->getEndLine(),
-                    'argSpecs'     => $argSpecs,
-                    'source'       => 'auto',
-                ];
                 $scopeKey = $name . '@' . ($stmt->getStartLine() ?: 0);
-                $this->wrapperScopes[$scopeKey] = true;
+                if ($this->hasConfigWrapper($name)) {
+                    // Config entry wins; suppress the body so the inner pattern
+                    // call does not emit a duplicate fact, but do not add an
+                    // auto entry to the index.
+                    $this->wrapperScopes[$scopeKey] = true;
+                } else {
+                    $this->wrapperIndex[$name][] = [
+                        'wraps'        => $wrappedName,
+                        'defFile'      => $this->file,
+                        'defStartLine' => $stmt->getStartLine(),
+                        'defEndLine'   => $stmt->getEndLine(),
+                        'argSpecs'     => $argSpecs,
+                        'source'       => 'auto',
+                    ];
+                    $this->wrapperScopes[$scopeKey] = true;
+                }
             }
         }
     }

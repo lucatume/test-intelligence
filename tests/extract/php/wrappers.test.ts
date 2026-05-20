@@ -244,6 +244,39 @@ register_my_route( '/items', array( 'methods' => 'DELETE' ) );
     }
   });
 
+  it('user config wins over auto-detect when names collide', async () => {
+    const userWrapper: WpPatternWrapper = {
+      name: 'register_my_route',
+      wraps: 'register_rest_route',
+      argSpecs: [
+        { kind: 'fixed', value: 'user-overridden/v1' },
+        { kind: 'param', wrapperParamIdx: 0 },
+        { kind: 'fixed', value: { methods: 'GET' } },
+      ],
+    };
+    const startRes = startPhpWorker({ repoRoot, wpPatternWrappers: [userWrapper] });
+    if (startRes.kind !== 'ok') throw new Error(startRes.error.message);
+    const localWorker = startRes.value;
+    try {
+      await localWorker.registerPatterns(WP_PHP_PATTERNS);
+      const root = getTmp();
+      write(root, 'plugin.php', `<?php
+function register_my_route( $route ) {
+    register_rest_route( 'auto-detected/v1', $route, array( 'methods' => 'POST' ) );
+}
+register_my_route( '/items' );
+`);
+      const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker: localWorker });
+      const final = await flushDeferredPhpFacts({ projectRoot: root, worker: localWorker });
+      const rest = [...facts, ...final].filter((f) => f.kind === 'rest-endpoint');
+      // Exactly one fact, with the user-config namespace and method.
+      expect(rest).toHaveLength(1);
+      expect(rest[0]?.anchors[0]?.key).toBe('rest:GET /user-overridden/v1/items');
+    } finally {
+      await localWorker.shutdown();
+    }
+  });
+
   it('flows WP_REST_Server::EDITABLE through the merged options to multi-fact fan-out', async () => {
     const root = getTmp();
     write(root, 'plugin.php', `<?php
