@@ -132,4 +132,55 @@ register_my_route( '/items' );
     expect(rest[0]?.anchors[0]?.key).toBe('rest:GET /my-plugin/v1/items');
     expect(rest[0]?.location.startLine).toBe(7); // line of register_my_route('/items') call
   });
+
+  it('correctly maps closure use($name) to the outer function param of the same name', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+function register_with_meta( $route, $version ) {
+    add_action( 'rest_api_init', function () use ( $route, $version ) {
+        register_rest_route( 'my-plugin/' . $version, $route, array( 'methods' => 'GET' ) );
+    });
+}
+register_with_meta( '/items', 'v2' );
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.filter((f) => f.kind === 'rest-endpoint');
+    // Non-literal namespace (string concat with a variable) disqualifies the
+    // wrapper entry. The inner register_rest_route call still emits an unresolved
+    // fact (namespace skeleton has {*}, route unresolvable in closure scope).
+    // Documents the v1 limitation: no resolved anchor is synthesized.
+    expect(rest).toHaveLength(1);
+    expect((rest[0] as { resolved: boolean }).resolved).toBe(false);
+    expect(rest[0]?.anchors).toHaveLength(0);
+  });
+
+  it('handles multi-param wrappers where every wrapped arg is param-fed', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+function register_two( $ns, $route ) {
+    add_action( 'rest_api_init', function () use ( $ns, $route ) {
+        register_rest_route( $ns, $route, array( 'methods' => 'POST' ) );
+    });
+}
+register_two( 'p/v1', '/x' );
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.filter((f) => f.kind === 'rest-endpoint');
+    expect(rest).toHaveLength(1);
+    expect(rest[0]?.anchors[0]?.key).toBe('rest:POST /p/v1/x');
+  });
+
+  it('one wrapper body with two register_rest_route calls produces two facts per call site', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+function register_pair( $route ) {
+    register_rest_route( 'p/v1', $route, array( 'methods' => 'GET' ) );
+    register_rest_route( 'p/v1', $route, array( 'methods' => 'POST' ) );
+}
+register_pair( '/items' );
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual(['rest:GET /p/v1/items', 'rest:POST /p/v1/items']);
+  });
 });
