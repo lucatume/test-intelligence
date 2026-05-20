@@ -65,6 +65,28 @@ final class Visitor extends NodeVisitorAbstract
      */
     private array $enumStack = [];
 
+    /**
+     * Index of same-file top-level function wrappers: functions whose body
+     * directly calls a WP_PHP_PATTERNS callee with literal or param-fed args.
+     * Keyed by wrapper function name; each entry is a list of wrapper specs.
+     * @var array<string, list<array{wraps:string,defFile:string,defStartLine:int,defEndLine:int,argSpecs:list<array<string,mixed>>}>>
+     */
+    private array $wrapperIndex = [];
+
+    /**
+     * Lookup set of WP_PHP_PATTERNS callee names (from Patterns::$entries).
+     * Populated lazily on first use; reset per-file in prePass.
+     * @var array<string, true>|null
+     */
+    private ?array $patternCallees = null;
+
+    /**
+     * Set of scope keys (name@startLine) for functions that are indexed as
+     * wrappers. Used to suppress declarative emission inside wrapper bodies.
+     * @var array<string, true>
+     */
+    private array $wrapperScopes = [];
+
     /** @var array<string, true> Static PHP language built-ins. */
     private const PHP_BUILTIN_CLASSES = [
         // SPL exceptions + core hierarchy
@@ -326,7 +348,13 @@ final class Visitor extends NodeVisitorAbstract
         if ($node instanceof Node\Stmt\Function_) {
             $name = $this->namespace ? $this->namespace . '\\' . $node->name->name : $node->name->name;
             $this->facts[] = $this->factSymbolDef($node, $name, true);
-            $this->scopeStack[] = $node->name->name . '@' . ($node->getStartLine() ?: 0);
+            $scopeKey = $node->name->name . '@' . ($node->getStartLine() ?: 0);
+            $this->scopeStack[] = $scopeKey;
+            // If the prePass indexed this function as a called wrapper, suppress
+            // declarative emission inside its body.
+            if (isset($this->wrapperIndex[$node->name->name])) {
+                $this->wrapperScopes[$scopeKey] = true;
+            }
             return;
         }
         if ($node instanceof Node\Stmt\ClassMethod && !empty($this->classStack)) {
@@ -419,7 +447,14 @@ final class Visitor extends NodeVisitorAbstract
         }
         if ($node instanceof Node\Expr\FuncCall) {
             $name = $this->funcName($node);
-            $this->tryEmitDeclarative('function-call', $node, $name, null);
+            $currentScope = end($this->scopeStack);
+            $inWrapperBody = $currentScope !== false && isset($this->wrapperScopes[$currentScope]);
+            if (!$inWrapperBody) {
+                $this->tryEmitDeclarative('function-call', $node, $name, null);
+            }
+            if ($name !== null && isset($this->wrapperIndex[$name])) {
+                $this->synthesizeWrappedCall($name, $node->args, $node);
+            }
             if ($name !== null && !self::isBuiltinFunction($name)) {
                 $resolved = $this->resolveName($name);
                 $this->facts[] = [
@@ -1447,6 +1482,9 @@ final class Visitor extends NodeVisitorAbstract
         $this->classConsts = [];
         $this->classProps = [];
         $this->localVars = [];
+        $this->wrapperIndex = [];
+        $this->patternCallees = null;
+        $this->wrapperScopes = [];
         $traverser = new NodeTraverser();
         $defines = &$this->defines;
         $classConsts = &$this->classConsts;
@@ -1697,6 +1735,78 @@ final class Visitor extends NodeVisitorAbstract
         };
         $traverser->addVisitor($finder);
         $traverser->traverse($ast);
+        $this->buildWrapperIndex($ast);
+    }
+
+    /**
+     * Second micro-pass: scan top-level function declarations whose body
+     * directly calls a WP_PHP_PATTERNS callee, then check if the function is
+     * called anywhere in the file. Only fully-indexable wrappers that are also
+     * called get suppression of their inner pattern body.
+     *
+     * @param array<int, Node> $ast
+     */
+    private function buildWrapperIndex(array $ast): void
+    {
+        $callees = $this->getPatternCallees();
+        // Step 1: find candidate wrapper functions (top-level only).
+        /** @var array<string, array{fn: Node\Stmt\Function_, specs: list<array<string,mixed>>}> */
+        $candidates = [];
+        foreach ($ast as $stmt) {
+            if (!($stmt instanceof Node\Stmt\Function_)) continue;
+            foreach ($stmt->stmts ?? [] as $bodyStmt) {
+                $call = $this->findDirectPatternCallInStmt($bodyStmt);
+                if ($call === null) continue;
+                $wrappedName = $call->name instanceof Node\Name ? $call->name->toString() : null;
+                if ($wrappedName === null || !isset($callees[$wrappedName])) continue;
+                $innerArgs = [];
+                foreach ($call->args as $a) {
+                    if ($a instanceof Node\Arg) $innerArgs[] = $a;
+                }
+                $argSpecs = $this->buildArgSpecs($innerArgs, $stmt->params);
+                if ($argSpecs === null) continue;
+                $candidates[$stmt->name->name][] = [
+                    'wraps'        => $wrappedName,
+                    'defFile'      => $this->file,
+                    'defStartLine' => $stmt->getStartLine(),
+                    'defEndLine'   => $stmt->getEndLine(),
+                    'argSpecs'     => $argSpecs,
+                ];
+            }
+        }
+        if ($candidates === []) return;
+        // Step 2: find which candidate wrappers are called anywhere in the file.
+        /** @var array<string, true> */
+        $calledNames = [];
+        $callerFinder = new class($candidates, $calledNames) extends NodeVisitorAbstract {
+            /**
+             * @param array<string, mixed> $candidates
+             * @param array<string, true>  $calledNames
+             */
+            public function __construct(
+                private array $candidates,
+                private array &$calledNames,
+            ) {}
+            public function enterNode(Node $node): void
+            {
+                if ($node instanceof Node\Expr\FuncCall && $node->name instanceof Node\Name) {
+                    $name = $node->name->toString();
+                    if (isset($this->candidates[$name])) {
+                        $this->calledNames[$name] = true;
+                    }
+                }
+            }
+        };
+        $callerTraverser = new NodeTraverser();
+        $callerTraverser->addVisitor($callerFinder);
+        $callerTraverser->traverse($ast);
+        // Step 3: only index wrappers that are actually called; those get inner-emission suppression.
+        foreach ($candidates as $name => $entries) {
+            if (!isset($calledNames[$name])) continue;
+            foreach ($entries as $entry) {
+                $this->wrapperIndex[$name][] = $entry;
+            }
+        }
     }
 
     private function readLiteral(?Node $node, string $type): mixed
@@ -1906,6 +2016,224 @@ final class Visitor extends NodeVisitorAbstract
                 ?? $this->findInArrayGuard($cond->right);
         }
         return null;
+    }
+
+    // --- Wrapper detection helpers ---
+
+    /**
+     * Build $patternCallees lazily from Patterns::$entries (WP_PHP_PATTERNS).
+     * Returns a set of callee function names that are handled by the pattern engine.
+     * @return array<string, true>
+     */
+    private function getPatternCallees(): array
+    {
+        if ($this->patternCallees !== null) return $this->patternCallees;
+        $this->patternCallees = [];
+        foreach (Patterns::$entries as $p) {
+            $name = ($p['match'] ?? null)['name'] ?? null;
+            if (is_string($name) && $name !== '') {
+                $this->patternCallees[$name] = true;
+            }
+        }
+        return $this->patternCallees;
+    }
+
+    private function findDirectPatternCallInStmt(Node\Stmt $stmt): ?Node\Expr\FuncCall
+    {
+        if ($stmt instanceof Node\Stmt\Expression && $stmt->expr instanceof Node\Expr\FuncCall) {
+            return $stmt->expr;
+        }
+        return null;
+    }
+
+    /**
+     * @param list<Node\Arg>   $args
+     * @param list<Node\Param> $params
+     * @return list<array<string,mixed>>|null
+     */
+    private function buildArgSpecs(array $args, array $params): ?array
+    {
+        $paramIdxByName = [];
+        foreach ($params as $i => $p) {
+            if ($p->var instanceof Node\Expr\Variable && is_string($p->var->name)) {
+                $paramIdxByName[$p->var->name] = $i;
+            }
+        }
+        $out = [];
+        foreach ($args as $a) {
+            $v = $a->value;
+            if ($v instanceof Node\Expr\Variable && is_string($v->name) && isset($paramIdxByName[$v->name])) {
+                $out[] = ['kind' => 'param', 'wrapperParamIdx' => $paramIdxByName[$v->name]];
+                continue;
+            }
+            $lit = $this->readArgLiteralValue($v);
+            if ($lit !== null) {
+                $out[] = ['kind' => 'fixed', 'value' => $lit];
+                continue;
+            }
+            return null;
+        }
+        return $out;
+    }
+
+    private function readArgLiteralValue(Node $n): mixed
+    {
+        if ($n instanceof Node\Scalar\String_) return $n->value;
+        if ($n instanceof Node\Scalar\LNumber || $n instanceof Node\Scalar\Int_) return $n->value;
+        if ($n instanceof Node\Expr\ConstFetch) {
+            $lname = strtolower($n->name->toString());
+            if ($lname === 'true') return true;
+            if ($lname === 'false') return false;
+        }
+        if ($n instanceof Node\Expr\Array_) {
+            $out = [];
+            foreach ($n->items as $item) {
+                if (!$item instanceof Node\ArrayItem) return null;
+                $vv = $this->readArgLiteralValue($item->value);
+                if ($vv === null) return null;
+                if ($item->key === null) { $out[] = $vv; continue; }
+                if (!$item->key instanceof Node\Scalar\String_) return null;
+                $out[$item->key->value] = $vv;
+            }
+            return $out;
+        }
+        return null;
+    }
+
+    /**
+     * Synthesize wrapped pattern calls for each wrapperIndex entry matching $wrapperName.
+     * @param list<Node\Arg> $callerArgs
+     */
+    private function synthesizeWrappedCall(string $wrapperName, array $callerArgs, Node $callerCallNode): void
+    {
+        foreach ($this->wrapperIndex[$wrapperName] ?? [] as $entry) {
+            $wrapsCall = $entry['wraps'];
+            $synthesizedArgs = $this->materializeWrappedArgs($entry['argSpecs'], $callerArgs);
+            if ($synthesizedArgs === null) continue;
+            $synthCall = new Node\Expr\FuncCall(new Node\Name($wrapsCall), $synthesizedArgs);
+            $synthCall->setAttribute('startLine', $callerCallNode->getStartLine());
+            $synthCall->setAttribute('endLine', $callerCallNode->getEndLine());
+            $synthCall->setAttribute('startFilePos', $callerCallNode->getAttribute('startFilePos') ?? 0);
+            $synthCall->setAttribute('endFilePos', $callerCallNode->getAttribute('endFilePos') ?? 0);
+            $this->emitForCallee($wrapsCall, $synthCall, ['resolvedBy' => 'wrapper-auto', 'wrapperDef' => ['file' => $entry['defFile'], 'startLine' => $entry['defStartLine']]]);
+        }
+    }
+
+    /**
+     * @param list<array<string,mixed>> $argSpecs
+     * @param list<Node\Arg>            $callerArgs
+     * @return list<Node\Arg>|null
+     */
+    private function materializeWrappedArgs(array $argSpecs, array $callerArgs): ?array
+    {
+        $out = [];
+        foreach ($argSpecs as $spec) {
+            if ($spec['kind'] === 'fixed') {
+                $out[] = new Node\Arg($this->literalToNode($spec['value']));
+                continue;
+            }
+            if ($spec['kind'] === 'param') {
+                $idx = $spec['wrapperParamIdx'];
+                if (!isset($callerArgs[$idx])) return null;
+                $out[] = $callerArgs[$idx];
+                continue;
+            }
+        }
+        return $out;
+    }
+
+    private function literalToNode(mixed $value): Node\Expr
+    {
+        if (is_string($value)) return new Node\Scalar\String_($value);
+        if (is_int($value))    return new Node\Scalar\LNumber($value);
+        if (is_bool($value))   return new Node\Expr\ConstFetch(new Node\Name($value ? 'true' : 'false'));
+        if (is_array($value)) {
+            $items = [];
+            foreach ($value as $k => $v) {
+                $key = is_int($k) ? null : new Node\Scalar\String_((string)$k);
+                $items[] = new Node\ArrayItem($this->literalToNode($v), $key);
+            }
+            return new Node\Expr\Array_($items);
+        }
+        return new Node\Expr\ConstFetch(new Node\Name('null'));
+    }
+
+    /**
+     * Dispatch a pattern callee to its dedicated emitter.
+     * $meta is stamped onto the emitted fact's payload.meta (merged, not replaced).
+     * @param array<string, mixed> $meta
+     */
+    private function emitForCallee(string $callee, Node\Expr\FuncCall $call, array $meta): void
+    {
+        foreach (Patterns::$entries as $p) {
+            $m = $p['match'] ?? null;
+            if (!is_array($m)) continue;
+            if (($m['lang'] ?? null) !== 'php') continue;
+            if (($m['nodeKind'] ?? null) !== 'function-call') continue;
+            if (($m['name'] ?? null) !== $callee) continue;
+
+            $args = $this->extractArgs($call);
+            $payload = ['kind' => $p['emit']];
+            $this->unresolvedThisProps = [];
+            foreach (($p['bind'] ?? []) as $field => $b) {
+                $i = $b['arg'];
+                $argNode = $args[$i] ?? null;
+                $v = $this->readLiteral($argNode, $b['type']);
+                if ($v !== null) $payload[$field] = $v;
+            }
+
+            if (($p['transform'] ?? null) === 'rest-route') {
+                $this->emitRestRouteFactsWithMeta($call, $payload, $meta);
+                return;
+            }
+            if (($p['transform'] ?? null) === 'enqueue-src') {
+                $this->emitEnqueueScriptFactWithMeta($call, $payload, $meta);
+                return;
+            }
+            // For other transforms / plain patterns, emit a basic fact with meta.
+            // Anchor is computed from the pattern's anchor template.
+            $anchors = [];
+            $anchorRule = $p['anchor'] ?? null;
+            if (is_array($anchorRule)) {
+                $key = $this->renderAnchorKey($anchorRule['template'] ?? '', $payload);
+                if ($key !== null) $anchors[] = ['key' => $key, 'role' => $anchorRule['role'] ?? 'subject'];
+            }
+            if ($meta !== []) $payload['meta'] = $meta;
+            $this->facts[] = [
+                'kind' => $p['emit'],
+                'resolved' => true,
+                'location' => $this->loc($call),
+                'anchors' => $anchors,
+                'payload' => $payload,
+            ];
+            return;
+        }
+    }
+
+    /** @param array<string, mixed> $payload @param array<string, mixed> $meta */
+    private function emitRestRouteFactsWithMeta(Node $n, array $payload, array $meta): void
+    {
+        // Run the standard emitRestRouteFacts path and then annotate the last-emitted facts.
+        $countBefore = count($this->facts);
+        $this->emitRestRouteFacts($n, $payload);
+        // Stamp meta onto the facts that were just appended.
+        if ($meta !== []) {
+            for ($i = $countBefore; $i < count($this->facts); $i++) {
+                $this->facts[$i]['payload']['meta'] = $meta;
+            }
+        }
+    }
+
+    /** @param array<string, mixed> $payload @param array<string, mixed> $meta */
+    private function emitEnqueueScriptFactWithMeta(Node $n, array $payload, array $meta): void
+    {
+        $countBefore = count($this->facts);
+        $this->emitEnqueueScriptFact($n, $payload);
+        if ($meta !== []) {
+            for ($i = $countBefore; $i < count($this->facts); $i++) {
+                $this->facts[$i]['payload']['meta'] = $meta;
+            }
+        }
     }
 }
 
