@@ -10,10 +10,29 @@ export interface ExtractPhpInput {
   readonly phpUnitBaseClasses?: readonly string[];
 }
 
+export interface FlushDeferredInput {
+  readonly projectRoot: string;
+  readonly worker: PhpWorker;
+}
+
 export async function extractPhpFile(input: ExtractPhpInput): Promise<Fact[]> {
   const abs = resolve(input.projectRoot, input.relPath);
   const res = await input.worker.extract(abs, input.phpUnitBaseClasses, input.relPath);
   const env = res as { op?: string; file?: string; facts?: unknown[] };
+  if (env.op !== 'facts' || !Array.isArray(env.facts)) return [];
+
+  const out: Fact[] = [];
+  for (const raw of env.facts) {
+    rewriteAbsToRel(raw, input.projectRoot);
+    const parsed = parseFact(raw);
+    if (parsed.kind === 'ok') out.push(parsed.value);
+  }
+  return out;
+}
+
+export async function flushDeferredPhpFacts(input: FlushDeferredInput): Promise<Fact[]> {
+  const res = await input.worker.flushDeferred();
+  const env = res as { op?: string; facts?: unknown[] };
   if (env.op !== 'facts' || !Array.isArray(env.facts)) return [];
 
   const out: Fact[] = [];

@@ -457,6 +457,27 @@ final class Visitor extends NodeVisitorAbstract
             }
             if ($name !== null && isset($this->wrapperIndex[$name])) {
                 $this->synthesizeWrappedCall($name, $node->args, $node);
+            } elseif ($name !== null
+                && !self::isBuiltinFunction($name)
+                && !isset($this->getPatternCallees()[$name])
+                && !$inWrapperBody
+            ) {
+                // Callee not yet in the wrapper index and not a known pattern callee
+                // or builtin — buffer for cross-file deferred replay. The wrapper
+                // definition may arrive in a later file's prePass.
+                $callerArgs = [];
+                foreach ($node->args as $a) {
+                    if ($a instanceof Node\Arg) $callerArgs[] = $a;
+                }
+                $this->deferredWrapperCalls[] = [
+                    'callee'    => $name,
+                    'argNodes'  => $callerArgs,
+                    'file'      => $this->file,
+                    'relFile'   => $this->relFile,
+                    'startLine' => $node->getStartLine(),
+                    'endLine'   => $node->getEndLine(),
+                    'callNode'  => $node,
+                ];
             }
             if ($name !== null && !self::isBuiltinFunction($name)) {
                 $resolved = $this->resolveName($name);
@@ -1474,6 +1495,31 @@ final class Visitor extends NodeVisitorAbstract
     }
 
     /**
+     * Reset all per-file state. Does NOT reset $wrapperIndex, $deferredWrapperCalls,
+     * or $patternCallees — those persist across files for cross-file synthesis.
+     */
+    public function resetForFile(string $file, ?string $relFile, string $code): void
+    {
+        $this->file = $file;
+        $this->relFile = $relFile ?? $file;
+        $this->code = $code;
+        $this->facts = [];
+        $this->namespace = null;
+        $this->useAliases = [];
+        $this->classStack = [];
+        $this->classIsPhpUnit = false;
+        $this->defines = [];
+        $this->classConsts = [];
+        $this->classProps = [];
+        $this->localVars = [];
+        $this->scopeStack = [];
+        $this->unresolvedThisProps = [];
+        $this->localArrays = [];
+        $this->enumStack = [];
+        $this->wrapperScopes = [];
+    }
+
+    /**
      * Pre-pass walk to populate $defines from top-level `const` and `define()`
      * calls before the main visitor walks the AST. Visits the SAME AST.
      *
@@ -1485,8 +1531,8 @@ final class Visitor extends NodeVisitorAbstract
         $this->classConsts = [];
         $this->classProps = [];
         $this->localVars = [];
-        $this->wrapperIndex = [];
-        $this->patternCallees = null;
+        // NOTE: $wrapperIndex and $deferredWrapperCalls are NOT reset here —
+        // they persist across files for cross-file synthesis.
         $this->wrapperScopes = [];
         $traverser = new NodeTraverser();
         $defines = &$this->defines;
@@ -2080,6 +2126,40 @@ final class Visitor extends NodeVisitorAbstract
     }
 
     /**
+     * Replay deferred wrapper calls against the current (now-complete) wrapper index.
+     * Returns the facts synthesized during this replay. Calls whose callee is still
+     * absent from the index remain in $deferredWrapperCalls for a subsequent flush.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function replayDeferredCalls(): array
+    {
+        $remaining = [];
+        $newFacts = [];
+        foreach ($this->deferredWrapperCalls as $stub) {
+            if (!isset($this->wrapperIndex[$stub['callee']])) {
+                $remaining[] = $stub;
+                continue;
+            }
+            // Temporarily swap per-file context so location stamps are correct.
+            $savedFile = $this->file;
+            $savedRelFile = $this->relFile;
+            $this->file = $stub['file'];
+            $this->relFile = $stub['relFile'];
+            $countBefore = count($this->facts);
+            $this->synthesizeWrappedCall($stub['callee'], $stub['argNodes'], $stub['callNode']);
+            // Collect the facts that were just appended.
+            for ($i = $countBefore; $i < count($this->facts); $i++) {
+                $newFacts[] = $this->facts[$i];
+            }
+            $this->file = $savedFile;
+            $this->relFile = $savedRelFile;
+        }
+        $this->deferredWrapperCalls = $remaining;
+        return $newFacts;
+    }
+
+    /**
      * Synthesize wrapped pattern calls for each wrapperIndex entry matching $wrapperName.
      * @param list<Node\Arg> $callerArgs
      */
@@ -2226,6 +2306,9 @@ final class Visitor extends NodeVisitorAbstract
 }
 
 $parser = (new ParserFactory)->createForNewestSupportedVersion();
+// Persistent visitor — wrapperIndex and deferredWrapperCalls survive across
+// extract ops so cross-file wrapper synthesis can work.
+$visitor = new Visitor('', null, '');
 
 $stdin = fopen('php://stdin', 'r');
 while (($line = fgets($stdin)) !== false) {
@@ -2256,7 +2339,7 @@ while (($line = fgets($stdin)) !== false) {
             if ($code === false) { emit(['op' => 'facts', 'file' => $file, 'facts' => []]); continue; }
             $ast = $parser->parse($code);
             if ($ast === null) { emit(['op' => 'facts', 'file' => $file, 'facts' => []]); continue; }
-            $visitor = new Visitor($file, $relFile, $code);
+            $visitor->resetForFile($file, $relFile, $code);
             $visitor->phpUnitBaseClasses = $req['phpUnitBaseClasses'] ?? ['PHPUnit\\Framework\\TestCase'];
             $visitor->prePass($ast);
             $traverser = new NodeTraverser();
@@ -2278,6 +2361,20 @@ while (($line = fgets($stdin)) !== false) {
         } catch (\Throwable $t) {
             emit(['op' => 'error', 'message' => 'extract failed: ' . $t->getMessage()]);
         }
+        continue;
+    }
+    if ($op === 'flush-deferred') {
+        try {
+            $facts = $visitor->replayDeferredCalls();
+            emit(['op' => 'facts', 'facts' => $facts]);
+        } catch (\Throwable $t) {
+            emit(['op' => 'error', 'message' => 'flush-deferred failed: ' . $t->getMessage()]);
+        }
+        continue;
+    }
+    if ($op === 'reset-state') {
+        $visitor = new Visitor('', null, '');
+        emit(['op' => 'reset-ok']);
         continue;
     }
     emit(['op' => 'error', 'message' => 'unknown op: ' . $op]);

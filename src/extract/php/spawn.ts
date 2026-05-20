@@ -8,6 +8,8 @@ export interface PhpWorker {
   ping(): Promise<boolean>;
   registerPatterns(patterns: readonly unknown[]): Promise<number>;
   extract(absFile: string, phpUnitBaseClasses?: readonly string[], relFile?: string): Promise<unknown>;
+  flushDeferred(): Promise<unknown>;
+  resetState(): Promise<void>;
   shutdown(): Promise<void>;
 }
 
@@ -58,6 +60,12 @@ export function startPhpWorker(opts: SpawnOptions): Result<PhpWorker, SpawnError
         ...(relFile !== undefined ? { relFile } : {}),
         ...(phpUnitBaseClasses !== undefined ? { phpUnitBaseClasses } : {}),
       });
+    },
+    async flushDeferred(): Promise<unknown> {
+      return await proto.request({ op: 'flush-deferred' });
+    },
+    async resetState(): Promise<void> {
+      await proto.request({ op: 'reset-state' });
     },
     async shutdown(): Promise<void> {
       await proto.shutdown();

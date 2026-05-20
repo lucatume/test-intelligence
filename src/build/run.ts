@@ -23,6 +23,7 @@ import { extractFile } from '../extract/index.js';
 import { CompilerOptionsResolver } from '../extract/ts/compiler.js';
 import { hasPhpAvailable, type PhpWorker } from '../extract/php/spawn.js';
 import { startPhpWorkerPool } from '../extract/php/pool.js';
+import { flushDeferredPhpFacts } from '../extract/php/extract.js';
 import { WP_PHP_PATTERNS } from '../extract/declarative/wp-php-patterns.js';
 import { parseProjectRelativePath } from '../paths.js';
 import { parseAnchor } from '../anchors/parse.js';
@@ -234,6 +235,48 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       }
       try {
         await Promise.all(lanes);
+        // Flush any cross-file deferred wrapper calls that couldn't be resolved
+        // during per-file extraction (caller processed before wrapper-def file).
+        if (worker !== undefined) {
+          const deferredFacts = await flushDeferredPhpFacts({
+            projectRoot: opts.projectRoot,
+            worker,
+          });
+          for (const f of deferredFacts) {
+            // Locate the existing file row — the caller file was already extracted
+            // in the lane loop above. Fall back to upsert only if somehow absent.
+            let fileId: number;
+            const existing = readFileExtractState(db, f.location.file);
+            if (existing !== null) {
+              fileId = existing.fileId;
+            } else {
+              fileId = upsertFile(db, {
+                path: f.location.file,
+                language: 'php',
+                contentHash: '',
+                extractedAt: opts.clock.now(),
+                isTest: false,
+                framework: null,
+                frameworkClass: null,
+              });
+            }
+            const factId = insertFact(db, {
+              fileId,
+              kind: f.kind,
+              resolved: f.resolved,
+              startLine: f.location.startLine,
+              endLine: f.location.endLine,
+              payload: f.payload,
+            });
+            factsInserted++;
+            for (const a of f.anchors) {
+              const parsed = parseAnchor(a.key);
+              if (parsed.kind === 'err') continue;
+              const anchorId = upsertAnchor(db, { key: parsed.value.key, type: parsed.value.type });
+              insertFactAnchor(db, { factId, anchorId, role: a.role });
+            }
+          }
+        }
         db.exec('COMMIT');
         extractCommitted = true;
       } finally {

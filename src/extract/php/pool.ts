@@ -62,6 +62,22 @@ export function startPhpWorkerPool(opts: PoolOptions): Result<PhpWorker, SpawnEr
         slot.pending--;
       }
     },
+    async resetState(): Promise<void> {
+      await Promise.all(slots.map((s) => s.worker.resetState()));
+    },
+    async flushDeferred(): Promise<unknown> {
+      // Fan out to all slots: each worker may have its own deferred call buffer.
+      const results = await Promise.all(slots.map((s) => s.worker.flushDeferred()));
+      // Merge the facts arrays from each slot's response.
+      const merged: unknown[] = [];
+      for (const r of results) {
+        const env = r as { op?: string; facts?: unknown[] };
+        if (env.op === 'facts' && Array.isArray(env.facts)) {
+          for (const f of env.facts) merged.push(f);
+        }
+      }
+      return { op: 'facts', facts: merged };
+    },
     async shutdown(): Promise<void> {
       await Promise.all(slots.map((s) => s.worker.shutdown()));
     },
