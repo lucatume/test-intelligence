@@ -65,23 +65,42 @@ function computeNode(node: ts.Expression, checker: ts.TypeChecker, ctx: ResolveC
     return resolveNode(node.expression, checker, descend(ctx), memo);
   }
 
-  // Template literal with substitutions — fold every part.
+  // Template literal with substitutions. Each substitution folds to its
+  // resolved string, or to the `{*}` placeholder when dynamic. If every
+  // substitution is dynamic the whole expression is treated as unresolved —
+  // the surrounding literal segments alone are usually present in the head
+  // text already, and emitting a purely-wildcard result pollutes the anchor
+  // store without ever bridging usefully.
   if (ts.isTemplateExpression(node)) {
     let out = node.head.text;
+    let anyResolved = false;
     for (const span of node.templateSpans) {
       const part = resolveNode(span.expression, checker, descend(ctx), memo);
-      if (part.kind !== 'string') return UNRESOLVED;
-      out += part.value + span.literal.text;
+      if (part.kind === 'string') {
+        out += part.value;
+        anyResolved = true;
+      } else {
+        out += '{*}';
+      }
+      out += span.literal.text;
     }
+    if (!anyResolved) return UNRESOLVED;
     return { kind: 'string', value: out };
   }
 
-  // `+` concatenation — fold both sides; any unresolved part poisons the whole.
+  // `+` concatenation. As with templates, an unresolved operand becomes a
+  // `{*}` placeholder so a partial literal prefix/suffix survives. If both
+  // operands are unresolved the whole expression is treated as unresolved.
   if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
     const left = resolveNode(node.left, checker, descend(ctx), memo);
     const right = resolveNode(node.right, checker, descend(ctx), memo);
     if (left.kind === 'string' && right.kind === 'string') {
       return { kind: 'string', value: left.value + right.value };
+    }
+    if (left.kind === 'string' || right.kind === 'string') {
+      const l = left.kind === 'string' ? left.value : '{*}';
+      const r = right.kind === 'string' ? right.value : '{*}';
+      return { kind: 'string', value: l + r };
     }
     return UNRESOLVED;
   }

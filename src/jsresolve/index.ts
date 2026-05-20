@@ -67,6 +67,19 @@ export function restMethodForCall(call: ts.CallExpression): string {
   return 'GET';
 }
 
+// A resolved REST path is acceptable when it is either fully literal or has
+// exactly one `{*}` segment and that segment is not the first one (i.e. the
+// namespace prefix is concrete). This matches what produces useful bridges
+// against PHP `register_rest_route` listener anchors, which encode the
+// namespace literally and a single capture group `(?P<id>\\d+)` as `{*}`.
+function isAcceptableRestPath(path: string): boolean {
+  const count = (path.match(/\{\*\}/g) ?? []).length;
+  if (count === 0) return true;
+  if (count > 1) return false;
+  const segments = path.replace(/^\/+/, '').split('/');
+  return segments[0] !== '{*}';
+}
+
 // REST-path normalization: the caller-side counterpart of `parseRest` in
 // src/anchors/parse.ts (the authoritative `rest:` anchor-key contract). It is
 // not a copy of `parseRest` — in addition it strips a scheme+host prefix and a
@@ -229,8 +242,20 @@ export function runJsResolve(db: Database.Database, opts: JsResolveOptions): JsR
         }
       }
 
-      // Only resolve when the result is a clean literal with no dynamic part.
-      if (resolvedStr === null || resolvedStr.includes('{*}')) continue;
+      if (resolvedStr === null) continue;
+      // ajax actions must be fully literal — a `{*}`-bearing action token
+      // cannot bridge usefully (listener anchors carry exact action names).
+      // REST paths admit a single trailing-position `{*}` for the resource-id
+      // segment so a caller like `apiFetch({path: `${NS}/notes/${id}`})` can
+      // bridge to a `register_rest_route(NS, '/notes/(?P<id>\\d+)', ...)`
+      // listener whose anchor is `rest:M /<NS>/notes/{*}`. Broad wildcards
+      // (>1 {*} or {*} in the first segment) are still rejected — they
+      // re-introduce the wildcard fan-out the bridge metric excludes.
+      if (row.kind === 'rest-call-js') {
+        if (!isAcceptableRestPath(resolvedStr)) continue;
+      } else if (resolvedStr.includes('{*}')) {
+        continue;
+      }
 
       // Build the resolved anchor key matching the PHP-listener keys
       // (`ajax-listener` → `ajax:<action>`, `rest-endpoint` → `rest:<M> <path>`).

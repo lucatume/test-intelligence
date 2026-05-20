@@ -136,6 +136,99 @@ describe('runJsResolve', () => {
       db.close();
     });
 
+    it('partial-folds a rest path to a narrow-wildcard anchor when one template part is dynamic', async () => {
+      const root = getTmp();
+
+      // Fixture: cfg.js exports a namespace constant; caller.js builds the
+      // apiFetch path with a template that mixes the cross-file constant with
+      // a function-parameter `id` that has no resolvable call site. Under the
+      // partial-fold contract the resolved path is `wc-admin/items/{*}` —
+      // a narrow wildcard (one {*} segment, namespace is concrete). The
+      // orchestrator must accept this shape; broad wildcards (>1 {*} or
+      // {*} in the first segment) are still rejected.
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(join(root, 'src/cfg.js'), "export const NS = 'wc-admin';\n");
+      writeFileSync(
+        join(root, 'src/caller.js'),
+        "import { NS } from './cfg.js';\n" +
+          "function update(id) { apiFetch({ path: `${NS}/items/${id}` }); }\n" +
+          "update(42);\n",
+      );
+
+      const db = freshDb();
+      const opts = synthesizeCompilerOptions(root);
+      const callerFacts = await extractTsFile({
+        projectRoot: root, relPath: 'src/caller.js', language: 'js',
+        framework: null, compilerOptions: opts, patterns: WP_JS_PATTERNS,
+      });
+      const callerRest = callerFacts.find((f) => f.kind === 'rest-call-js');
+      expect(callerRest).toBeDefined();
+      if (callerRest === undefined) return;
+      expect(callerRest.resolved).toBe(false);
+
+      const factId = seedFact(db, 'src/caller.js', callerRest);
+
+      const summary = runJsResolve(db, { projectRoot: root });
+      expect(summary.resolved).toBe(1);
+
+      const row = db
+        .prepare('SELECT resolved, payload FROM fact WHERE id = ?')
+        .get(factId) as { resolved: number; payload: string };
+      expect(row.resolved).toBe(1);
+      const payload = JSON.parse(row.payload) as Record<string, unknown>;
+      expect(payload['route']).toBe('wc-admin/items/{*}');
+      expect((payload['meta'] as Record<string, unknown>)['resolvedBy']).toBe('js-interprocedural');
+
+      const anchorKeys = (
+        db
+          .prepare(
+            `SELECT a.key FROM fact_anchor fa JOIN anchor a ON a.id = fa.anchor_id
+             WHERE fa.fact_id = ?`,
+          )
+          .all(factId) as { key: string }[]
+      ).map((r) => r.key);
+      expect(anchorKeys).toContain('rest:GET /wc-admin/items/{*}');
+
+      db.close();
+    });
+
+    it('rejects a broad-wildcard partial fold (>1 {*} segment in path)', async () => {
+      const root = getTmp();
+
+      // Fixture: one resolvable const + two unresolvable exported-function
+      // parameters → partial fold produces `'/list/{*}/{*}'` (anyResolved=true
+      // because PRIMARY folds, but two {*} segments make this a broad
+      // wildcard — would match too many listener anchors to be useful).
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(
+        join(root, 'src/caller.js'),
+        "const PRIMARY = 'list';\n" +
+          "export function go(b, c) { apiFetch({ path: `/${PRIMARY}/${b}/${c}` }); }\n" +
+          "go('1', '2');\n",
+      );
+
+      const db = freshDb();
+      const opts = synthesizeCompilerOptions(root);
+      const callerFacts = await extractTsFile({
+        projectRoot: root, relPath: 'src/caller.js', language: 'js',
+        framework: null, compilerOptions: opts, patterns: WP_JS_PATTERNS,
+      });
+      const callerRest = callerFacts.find((f) => f.kind === 'rest-call-js');
+      expect(callerRest).toBeDefined();
+      if (callerRest === undefined) return;
+
+      const factId = seedFact(db, 'src/caller.js', callerRest);
+
+      runJsResolve(db, { projectRoot: root });
+
+      // Fact must stay unresolved — a broad wildcard would only re-introduce
+      // the wildcard fan-out the bridge metric is designed to exclude.
+      const row = db.prepare('SELECT resolved FROM fact WHERE id = ?').get(factId) as { resolved: number };
+      expect(row.resolved).toBe(0);
+
+      db.close();
+    });
+
     it('repoints an existing {*}-placeholder anchor when the template folds to a literal', async () => {
       const root = getTmp();
 

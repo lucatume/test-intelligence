@@ -75,10 +75,34 @@ describe('resolveExpression', () => {
     }, 'a.js')).toBe('/wc/v3/y');
   });
 
-  it('returns unresolved for a genuinely dynamic argument', () => {
+  it('returns unresolved for a `+` concat where every operand is dynamic', () => {
     expect(resolveApiFetchArg(
-      { 'a.js': "function go(id) { apiFetch({ path: '/wc/v3/' + id }); }" }, 'a.js',
+      { 'a.js': "function go(a, b) { apiFetch({ path: a + b }); }" }, 'a.js',
     )).toBe(null);
+  });
+
+  it('partial-folds a template whose substitutions mix resolvable and dynamic parts', () => {
+    expect(resolveApiFetchArg({
+      'a.js': "import { NS } from './c.js';\n" +
+              "function update(id) { apiFetch({ path: `${NS}/admin/notes/${id}` }); }\n" +
+              "update(42);",
+      'c.js': "export const NS = 'wc-admin';",
+    }, 'a.js')).toBe('wc-admin/admin/notes/{*}');
+  });
+
+  it('partial-folds a `+` concat where one operand is unresolvable', () => {
+    expect(resolveApiFetchArg({
+      'a.js': "import { NS } from './c.js';\n" +
+              "function go(id) { apiFetch({ path: NS + '/items/' + id }); }\n" +
+              "go(42);",
+      'c.js': "export const NS = '/wc-admin';",
+    }, 'a.js')).toBe('/wc-admin/items/{*}');
+  });
+
+  it('returns unresolved when every template substitution is dynamic', () => {
+    expect(resolveApiFetchArg({
+      'a.js': "function go(a, b) { apiFetch({ path: `${a}/${b}` }); }",
+    }, 'a.js')).toBe(null);
   });
 
   it('does not bind a parameter of an exported function (callers may be off-program)', () => {
