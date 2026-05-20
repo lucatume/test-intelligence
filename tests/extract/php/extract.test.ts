@@ -468,7 +468,7 @@ ti_deletemeelephant_helper();
   it('keeps a skeleton-namespace rest-endpoint unresolved without routeParam', async () => {
     const root = getTmp();
     // $x is not statically known → readStringSkeleton yields {*}.
-    write(root, 'plugin.php', "<?php function f($x){ register_rest_route($x, '/items', []); }");
+    write(root, 'plugin.php', "<?php register_rest_route($x, '/items', []);");
     const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
     const rest = facts.find((f) => f.kind === 'rest-endpoint');
     expect(rest?.resolved).toBe(false);
@@ -1055,7 +1055,7 @@ ti_deletemeelephant_helper();
 
   it('infers a block name for register_block_type with a dynamic name + convention callback', async () => {
     const root = getTmp();
-    write(root, 'h6var.php', "<?php function ti_reg( $n ) { register_block_type( $n, array( 'render_callback' => 'render_block_core_quote' ) ); }");
+    write(root, 'h6var.php', "<?php register_block_type( $n, array( 'render_callback' => 'render_block_core_quote' ) );");
     const facts = await extractPhpFile({ projectRoot: root, relPath: 'h6var.php', worker });
     const block = facts.find((f) => f.kind === 'block-render');
     expect(block?.resolved).toBe(true);
@@ -1084,7 +1084,7 @@ ti_deletemeelephant_helper();
 
   it('omits dir when the metadata argument is a non-literal variable', async () => {
     const root = getTmp();
-    write(root, 'var.php', "<?php function reg( $p ) { register_block_type_from_metadata( $p ); }");
+    write(root, 'var.php', "<?php register_block_type_from_metadata( $p );");
     const facts = await extractPhpFile({ projectRoot: root, relPath: 'var.php', worker });
     const block = facts.find((f) => f.kind === 'block-render');
     expect((block?.payload as { dir?: string }).dir).toBeUndefined();
@@ -1160,7 +1160,7 @@ class Api {
   it('resolves scope for free function, file scope, and closure', async () => {
     const root = getTmp();
     write(root, 's.php', `<?php
-function fire_it($h) { do_action($h); }
+function fire_it($h) { $hook = get_hook($h); do_action($hook); }
 do_action($topLevel);
 add_action('boot', function () use ($cb) { do_action($cb); });
 `);

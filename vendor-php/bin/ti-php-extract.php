@@ -69,7 +69,7 @@ final class Visitor extends NodeVisitorAbstract
      * Index of same-file top-level function wrappers: functions whose body
      * directly calls a WP_PHP_PATTERNS callee with literal or param-fed args.
      * Keyed by wrapper function name; each entry is a list of wrapper specs.
-     * @var array<string, list<array{wraps:string,defFile:string,defStartLine:int,defEndLine:int,argSpecs:list<array<string,mixed>>}>>
+     * @var array<string, list<array{wraps:string,defFile:string,defStartLine:int,argSpecs:list<array<string,mixed>>}>>
      */
     private array $wrapperIndex = [];
 
@@ -1741,20 +1741,20 @@ final class Visitor extends NodeVisitorAbstract
         $this->buildWrapperIndex($ast);
     }
 
+    // Note: wrapperIndex keys are unqualified names. Calls using a fully-qualified
+    // name (e.g. \MyPlugin\register_my_route()) won't synthesize. Out of scope for v1.
+
     /**
      * Second micro-pass: scan top-level function declarations whose body
-     * directly calls a WP_PHP_PATTERNS callee, then check if the function is
-     * called anywhere in the file. Only fully-indexable wrappers that are also
-     * called get suppression of their inner pattern body.
+     * directly calls a WP_PHP_PATTERNS callee with literal or param-fed args.
+     * All fully-indexable wrappers are indexed; in-body suppression via
+     * $wrapperScopes prevents double emission without a separate call-site scan.
      *
      * @param array<int, Node> $ast
      */
     private function buildWrapperIndex(array $ast): void
     {
         $callees = $this->getPatternCallees();
-        // Step 1: find candidate wrapper functions (top-level only).
-        /** @var array<string, array{fn: Node\Stmt\Function_, specs: list<array<string,mixed>>}> */
-        $candidates = [];
         foreach ($ast as $stmt) {
             if (!($stmt instanceof Node\Stmt\Function_)) continue;
             foreach ($stmt->stmts ?? [] as $bodyStmt) {
@@ -1768,46 +1768,15 @@ final class Visitor extends NodeVisitorAbstract
                 }
                 $argSpecs = $this->buildArgSpecs($innerArgs, $stmt->params);
                 if ($argSpecs === null) continue;
-                $candidates[$stmt->name->name][] = [
+                $name = $stmt->name->name;
+                $this->wrapperIndex[$name][] = [
                     'wraps'        => $wrappedName,
                     'defFile'      => $this->file,
                     'defStartLine' => $stmt->getStartLine(),
-                    'defEndLine'   => $stmt->getEndLine(),
                     'argSpecs'     => $argSpecs,
                 ];
-            }
-        }
-        if ($candidates === []) return;
-        // Step 2: find which candidate wrappers are called anywhere in the file.
-        /** @var array<string, true> */
-        $calledNames = [];
-        $callerFinder = new class($candidates, $calledNames) extends NodeVisitorAbstract {
-            /**
-             * @param array<string, mixed> $candidates
-             * @param array<string, true>  $calledNames
-             */
-            public function __construct(
-                private array $candidates,
-                private array &$calledNames,
-            ) {}
-            public function enterNode(Node $node): void
-            {
-                if ($node instanceof Node\Expr\FuncCall && $node->name instanceof Node\Name) {
-                    $name = $node->name->toString();
-                    if (isset($this->candidates[$name])) {
-                        $this->calledNames[$name] = true;
-                    }
-                }
-            }
-        };
-        $callerTraverser = new NodeTraverser();
-        $callerTraverser->addVisitor($callerFinder);
-        $callerTraverser->traverse($ast);
-        // Step 3: only index wrappers that are actually called; those get inner-emission suppression.
-        foreach ($candidates as $name => $entries) {
-            if (!isset($calledNames[$name])) continue;
-            foreach ($entries as $entry) {
-                $this->wrapperIndex[$name][] = $entry;
+                $scopeKey = $name . '@' . ($stmt->getStartLine() ?: 0);
+                $this->wrapperScopes[$scopeKey] = true;
             }
         }
     }
@@ -2064,6 +2033,8 @@ final class Visitor extends NodeVisitorAbstract
         }
         $out = [];
         foreach ($args as $a) {
+            // Named arguments (PHP 8+) are not supported; bail to avoid wrong synthesis.
+            if ($a->name !== null) return null;
             $v = $a->value;
             if ($v instanceof Node\Expr\Variable && is_string($v->name) && isset($paramIdxByName[$v->name])) {
                 $out[] = ['kind' => 'param', 'wrapperParamIdx' => $paramIdxByName[$v->name]];
@@ -2129,6 +2100,10 @@ final class Visitor extends NodeVisitorAbstract
      */
     private function materializeWrappedArgs(array $argSpecs, array $callerArgs): ?array
     {
+        // Named arguments at the call site are not supported; bail to avoid wrong synthesis.
+        foreach ($callerArgs as $a) {
+            if ($a->name !== null) return null;
+        }
         $out = [];
         foreach ($argSpecs as $spec) {
             if ($spec['kind'] === 'fixed') {
@@ -2185,16 +2160,21 @@ final class Visitor extends NodeVisitorAbstract
                 if ($v !== null) $payload[$field] = $v;
             }
 
-            if (($p['transform'] ?? null) === 'rest-route') {
+            $transform = $p['transform'] ?? null;
+            if ($transform === 'rest-route') {
                 $this->emitRestRouteFactsWithMeta($call, $payload, $meta);
                 return;
             }
-            if (($p['transform'] ?? null) === 'enqueue-src') {
+            if ($transform === 'enqueue-src') {
                 $this->emitEnqueueScriptFactWithMeta($call, $payload, $meta);
                 return;
             }
-            // For other transforms / plain patterns, emit a basic fact with meta.
-            // Anchor is computed from the pattern's anchor template.
+            // V1 synthesis supports rest-route and enqueue-src only. The other transforms
+            // (admin-page-slug, block-render, localize-data) need bespoke synthesis logic
+            // and have no wrapper test cases yet — emit nothing rather than a malformed
+            // fact that silently pollutes the store.
+            if ($transform !== null) return;
+            // Plain anchor patterns (no transform): synthesize a fact with the anchor template.
             $anchors = [];
             $anchorRule = $p['anchor'] ?? null;
             if (is_array($anchorRule)) {
