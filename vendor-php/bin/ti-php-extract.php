@@ -1806,6 +1806,20 @@ final class Visitor extends NodeVisitorAbstract
         $callees = $this->getPatternCallees();
         foreach ($ast as $stmt) {
             if (!($stmt instanceof Node\Stmt\Function_)) continue;
+            // Build a one-hop local-var expression map for the function body.
+            // Only top-level (depth-1) assignments where the RHS is not itself
+            // a simple variable are included. Used by buildArgSpecs to resolve
+            // aliases like $opts = array_merge($defaults, $extras).
+            $localVarExprs = [];
+            foreach ($stmt->stmts ?? [] as $bodyStmt) {
+                if ($bodyStmt instanceof Node\Stmt\Expression
+                    && $bodyStmt->expr instanceof Node\Expr\Assign
+                    && $bodyStmt->expr->var instanceof Node\Expr\Variable
+                    && is_string($bodyStmt->expr->var->name)
+                    && !($bodyStmt->expr->expr instanceof Node\Expr\Variable)) {
+                    $localVarExprs[$bodyStmt->expr->var->name] = $bodyStmt->expr->expr;
+                }
+            }
             foreach ($this->collectCandidatePatternCalls($stmt) as [$call, $closureUses]) {
                 $wrappedName = $call->name instanceof Node\Name ? $call->name->toString() : null;
                 if ($wrappedName === null || !isset($callees[$wrappedName])) continue;
@@ -1813,7 +1827,7 @@ final class Visitor extends NodeVisitorAbstract
                 foreach ($call->args as $a) {
                     if ($a instanceof Node\Arg) $innerArgs[] = $a;
                 }
-                $argSpecs = $this->buildArgSpecs($innerArgs, $stmt->params, $closureUses);
+                $argSpecs = $this->buildArgSpecs($innerArgs, $stmt->params, $closureUses, $localVarExprs);
                 if ($argSpecs === null) continue;
                 $hasParam = false;
                 foreach ($argSpecs as $spec) {
@@ -2124,9 +2138,10 @@ final class Visitor extends NodeVisitorAbstract
      * @param list<Node\Expr\ClosureUse>|null   $closureUses  non-null when the
      *        inner call is inside a closure; restricts variable lookup to vars
      *        explicitly captured via use(...).
+     * @param array<string, Node\Expr>          $localVars    varName => assigned expr (one-hop)
      * @return list<array<string,mixed>>|null
      */
-    private function buildArgSpecs(array $args, array $params, ?array $closureUses = null): ?array
+    private function buildArgSpecs(array $args, array $params, ?array $closureUses = null, array $localVars = []): ?array
     {
         $paramIdxByName = [];
         foreach ($params as $i => $p) {
@@ -2151,6 +2166,10 @@ final class Visitor extends NodeVisitorAbstract
             // Named arguments (PHP 8+) are not supported; bail to avoid wrong synthesis.
             if ($a->name !== null) return null;
             $v = $a->value;
+            // Resolve a same-function-body local-var alias one hop.
+            if ($v instanceof Node\Expr\Variable && is_string($v->name) && isset($localVars[$v->name])) {
+                $v = $localVars[$v->name];
+            }
             if ($v instanceof Node\Expr\Variable && is_string($v->name)) {
                 // In a closure context the variable must be explicitly captured
                 // via use(...) to be a wrapper param; an untracked variable is
@@ -2162,12 +2181,61 @@ final class Visitor extends NodeVisitorAbstract
                 }
                 return null;
             }
+            // Detect array_merge($defaults, $callerParam) shape.
+            if ($v instanceof Node\Expr\FuncCall
+                && $v->name instanceof Node\Name
+                && strtolower($v->name->toString()) === 'array_merge'
+                && count($v->args) === 2) {
+                $first = $v->args[0]->value;
+                // Resolve the first arg through localVars if it's a variable.
+                if ($first instanceof Node\Expr\Variable && is_string($first->name) && isset($localVars[$first->name])) {
+                    $first = $localVars[$first->name];
+                }
+                $second = $v->args[1]->value;
+                if ($first instanceof Node\Expr\Array_
+                    && $second instanceof Node\Expr\Variable
+                    && is_string($second->name)
+                    && isset($paramIdxByName[$second->name])) {
+                    // Use partial literal reading: skip non-literal values instead of returning null.
+                    $defaults = $this->readPartialLiteralArray($first);
+                    $out[] = [
+                        'kind' => 'merge',
+                        'defaults' => $defaults,
+                        'callerParamIdx' => $paramIdxByName[$second->name],
+                    ];
+                    continue;
+                }
+            }
             $lit = $this->readArgLiteralValue($v);
             if ($lit !== null) {
                 $out[] = ['kind' => 'fixed', 'value' => $lit];
                 continue;
             }
             return null;
+        }
+        return $out;
+    }
+
+    /**
+     * Read an Array_ node into a mixed-value map, keeping only items whose
+     * value is a literal (string/int/bool/array-of-literals). Non-literal values
+     * are silently skipped. Always returns an array, never null.
+     *
+     * @return array<int|string, mixed>
+     */
+    private function readPartialLiteralArray(Node\Expr\Array_ $n): array
+    {
+        $out = [];
+        foreach ($n->items as $item) {
+            if (!$item instanceof Node\ArrayItem) continue;
+            $vv = $this->readArgLiteralValue($item->value);
+            if ($vv === null) continue; // skip non-literal values
+            if ($item->key === null) {
+                $out[] = $vv;
+            } elseif ($item->key instanceof Node\Scalar\String_) {
+                $out[$item->key->value] = $vv;
+            }
+            // Non-string-literal key with literal value: skip (rare edge case)
         }
         return $out;
     }
@@ -2267,6 +2335,22 @@ final class Visitor extends NodeVisitorAbstract
                 $idx = $spec['wrapperParamIdx'];
                 if (!isset($callerArgs[$idx])) return null;
                 $out[] = $callerArgs[$idx];
+                continue;
+            }
+            if ($spec['kind'] === 'merge') {
+                $callerArgIdx = $spec['callerParamIdx'];
+                $callerArg = $callerArgs[$callerArgIdx] ?? null;
+                $merged = $spec['defaults'];
+                if ($callerArg !== null) {
+                    $callerLit = $this->readArgLiteralValue($callerArg->value);
+                    if (is_array($callerLit)) {
+                        // PHP array_merge semantics: string keys later-wins, int keys appended.
+                        foreach ($callerLit as $k => $vv) {
+                            $merged[$k] = $vv;
+                        }
+                    }
+                }
+                $out[] = new Node\Arg($this->literalToNode($merged));
                 continue;
             }
         }

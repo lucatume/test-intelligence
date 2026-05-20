@@ -183,4 +183,20 @@ register_pair( '/items' );
     const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
     expect(keys).toEqual(['rest:GET /p/v1/items', 'rest:POST /p/v1/items']);
   });
+
+  it('synthesizes via array_merge defaults when caller omits the merged key', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+function register_my_route( $route, $callback, $extras = array() ) {
+    $defaults = array( 'methods' => 'POST', 'callback' => $callback );
+    $opts     = array_merge( $defaults, $extras );
+    register_rest_route( 'my-plugin/v1', $route, $opts );
+}
+register_my_route( '/items', 'cb' );
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.filter((f) => f.kind === 'rest-endpoint');
+    expect(rest).toHaveLength(1);
+    expect(rest[0]?.anchors[0]?.key).toBe('rest:POST /my-plugin/v1/items');
+  });
 });
