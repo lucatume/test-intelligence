@@ -199,4 +199,19 @@ register_my_route( '/items', 'cb' );
     expect(rest).toHaveLength(1);
     expect(rest[0]?.anchors[0]?.key).toBe('rest:POST /my-plugin/v1/items');
   });
+
+  it('caller override wins over wrapper defaults via array_merge semantics', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+function register_my_route( $route, $extras = array() ) {
+    $opts = array_merge( array( 'methods' => 'POST' ), $extras );
+    register_rest_route( 'my-plugin/v1', $route, $opts );
+}
+register_my_route( '/items', array( 'methods' => 'DELETE' ) );
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.filter((f) => f.kind === 'rest-endpoint');
+    expect(rest).toHaveLength(1);
+    expect(rest[0]?.anchors[0]?.key).toBe('rest:DELETE /my-plugin/v1/items');
+  });
 });
