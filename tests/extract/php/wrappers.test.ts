@@ -82,12 +82,12 @@ function register_my_route( $route ) {
     // The synthesis must happen in the end-of-input flush.
     const callerFacts = await extractPhpFile({ projectRoot: root, relPath: 'caller.php', worker });
     const wrapperFacts = await extractPhpFile({ projectRoot: root, relPath: 'wrapper.php', worker });
-    const finalFacts = await flushDeferredPhpFacts({ projectRoot: root, worker });
+    const flushResult = await flushDeferredPhpFacts({ projectRoot: root, worker });
 
     // The synthesized fact must come from the flush, not from per-file extraction.
     expect(callerFacts.filter((f) => f.kind === 'rest-endpoint')).toHaveLength(0);
     expect(wrapperFacts.filter((f) => f.kind === 'rest-endpoint')).toHaveLength(0);
-    const rest = finalFacts.filter((f) => f.kind === 'rest-endpoint');
+    const rest = flushResult.facts.filter((f) => f.kind === 'rest-endpoint');
     expect(rest).toHaveLength(1);
     expect(rest[0]?.anchors[0]?.key).toBe('rest:GET /my-plugin/v1/items');
     expect(rest[0]?.location.file).toBe('caller.php');
@@ -107,10 +107,10 @@ register_my_route( '/items' );
 `);
     const wrapperFacts = await extractPhpFile({ projectRoot: root, relPath: 'wrapper.php', worker });
     const callerFacts = await extractPhpFile({ projectRoot: root, relPath: 'caller.php', worker });
-    const finalFacts = await flushDeferredPhpFacts({ projectRoot: root, worker });
+    const flushResult = await flushDeferredPhpFacts({ projectRoot: root, worker });
 
     // Synthesis happens during caller.php's processing; flush returns nothing new.
-    expect(finalFacts.filter((f) => f.kind === 'rest-endpoint')).toHaveLength(0);
+    expect(flushResult.facts.filter((f) => f.kind === 'rest-endpoint')).toHaveLength(0);
     const rest = [...wrapperFacts, ...callerFacts].filter((f) => f.kind === 'rest-endpoint');
     expect(rest).toHaveLength(1);
     expect(rest[0]?.anchors[0]?.key).toBe('rest:GET /my-plugin/v1/items');
@@ -267,8 +267,8 @@ function register_my_route( $route ) {
 register_my_route( '/items' );
 `);
       const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker: localWorker });
-      const final = await flushDeferredPhpFacts({ projectRoot: root, worker: localWorker });
-      const rest = [...facts, ...final].filter((f) => f.kind === 'rest-endpoint');
+      const flushResult = await flushDeferredPhpFacts({ projectRoot: root, worker: localWorker });
+      const rest = [...facts, ...flushResult.facts].filter((f) => f.kind === 'rest-endpoint');
       // Exactly one fact, with the user-config namespace and method.
       expect(rest).toHaveLength(1);
       expect(rest[0]?.anchors[0]?.key).toBe('rest:GET /user-overridden/v1/items');

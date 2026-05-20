@@ -68,15 +68,19 @@ export function startPhpWorkerPool(opts: PoolOptions): Result<PhpWorker, SpawnEr
     async flushDeferred(): Promise<unknown> {
       // Fan out to all slots: each worker may have its own deferred call buffer.
       const results = await Promise.all(slots.map((s) => s.worker.flushDeferred()));
-      // Merge the facts arrays from each slot's response.
-      const merged: unknown[] = [];
+      // Merge the facts arrays and wrapperIndex arrays from each slot's response.
+      const mergedFacts: unknown[] = [];
+      const mergedWrapperIndex: unknown[] = [];
       for (const r of results) {
-        const env = r as { op?: string; facts?: unknown[] };
+        const env = r as { op?: string; facts?: unknown[]; wrapperIndex?: unknown[] };
         if (env.op === 'facts' && Array.isArray(env.facts)) {
-          for (const f of env.facts) merged.push(f);
+          for (const f of env.facts) mergedFacts.push(f);
+        }
+        if (Array.isArray(env.wrapperIndex)) {
+          for (const w of env.wrapperIndex) mergedWrapperIndex.push(w);
         }
       }
-      return { op: 'facts', facts: merged };
+      return { op: 'facts', facts: mergedFacts, wrapperIndex: mergedWrapperIndex };
     },
     async shutdown(): Promise<void> {
       await Promise.all(slots.map((s) => s.worker.shutdown()));

@@ -15,6 +15,8 @@ import {
   insertTest,
   clearFactsForFile,
   readFileExtractState,
+  upsertWrapperIndexEntry,
+  insertWrapperCallSite,
 } from '../store/writers.js';
 import { walk } from '../discover/walk.js';
 import { classifyFile } from '../discover/framework.js';
@@ -78,6 +80,10 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
     let factsInserted = 0;
     let testsFound = 0;
     let worker: PhpWorker | undefined;
+    // Synthesized facts emitted during per-file extraction: (factId, wrapperName).
+    // After flush-deferred the wrapper_index snapshot arrives; we then insert
+    // wrapper_call_site rows for these and for the deferred facts.
+    const pendingCallSites: Array<{ factId: number; wrapperName: string }> = [];
 
     try {
       const setupStart = opts.clock.nowMillis();
@@ -219,6 +225,19 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
                   testsFound++;
                 }
               }
+              // Track synthesized wrapper facts for wrapper_call_site insertion
+              // after the flush-deferred snapshot arrives.
+              const meta = (f.payload as unknown as Record<string, unknown>)['meta'];
+              if (
+                meta !== null && typeof meta === 'object' &&
+                (meta as Record<string, unknown>)['resolvedBy'] === 'wrapper-auto' &&
+                typeof (meta as Record<string, unknown>)['wrapperName'] === 'string'
+              ) {
+                pendingCallSites.push({
+                  factId,
+                  wrapperName: (meta as Record<string, unknown>)['wrapperName'] as string,
+                });
+              }
             }
             if (verbosity === 'verbose') {
               opts.stderr.write(`ti: extracted ${file.path} (${String(r.value.length)} facts)\n`);
@@ -239,11 +258,13 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
         // Flush any cross-file deferred wrapper calls that couldn't be resolved
         // during per-file extraction (caller processed before wrapper-def file).
         if (worker !== undefined) {
-          const deferredFacts = await flushDeferredPhpFacts({
+          const flushResult = await flushDeferredPhpFacts({
             projectRoot: opts.projectRoot,
             worker,
           });
-          for (const f of deferredFacts) {
+          // Collect deferred fact ids with their wrapperName for call_site linking.
+          const deferredCallSites: Array<{ factId: number; wrapperName: string }> = [];
+          for (const f of flushResult.facts) {
             // Locate the existing file row — the caller file was already extracted
             // in the lane loop above. Fall back to upsert only if somehow absent.
             let fileId: number;
@@ -275,6 +296,37 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
               if (parsed.kind === 'err') continue;
               const anchorId = upsertAnchor(db, { key: parsed.value.key, type: parsed.value.type });
               insertFactAnchor(db, { factId, anchorId, role: a.role });
+            }
+            const meta = (f.payload as unknown as Record<string, unknown>)['meta'];
+            if (
+              meta !== null && typeof meta === 'object' &&
+              (meta as Record<string, unknown>)['resolvedBy'] === 'wrapper-auto' &&
+              typeof (meta as Record<string, unknown>)['wrapperName'] === 'string'
+            ) {
+              deferredCallSites.push({
+                factId,
+                wrapperName: (meta as Record<string, unknown>)['wrapperName'] as string,
+              });
+            }
+          }
+          // Persist wrapper_index rows and link call sites.
+          const wrapperIdByName = new Map<string, number>();
+          for (const entry of flushResult.wrapperIndex) {
+            const wrapperId = upsertWrapperIndexEntry(db, {
+              wrapperName: entry.wrapperName,
+              wraps: entry.wraps,
+              defFile: entry.defFile,
+              defStartLine: entry.defStartLine,
+              defEndLine: entry.defEndLine,
+              argSpecsJson: entry.argSpecsJson,
+              source: entry.source,
+            });
+            wrapperIdByName.set(entry.wrapperName, wrapperId);
+          }
+          for (const cs of [...pendingCallSites, ...deferredCallSites]) {
+            const wrapperId = wrapperIdByName.get(cs.wrapperName);
+            if (wrapperId !== undefined) {
+              insertWrapperCallSite(db, { factId: cs.factId, wrapperId });
             }
           }
         }

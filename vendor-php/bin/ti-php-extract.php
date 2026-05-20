@@ -1507,6 +1507,32 @@ final class Visitor extends NodeVisitorAbstract
     }
 
     /**
+     * Flatten wrapperIndex entries into a list suitable for persistence.
+     * Each entry carries wrapperName, wraps, defFile, defStartLine, defEndLine,
+     * argSpecsJson (JSON-encoded), and source ('auto'|'config').
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function dumpWrapperIndexForPersistence(): array
+    {
+        $out = [];
+        foreach ($this->wrapperIndex as $wrapperName => $entries) {
+            foreach ($entries as $entry) {
+                $out[] = [
+                    'wrapperName'  => $wrapperName,
+                    'wraps'        => $entry['wraps'],
+                    'defFile'      => $entry['defFile'],
+                    'defStartLine' => $entry['defStartLine'],
+                    'defEndLine'   => $entry['defEndLine'],
+                    'argSpecsJson' => json_encode($entry['argSpecs']),
+                    'source'       => $entry['source'],
+                ];
+            }
+        }
+        return $out;
+    }
+
+    /**
      * Directly set the wrapperIndex (used to restore config-source entries after reset-state).
      * @param array<string, list<array<string, mixed>>> $index
      */
@@ -2413,7 +2439,7 @@ final class Visitor extends NodeVisitorAbstract
             $synthCall->setAttribute('endLine', $callerCallNode->getEndLine());
             $synthCall->setAttribute('startFilePos', $callerCallNode->getAttribute('startFilePos') ?? 0);
             $synthCall->setAttribute('endFilePos', $callerCallNode->getAttribute('endFilePos') ?? 0);
-            $this->emitForCallee($wrapsCall, $synthCall, ['resolvedBy' => 'wrapper-auto', 'wrapperDef' => ['file' => $entry['defFile'], 'startLine' => $entry['defStartLine']]]);
+            $this->emitForCallee($wrapsCall, $synthCall, ['resolvedBy' => 'wrapper-auto', 'wrapperName' => $wrapperName, 'wrapperDef' => ['file' => $entry['defFile'], 'startLine' => $entry['defStartLine']]]);
         }
     }
 
@@ -2639,7 +2665,11 @@ while (($line = fgets($stdin)) !== false) {
     if ($op === 'flush-deferred') {
         try {
             $facts = $visitor->replayDeferredCalls();
-            emit(['op' => 'facts', 'facts' => $facts]);
+            emit([
+                'op'           => 'facts',
+                'facts'        => $facts,
+                'wrapperIndex' => $visitor->dumpWrapperIndexForPersistence(),
+            ]);
         } catch (\Throwable $t) {
             emit(['op' => 'error', 'message' => 'flush-deferred failed: ' . $t->getMessage()]);
         }

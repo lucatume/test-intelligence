@@ -295,6 +295,36 @@ export function readResolution(
   };
 }
 
+export interface WrapperIndexRow {
+  readonly wrapperName: string;
+  readonly wraps: string;
+  readonly defFile: string;
+  readonly defStartLine: number;
+  readonly defEndLine: number;
+  readonly argSpecsJson: string;
+  readonly source: 'auto' | 'config';
+}
+
+export function upsertWrapperIndexEntry(db: Database.Database, row: WrapperIndexRow): number {
+  const info = db.prepare(`
+    INSERT INTO wrapper_index (wrapper_name, wraps, def_file, def_start_line, def_end_line, arg_specs_json, source)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    row.wrapperName, row.wraps, row.defFile,
+    row.defStartLine, row.defEndLine, row.argSpecsJson, row.source,
+  );
+  return Number(info.lastInsertRowid);
+}
+
+export function insertWrapperCallSite(
+  db: Database.Database,
+  args: { factId: number; wrapperId: number },
+): void {
+  db.prepare(`
+    INSERT OR IGNORE INTO wrapper_call_site (fact_id, wrapper_id) VALUES (?, ?)
+  `).run(args.factId, args.wrapperId);
+}
+
 // Delete every resolution row whose expr_hash is not in `liveHashes`. Returns
 // the number of rows removed.
 export function pruneStaleResolutions(
