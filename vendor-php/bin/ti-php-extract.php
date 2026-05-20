@@ -1768,6 +1768,11 @@ final class Visitor extends NodeVisitorAbstract
                 }
                 $argSpecs = $this->buildArgSpecs($innerArgs, $stmt->params);
                 if ($argSpecs === null) continue;
+                $hasParam = false;
+                foreach ($argSpecs as $spec) {
+                    if ($spec['kind'] === 'param') { $hasParam = true; break; }
+                }
+                if (!$hasParam) continue;
                 $name = $stmt->name->name;
                 $this->wrapperIndex[$name][] = [
                     'wraps'        => $wrappedName,
