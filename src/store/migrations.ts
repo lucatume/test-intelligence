@@ -5,7 +5,7 @@ import type Database from 'better-sqlite3';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 export function readCurrentSchema(): string {
   return readFileSync(join(here, 'schema.sql'), 'utf8');
@@ -63,6 +63,9 @@ export function migrateToCurrent(db: Database.Database): void {
   if (current < 4) {
     migrateV3ToV4(db);
   }
+  if (current < 5) {
+    migrateV4ToV5(db);
+  }
 }
 
 function migrateV1ToV2(db: Database.Database): void {
@@ -91,6 +94,35 @@ function migrateV2ToV3(db: Database.Database): void {
     // forces a full SCAN of `test` to enforce the cascade.
     db.exec('CREATE INDEX IF NOT EXISTS test_fact_idx ON test(fact_id)');
     db.prepare('UPDATE schema_version SET version = ?').run(3);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+}
+
+function migrateV4ToV5(db: Database.Database): void {
+  db.exec('BEGIN');
+  try {
+    db.exec(`
+      CREATE TABLE wrapper_index (
+        id              INTEGER PRIMARY KEY,
+        wrapper_name    TEXT NOT NULL,
+        wraps           TEXT NOT NULL,
+        def_file        TEXT NOT NULL,
+        def_start_line  INTEGER NOT NULL,
+        def_end_line    INTEGER NOT NULL,
+        arg_specs_json  TEXT NOT NULL,
+        source          TEXT NOT NULL CHECK (source IN ('auto', 'config'))
+      );
+      CREATE INDEX wrapper_index_name     ON wrapper_index (wrapper_name);
+      CREATE INDEX wrapper_index_def_file ON wrapper_index (def_file);
+      CREATE TABLE wrapper_call_site (
+        fact_id    INTEGER PRIMARY KEY REFERENCES fact(id) ON DELETE CASCADE,
+        wrapper_id INTEGER NOT NULL REFERENCES wrapper_index(id) ON DELETE CASCADE
+      );
+    `);
+    db.prepare('UPDATE schema_version SET version = ?').run(5);
     db.exec('COMMIT');
   } catch (e) {
     db.exec('ROLLBACK');

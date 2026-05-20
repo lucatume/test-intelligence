@@ -90,3 +90,28 @@ CREATE TABLE resolution (
   PRIMARY KEY (expr_hash, pass)
 );
 CREATE INDEX resolution_class_idx ON resolution(classification);
+
+-- Wrapper pattern index: one row per distinct PHP wrapper function detected
+-- (auto-discovered or declared in config). arg_specs_json is a JSON array of
+-- argument descriptor objects.
+CREATE TABLE wrapper_index (
+  id              INTEGER PRIMARY KEY,
+  wrapper_name    TEXT NOT NULL,
+  wraps           TEXT NOT NULL,
+  def_file        TEXT NOT NULL,
+  def_start_line  INTEGER NOT NULL,
+  def_end_line    INTEGER NOT NULL,
+  arg_specs_json  TEXT NOT NULL,
+  source          TEXT NOT NULL CHECK (source IN ('auto', 'config'))
+);
+
+CREATE INDEX wrapper_index_name      ON wrapper_index (wrapper_name);
+CREATE INDEX wrapper_index_def_file  ON wrapper_index (def_file);
+
+-- Call-site linkage: ties a fact (the call-site fact) to the wrapper entry it
+-- was matched against. Cascades on both sides so stale rows are cleaned up
+-- automatically when the parent fact or wrapper entry is removed.
+CREATE TABLE wrapper_call_site (
+  fact_id    INTEGER PRIMARY KEY REFERENCES fact(id) ON DELETE CASCADE,
+  wrapper_id INTEGER NOT NULL REFERENCES wrapper_index(id) ON DELETE CASCADE
+);

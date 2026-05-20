@@ -17,7 +17,7 @@ describe('openStore', () => {
     const r = openStore(root);
     expect(r.kind).toBe('ok');
     if (r.kind !== 'ok') return;
-    expect(r.value.schemaVersion).toBe(4);
+    expect(r.value.schemaVersion).toBe(5);
     r.value.close();
   });
 
@@ -30,7 +30,7 @@ describe('openStore', () => {
     const r2 = openStore(root);
     expect(r2.kind).toBe('ok');
     if (r2.kind === 'ok') {
-      expect(r2.value.schemaVersion).toBe(4);
+      expect(r2.value.schemaVersion).toBe(5);
       r2.value.close();
     }
   });
@@ -40,7 +40,7 @@ describe('openStore', () => {
     expect(r.kind).toBe('ok');
     if (r.kind !== 'ok') return;
     expect(() => {
-      r.value.db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(4);
+      r.value.db.prepare('INSERT INTO schema_version (version) VALUES (?)').run(5);
     }).toThrow(/UNIQUE constraint failed/);
     r.value.close();
   });

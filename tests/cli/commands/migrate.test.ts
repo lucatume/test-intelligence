@@ -97,13 +97,13 @@ describe('migrateCommand', () => {
     makeV1Store(root);
     const t = makeIo();
     expect(migrateCommand({ projectRoot: root, io: t.io })).toBe(0);
-    expect(t.err).toMatch(/migrated.*v1.*v4/i);
+    expect(t.err).toMatch(/migrated.*v1.*v5/i);
 
     // After migration the store should open cleanly.
     const db = new Database(join(root, '.ti', 'store.db'));
     try {
       const v = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
-      expect(v).toBe(4);
+      expect(v).toBe(5);
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>;
       expect(tables.map((r) => r.name)).not.toContain('edge_provenance');
       const cols = db.prepare('PRAGMA table_info(edge)').all() as Array<{ name: string }>;

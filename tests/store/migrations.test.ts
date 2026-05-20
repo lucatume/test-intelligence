@@ -6,6 +6,7 @@ import {
   CURRENT_SCHEMA_VERSION,
   migrateToCurrent,
   getSchemaVersion,
+  applyInitialSchema,
 } from '../../src/store/migrations.js';
 
 // v1 schema (frozen — historical). This is what users upgrading from v1 have on disk.
@@ -96,7 +97,7 @@ describe('migrateToCurrent v1 -> v2', () => {
       expect(getSchemaVersion(db)).toBe(1);
       migrateToCurrent(db);
       expect(getSchemaVersion(db)).toBe(CURRENT_SCHEMA_VERSION);
-      expect(CURRENT_SCHEMA_VERSION).toBe(4);
+      expect(CURRENT_SCHEMA_VERSION).toBe(5);
     } finally { db.close(); }
   });
 
@@ -155,9 +156,9 @@ describe('migrateToCurrent v1 -> v2', () => {
     const db = makeV1Store(getTmp());
     try {
       migrateToCurrent(db);
-      expect(getSchemaVersion(db)).toBe(4);
+      expect(getSchemaVersion(db)).toBe(CURRENT_SCHEMA_VERSION);
       migrateToCurrent(db);
-      expect(getSchemaVersion(db)).toBe(4);
+      expect(getSchemaVersion(db)).toBe(CURRENT_SCHEMA_VERSION);
     } finally { db.close(); }
   });
 });
@@ -171,7 +172,7 @@ describe('migrateToCurrent v2 -> v3', () => {
     const db = makeV1Store(getTmp());
     try {
       migrateToCurrent(db);
-      expect(getSchemaVersion(db)).toBe(4);
+      expect(getSchemaVersion(db)).toBe(CURRENT_SCHEMA_VERSION);
       const indexes = db
         .prepare("SELECT name FROM sqlite_master WHERE type='index'")
         .all() as Array<{ name: string }>;
@@ -200,8 +201,7 @@ describe('migrateToCurrent v3 -> v4', () => {
     const db = makeV1Store(getTmp());
     try {
       migrateToCurrent(db);
-      expect(getSchemaVersion(db)).toBe(4);
-      expect(CURRENT_SCHEMA_VERSION).toBe(4);
+      expect(getSchemaVersion(db)).toBe(CURRENT_SCHEMA_VERSION);
       const cols = db.prepare('PRAGMA table_info(resolution)').all() as { name: string }[];
       expect(cols.map((c) => c.name).sort()).toEqual(
         ['cite_line', 'cite_path', 'cite_verified', 'classification',
@@ -215,7 +215,42 @@ describe('migrateToCurrent v3 -> v4', () => {
     try {
       migrateToCurrent(db);
       expect(() => { migrateToCurrent(db); }).not.toThrow();
-      expect(getSchemaVersion(db)).toBe(4);
+      expect(getSchemaVersion(db)).toBe(CURRENT_SCHEMA_VERSION);
+    } finally { db.close(); }
+  });
+});
+
+describe('migrateToCurrent v4 -> v5', () => {
+  const getTmp = useTmpDir('ti-migrate-v4v5-');
+
+  it('creates wrapper_index and wrapper_call_site at the new SUPPORTED_SCHEMA', () => {
+    const db = new Database(':memory:');
+    applyInitialSchema(db);
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+    const names = tables.map(t => t.name);
+    expect(names).toContain('wrapper_index');
+    expect(names).toContain('wrapper_call_site');
+  });
+
+  it('migrates a v1 store forward to v5 adding wrapper tables', () => {
+    const db = makeV1Store(getTmp());
+    try {
+      migrateToCurrent(db);
+      expect(getSchemaVersion(db)).toBe(CURRENT_SCHEMA_VERSION);
+      expect(CURRENT_SCHEMA_VERSION).toBe(5);
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+      const names = tables.map(t => t.name);
+      expect(names).toContain('wrapper_index');
+      expect(names).toContain('wrapper_call_site');
+    } finally { db.close(); }
+  });
+
+  it('migrateToCurrent is idempotent on a v5 store', () => {
+    const db = makeV1Store(getTmp());
+    try {
+      migrateToCurrent(db);
+      expect(() => { migrateToCurrent(db); }).not.toThrow();
+      expect(getSchemaVersion(db)).toBe(5);
     } finally { db.close(); }
   });
 });
