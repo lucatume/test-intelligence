@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import type Database from 'better-sqlite3';
 import { cpus } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -105,8 +106,25 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       const extractPhaseStart = opts.clock.nowMillis();
 
       const compilerOptionsResolver = new CompilerOptionsResolver(opts.projectRoot);
-      const source = opts.onlyPaths !== undefined
-        ? listFromPaths(opts.onlyPaths, opts.projectRoot, opts.config, opts.stderr, verbosity)
+      // When updating a subset of paths, expand the set to include any caller
+      // file that holds a synthesized fact backed by a wrapper whose def_file
+      // is among the updated paths. Without this, the old synthesized facts for
+      // those callers persist even after the wrapper definition changes.
+      const effectiveOnlyPaths = opts.onlyPaths !== undefined
+        ? expandOnlyPathsForWrapperUpdates(db, opts.onlyPaths)
+        : undefined;
+      // Drop old wrapper_index rows for the def files being re-extracted.
+      // CASCADE deletes wrapper_call_site rows for the old synthesized facts.
+      // Use the ORIGINAL onlyPaths (not expanded) — only actual def files lose
+      // their index rows; the expanded caller files just get re-extracted.
+      if (opts.onlyPaths !== undefined && opts.onlyPaths.length > 0) {
+        const defPlaceholders = opts.onlyPaths.map(() => '?').join(',');
+        db.prepare(
+          `DELETE FROM wrapper_index WHERE def_file IN (${defPlaceholders})`
+        ).run(...opts.onlyPaths);
+      }
+      const source = effectiveOnlyPaths !== undefined
+        ? listFromPaths(effectiveOnlyPaths, opts.projectRoot, opts.config, opts.stderr, verbosity)
         : walk(opts.projectRoot, opts.config);
       const it = toAsyncIterator(source);
 
@@ -560,6 +578,28 @@ function mayHavePhp(opts: BuildOptions): boolean {
     return opts.onlyPaths.some((p) => p.endsWith('.php'));
   }
   return true;
+}
+
+// When onlyPaths targets a wrapper def file, expand the update set to include
+// every caller file that has a synthesized fact backed by that wrapper.
+// Returns a new array that is the union of onlyPaths plus any discovered caller paths.
+function expandOnlyPathsForWrapperUpdates(
+  db: Database.Database,
+  onlyPaths: ReadonlyArray<string>,
+): string[] {
+  const set = new Set(onlyPaths);
+  if (set.size === 0) return [...set];
+  const placeholders = [...set].map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT DISTINCT fl.path
+    FROM wrapper_call_site wcs
+    JOIN wrapper_index wi ON wi.id = wcs.wrapper_id
+    JOIN fact f ON f.id = wcs.fact_id
+    JOIN file fl ON fl.id = f.file_id
+    WHERE wi.def_file IN (${placeholders})
+  `).all(...set) as Array<{ path: string }>;
+  for (const r of rows) set.add(r.path);
+  return [...set];
 }
 
 function resolveRepoRoot(): string {
