@@ -519,6 +519,68 @@ ti_deletemeelephant_helper();
     expect(rest[0]?.anchors[0]?.key).toBe('rest:GET /myplugin/v1/items');
   });
 
+  it('resolves WP_REST_Server::READABLE to GET', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wc/v3', '/items', ['methods' => WP_REST_Server::READABLE]);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual(['rest:GET /wc/v3/items']);
+  });
+
+  it('resolves WP_REST_Server::CREATABLE to POST', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wc/v3', '/items', ['methods' => WP_REST_Server::CREATABLE]);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual(['rest:POST /wc/v3/items']);
+  });
+
+  it('resolves WP_REST_Server::EDITABLE to POST/PUT/PATCH (3 facts)', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wc/v3', '/items', ['methods' => WP_REST_Server::EDITABLE]);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual(['rest:PATCH /wc/v3/items', 'rest:POST /wc/v3/items', 'rest:PUT /wc/v3/items']);
+  });
+
+  it('resolves WP_REST_Server::DELETABLE to DELETE', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wc/v3', '/items', ['methods' => WP_REST_Server::DELETABLE]);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual(['rest:DELETE /wc/v3/items']);
+  });
+
+  it('resolves WP_REST_Server::ALLMETHODS to all five HTTP verbs', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wc/v3', '/items', ['methods' => WP_REST_Server::ALLMETHODS]);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual([
+      'rest:DELETE /wc/v3/items',
+      'rest:GET /wc/v3/items',
+      'rest:PATCH /wc/v3/items',
+      'rest:POST /wc/v3/items',
+      'rest:PUT /wc/v3/items',
+    ]);
+  });
+
+  it('resolves a mixed array of WP_REST_Server constants and strings', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wc/v3', '/items', ['methods' => [WP_REST_Server::READABLE, 'POST']]);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual(['rest:GET /wc/v3/items', 'rest:POST /wc/v3/items']);
+  });
+
+  it('defaults to GET when methods is an unknown class constant', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', "<?php register_rest_route('wc/v3', '/items', ['methods' => Some_Other_Class::UNKNOWN]);");
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual(['rest:GET /wc/v3/items']);
+  });
+
   it('emits enqueue-script for wp_enqueue_style', async () => {
     const root = getTmp();
     write(root, 'plugin.php', "<?php wp_enqueue_style('my-style', '/css/x.css');");

@@ -1254,22 +1254,50 @@ final class Visitor extends NodeVisitorAbstract
             if (!$item instanceof Node\ArrayItem) continue;
             if (!$item->key instanceof Node\Scalar\String_) continue;
             if (strtolower($item->key->value) !== 'methods') continue;
-            $val = $item->value;
-            if ($val instanceof Node\Scalar\String_) {
-                return $this->splitMethods($val->value);
-            }
-            if ($val instanceof Node\Expr\Array_) {
-                $out = [];
-                foreach ($val->items as $m) {
-                    if ($m instanceof Node\ArrayItem && $m->value instanceof Node\Scalar\String_) {
-                        $out = array_merge($out, $this->splitMethods($m->value->value));
-                    }
-                }
-                return $out;
-            }
-            return [];
+            return $this->restMethodsFromValue($item->value);
         }
         return [];
+    }
+
+    /** @return list<string> */
+    private function restMethodsFromValue(Node $val): array
+    {
+        if ($val instanceof Node\Scalar\String_) {
+            return $this->splitMethods($val->value);
+        }
+        if ($val instanceof Node\Expr\ClassConstFetch) {
+            $raw = $this->wpRestServerConstantValue($val);
+            return $raw === null ? [] : $this->splitMethods($raw);
+        }
+        if ($val instanceof Node\Expr\Array_) {
+            $out = [];
+            foreach ($val->items as $m) {
+                if (!($m instanceof Node\ArrayItem)) continue;
+                $out = array_merge($out, $this->restMethodsFromValue($m->value));
+            }
+            return $out;
+        }
+        return [];
+    }
+
+    // WP_REST_Server::<CONST> maps to the same HTTP-method strings WordPress core
+    // defines on the class. Hardcoded because WP_REST_Server is core, not project
+    // code, so the project-class-const index never sees these values.
+    private function wpRestServerConstantValue(Node\Expr\ClassConstFetch $node): ?string
+    {
+        if (!$node->class instanceof Node\Name) return null;
+        if (!$node->name instanceof Node\Identifier) return null;
+        $cls = ltrim($node->class->toString(), '\\');
+        if (strtolower($cls) !== 'wp_rest_server') return null;
+        static $map = [
+            'READABLE'   => 'GET',
+            'CREATABLE'  => 'POST',
+            'EDITABLE'   => 'POST, PUT, PATCH',
+            'DELETABLE'  => 'DELETE',
+            'ALLMETHODS' => 'GET, POST, PUT, PATCH, DELETE',
+        ];
+        $const = strtoupper($node->name->name);
+        return $map[$const] ?? null;
     }
 
     /** @return list<string> */
