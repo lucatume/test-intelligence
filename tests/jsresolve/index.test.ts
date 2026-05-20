@@ -229,6 +229,49 @@ describe('runJsResolve', () => {
       db.close();
     });
 
+    it('strips a query string from a resolved rest path before forming the anchor', async () => {
+      const root = getTmp();
+
+      // Fixture: caller.js builds an apiFetch path that includes query args.
+      // The PHP `register_rest_route` listener side never carries query args
+      // (those are request params, not part of the route), so the caller-side
+      // anchor key must drop them too — otherwise the literal anchor
+      // `rest:GET /wc-admin/options` (which exists on the listener side) is
+      // missed.
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(join(root, 'src/cfg.js'), "export const PATH = '/wc-admin/options?options=foo,bar';\n");
+      writeFileSync(
+        join(root, 'src/caller.js'),
+        "import { PATH } from './cfg.js';\napiFetch({ path: PATH });\n",
+      );
+
+      const db = freshDb();
+      const opts = synthesizeCompilerOptions(root);
+      const callerFacts = await extractTsFile({
+        projectRoot: root, relPath: 'src/caller.js', language: 'js',
+        framework: null, compilerOptions: opts, patterns: WP_JS_PATTERNS,
+      });
+      const callerRest = callerFacts.find((f) => f.kind === 'rest-call-js');
+      expect(callerRest).toBeDefined();
+      if (callerRest === undefined) return;
+
+      const factId = seedFact(db, 'src/caller.js', callerRest);
+      runJsResolve(db, { projectRoot: root });
+
+      const anchorKeys = (
+        db
+          .prepare(
+            `SELECT a.key FROM fact_anchor fa JOIN anchor a ON a.id = fa.anchor_id
+             WHERE fa.fact_id = ?`,
+          )
+          .all(factId) as { key: string }[]
+      ).map((r) => r.key);
+      expect(anchorKeys).toContain('rest:GET /wc-admin/options');
+      expect(anchorKeys.some((k) => k.includes('?'))).toBe(false);
+
+      db.close();
+    });
+
     it('repoints an existing {*}-placeholder anchor when the template folds to a literal', async () => {
       const root = getTmp();
 

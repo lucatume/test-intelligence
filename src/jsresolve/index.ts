@@ -91,6 +91,13 @@ function normRestPath(raw: string): string {
   p = p.replace(/^[a-z]+:\/\/[^/]+/, '');
   const i = p.indexOf('/wp-json');
   if (i !== -1) p = p.slice(i + '/wp-json'.length);
+  // Drop the query string and the fragment — neither is part of the REST
+  // route, and the listener-side anchor (built from a `register_rest_route`
+  // route pattern) never carries them. Whichever sentinel appears first wins.
+  const q = p.indexOf('?');
+  const h = p.indexOf('#');
+  const cut = q === -1 ? h : h === -1 ? q : Math.min(q, h);
+  if (cut !== -1) p = p.slice(0, cut);
   if (!p.startsWith('/')) p = '/' + p;
   p = p.replace(/\/+/g, '/');
   if (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
