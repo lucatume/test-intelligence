@@ -87,6 +87,9 @@ final class Visitor extends NodeVisitorAbstract
      */
     private array $wrapperScopes = [];
 
+    /** @var list<array{callee:string,argNodes:list<Node>,file:string,startLine:int,endLine:int}> */
+    private array $deferredWrapperCalls = [];
+
     /** @var array<string, true> Static PHP language built-ins. */
     private const PHP_BUILTIN_CLASSES = [
         // SPL exceptions + core hierarchy

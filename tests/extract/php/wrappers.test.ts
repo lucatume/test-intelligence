@@ -40,5 +40,9 @@ register_my_route( '/items' );
     expect(rest).toHaveLength(1);
     expect(rest[0]?.anchors[0]?.key).toBe('rest:GET /my-plugin/v1/items');
     expect(rest[0]?.location.startLine).toBe(5); // line of register_my_route(...) call, not register_rest_route inside the wrapper
+    const meta = (rest[0]?.payload as { meta?: { resolvedBy?: string; wrapperDef?: { file?: string; startLine?: number } } }).meta;
+    expect(meta?.resolvedBy).toBe('wrapper-auto');
+    expect(meta?.wrapperDef?.file).toBe('plugin.php');
+    expect(meta?.wrapperDef?.startLine).toBe(2); // line of `function register_my_route( $route ) {`
   });
 });
