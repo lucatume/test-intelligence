@@ -399,7 +399,32 @@ function collectCallArguments(
   return out;
 }
 
+// Calls to these functions evaluate to their first argument's value — they
+// are path-decorating wrappers from @wordpress/url whose ambient .d.ts
+// declarations have no body to follow. Only consulted as a fallback when
+// the normal body-resolution path returns UNRESOLVED, so an in-program
+// definition with a real body always wins.
+const TRANSPARENT_FIRST_ARG_CALLS = new Set(['addQueryArgs']);
+
 function resolveCallReturn(
+  node: ts.CallExpression,
+  checker: ts.TypeChecker,
+  ctx: ResolveCtx,
+  memo: Memo,
+): ResolvedValue {
+  const viaBody = resolveCallReturnViaBody(node, checker, ctx, memo);
+  if (viaBody.kind !== 'unresolved') return viaBody;
+
+  if (ts.isIdentifier(node.expression) && TRANSPARENT_FIRST_ARG_CALLS.has(node.expression.text)) {
+    const arg0 = node.arguments[0];
+    if (arg0 !== undefined) {
+      return resolveNode(arg0, checker, descend(ctx), memo);
+    }
+  }
+  return UNRESOLVED;
+}
+
+function resolveCallReturnViaBody(
   node: ts.CallExpression,
   checker: ts.TypeChecker,
   ctx: ResolveCtx,

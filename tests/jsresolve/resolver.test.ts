@@ -136,4 +136,40 @@ describe('resolveExpression', () => {
     });
     expect(v).toEqual({ kind: 'string', value: 'do_thing' });
   });
+
+  it('unwraps addQueryArgs(literal, …) to the literal first argument', () => {
+    expect(resolveApiFetchArg({
+      'a.js': "apiFetch({ path: addQueryArgs('/wc/v3/products', { search: 'x' }) });",
+    }, 'a.js')).toBe('/wc/v3/products');
+  });
+
+  it('unwraps addQueryArgs through a local-const alias', () => {
+    expect(resolveApiFetchArg({
+      'a.js':
+        "function* getNotes(q) {\n" +
+        "  const url = addQueryArgs('/wc/admin/notes', q);\n" +
+        "  yield apiFetch({ path: url });\n" +
+        "}",
+    }, 'a.js')).toBe('/wc/admin/notes');
+  });
+
+  it('unwraps addQueryArgs with a template-literal first arg that uses an imported NS', () => {
+    expect(resolveApiFetchArg({
+      'a.js':
+        "import { NS } from './c.js';\n" +
+        "function* x(q) { yield apiFetch({ path: addQueryArgs(`${NS}/admin/notes`, q) }); }",
+      'c.js': "export const NS = '/wc';",
+    }, 'a.js')).toBe('/wc/admin/notes');
+  });
+
+  it('does not unwrap an in-program function whose body returns something other than its first arg', () => {
+    // Verifies the whitelist defers to body-resolution when an in-program
+    // definition exists: a user-defined addQueryArgs returning its second arg
+    // must NOT be unwrapped to the first.
+    expect(resolveApiFetchArg({
+      'a.js':
+        "function addQueryArgs(_p, q) { return q; }\n" +
+        "apiFetch({ path: addQueryArgs('/wrong', '/right') });",
+    }, 'a.js')).toBe('/right');
+  });
 });
