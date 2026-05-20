@@ -485,4 +485,55 @@ describe('runJsResolve', () => {
       ).toBe(expectedMethod);
     }
   });
+
+  describe('restMethodForCall reads the literal method from the call args', () => {
+    function makeCall(src: string): ts.CallExpression {
+      const sf = ts.createSourceFile('p.ts', src, ts.ScriptTarget.Latest, true);
+      const stmt = sf.statements[0];
+      if (stmt === undefined || !ts.isExpressionStatement(stmt)
+          || !ts.isCallExpression(stmt.expression)) {
+        throw new Error(`expected a single call expression: ${src}`);
+      }
+      return stmt.expression;
+    }
+
+    it('reads apiFetch({ method: "POST", ... }) as POST', () => {
+      expect(restMethodForCall(makeCall("apiFetch({ path: '/x', method: 'POST' });"))).toBe('POST');
+    });
+
+    it('uppercases a lowercase method string from apiFetch', () => {
+      expect(restMethodForCall(makeCall("apiFetch({ path: '/x', method: 'put' });"))).toBe('PUT');
+    });
+
+    it('reads fetch(url, { method: "DELETE" }) as DELETE', () => {
+      expect(restMethodForCall(makeCall("fetch('/x', { method: 'DELETE' });"))).toBe('DELETE');
+    });
+
+    it('defaults to GET when apiFetch arg has no method property', () => {
+      expect(restMethodForCall(makeCall("apiFetch({ path: '/x' });"))).toBe('GET');
+    });
+
+    it('defaults to GET when fetch is called without an init object', () => {
+      expect(restMethodForCall(makeCall("fetch('/x');"))).toBe('GET');
+    });
+
+    it('defaults to GET when apiFetch is called with no args', () => {
+      // Mirrors the drift-guard shape.
+      expect(restMethodForCall(makeCall("apiFetch();"))).toBe('GET');
+    });
+
+    it('defaults to GET when the method value is a non-literal expression', () => {
+      expect(restMethodForCall(makeCall("apiFetch({ path: '/x', method: m });"))).toBe('GET');
+    });
+
+    it('defaults to GET when the apiFetch config is an identifier (not an object literal)', () => {
+      // Interprocedural resolution of identifier-shape configs is out of scope
+      // for restMethodForCall; the orchestrator only has AST access here.
+      expect(restMethodForCall(makeCall("apiFetch(opts);"))).toBe('GET');
+    });
+
+    it('keeps axios.<method> behavior unchanged', () => {
+      expect(restMethodForCall(makeCall("axios.post('/x');"))).toBe('POST');
+    });
+  });
 });

@@ -63,8 +63,30 @@ export function restMethodForCall(call: ts.CallExpression): string {
       return name.toUpperCase();
     }
   }
-  // apiFetch(...) / fetch(...) — WP_JS_PATTERNS hardcodes GET for both.
+  if (ts.isIdentifier(callee)) {
+    // apiFetch(config) keeps the method in arg 0's `method` property;
+    // fetch(url, init) keeps it in arg 1. A literal string lifts to the
+    // method; anything else falls back to GET (the historical default and
+    // what WP_JS_PATTERNS still hardcodes in the anchor template).
+    const idx = callee.text === 'fetch' ? 1 : 0;
+    const fromArg = literalMethodFromConfigArg(call.arguments[idx]);
+    if (fromArg !== null) return fromArg;
+  }
   return 'GET';
+}
+
+function literalMethodFromConfigArg(arg: ts.Expression | undefined): string | null {
+  if (arg === undefined || !ts.isObjectLiteralExpression(arg)) return null;
+  for (const prop of arg.properties) {
+    if (!ts.isPropertyAssignment(prop)) continue;
+    if (!ts.isIdentifier(prop.name) || prop.name.text !== 'method') continue;
+    const init = prop.initializer;
+    if (ts.isStringLiteral(init) || ts.isNoSubstitutionTemplateLiteral(init)) {
+      return init.text.toUpperCase();
+    }
+    return null;
+  }
+  return null;
 }
 
 // A resolved REST path is acceptable when it is either fully literal or has
