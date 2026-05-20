@@ -450,8 +450,12 @@ final class Visitor extends NodeVisitorAbstract
         }
         if ($node instanceof Node\Expr\FuncCall) {
             $name = $this->funcName($node);
-            $currentScope = end($this->scopeStack);
-            $inWrapperBody = $currentScope !== false && isset($this->wrapperScopes[$currentScope]);
+            // Check the entire scope stack — a closure inside a wrapper body
+            // also counts as "in wrapper body" (top of stack is "\0closure").
+            $inWrapperBody = false;
+            foreach ($this->scopeStack as $frame) {
+                if (isset($this->wrapperScopes[$frame])) { $inWrapperBody = true; break; }
+            }
             if (!$inWrapperBody) {
                 $this->tryEmitDeclarative('function-call', $node, $name, null);
             }
@@ -1802,16 +1806,14 @@ final class Visitor extends NodeVisitorAbstract
         $callees = $this->getPatternCallees();
         foreach ($ast as $stmt) {
             if (!($stmt instanceof Node\Stmt\Function_)) continue;
-            foreach ($stmt->stmts ?? [] as $bodyStmt) {
-                $call = $this->findDirectPatternCallInStmt($bodyStmt);
-                if ($call === null) continue;
+            foreach ($this->collectCandidatePatternCalls($stmt) as [$call, $closureUses]) {
                 $wrappedName = $call->name instanceof Node\Name ? $call->name->toString() : null;
                 if ($wrappedName === null || !isset($callees[$wrappedName])) continue;
                 $innerArgs = [];
                 foreach ($call->args as $a) {
                     if ($a instanceof Node\Arg) $innerArgs[] = $a;
                 }
-                $argSpecs = $this->buildArgSpecs($innerArgs, $stmt->params);
+                $argSpecs = $this->buildArgSpecs($innerArgs, $stmt->params, $closureUses);
                 if ($argSpecs === null) continue;
                 $hasParam = false;
                 foreach ($argSpecs as $spec) {
@@ -2069,11 +2071,62 @@ final class Visitor extends NodeVisitorAbstract
     }
 
     /**
-     * @param list<Node\Arg>   $args
-     * @param list<Node\Param> $params
+     * If $stmt is an add_action / add_filter call with a Closure argument,
+     * return that Closure node; otherwise return null.
+     */
+    private function extractAddActionClosure(Node\Stmt $stmt): ?Node\Expr\Closure
+    {
+        if (!$stmt instanceof Node\Stmt\Expression) return null;
+        if (!$stmt->expr instanceof Node\Expr\FuncCall) return null;
+        if (!$stmt->expr->name instanceof Node\Name) return null;
+        $callee = strtolower($stmt->expr->name->toString());
+        if ($callee !== 'add_action' && $callee !== 'add_filter') return null;
+        foreach ($stmt->expr->args as $arg) {
+            if ($arg instanceof Node\Arg && $arg->value instanceof Node\Expr\Closure) {
+                return $arg->value;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Collect candidate pattern-call sites from a function body.
+     * Returns pairs of [FuncCall, closureUses|null]:
+     * - Direct call at top level: closureUses is null.
+     * - Call inside an add_action/add_filter closure: closureUses is the
+     *   closure's use(...) list.
+     *
+     * @param Node\Stmt\Function_ $fn
+     * @return list<array{0: Node\Expr\FuncCall, 1: ?list<Node\Expr\ClosureUse>}>
+     */
+    private function collectCandidatePatternCalls(Node\Stmt\Function_ $fn): array
+    {
+        $out = [];
+        foreach ($fn->stmts ?? [] as $stmt) {
+            if ($stmt instanceof Node\Stmt\Expression && $stmt->expr instanceof Node\Expr\FuncCall) {
+                $out[] = [$stmt->expr, null];
+            }
+            $closure = $this->extractAddActionClosure($stmt);
+            if ($closure !== null) {
+                foreach ($closure->stmts ?? [] as $inner) {
+                    if ($inner instanceof Node\Stmt\Expression && $inner->expr instanceof Node\Expr\FuncCall) {
+                        $out[] = [$inner->expr, $closure->uses];
+                    }
+                }
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * @param list<Node\Arg>                    $args
+     * @param list<Node\Param>                  $params
+     * @param list<Node\Expr\ClosureUse>|null   $closureUses  non-null when the
+     *        inner call is inside a closure; restricts variable lookup to vars
+     *        explicitly captured via use(...).
      * @return list<array<string,mixed>>|null
      */
-    private function buildArgSpecs(array $args, array $params): ?array
+    private function buildArgSpecs(array $args, array $params, ?array $closureUses = null): ?array
     {
         $paramIdxByName = [];
         foreach ($params as $i => $p) {
@@ -2081,14 +2134,33 @@ final class Visitor extends NodeVisitorAbstract
                 $paramIdxByName[$p->var->name] = $i;
             }
         }
+        // Build the set of names captured by use(...), if we are in a closure context.
+        $useNames = null;
+        if ($closureUses !== null) {
+            $useNames = [];
+            foreach ($closureUses as $u) {
+                if ($u instanceof Node\Expr\ClosureUse
+                    && $u->var instanceof Node\Expr\Variable
+                    && is_string($u->var->name)) {
+                    $useNames[$u->var->name] = true;
+                }
+            }
+        }
         $out = [];
         foreach ($args as $a) {
             // Named arguments (PHP 8+) are not supported; bail to avoid wrong synthesis.
             if ($a->name !== null) return null;
             $v = $a->value;
-            if ($v instanceof Node\Expr\Variable && is_string($v->name) && isset($paramIdxByName[$v->name])) {
-                $out[] = ['kind' => 'param', 'wrapperParamIdx' => $paramIdxByName[$v->name]];
-                continue;
+            if ($v instanceof Node\Expr\Variable && is_string($v->name)) {
+                // In a closure context the variable must be explicitly captured
+                // via use(...) to be a wrapper param; an untracked variable is
+                // a closure-local or undefined — disqualify the whole wrapper.
+                if ($useNames !== null && !isset($useNames[$v->name])) return null;
+                if (isset($paramIdxByName[$v->name])) {
+                    $out[] = ['kind' => 'param', 'wrapperParamIdx' => $paramIdxByName[$v->name]];
+                    continue;
+                }
+                return null;
             }
             $lit = $this->readArgLiteralValue($v);
             if ($lit !== null) {

@@ -115,4 +115,21 @@ register_my_route( '/items' );
     expect(rest[0]?.anchors[0]?.key).toBe('rest:GET /my-plugin/v1/items');
     expect(rest[0]?.location.file).toBe('caller.php');
   });
+
+  it('detects a wrapper whose register_rest_route lives inside an add_action closure', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+function register_my_route( $route ) {
+    add_action( 'rest_api_init', function () use ( $route ) {
+        register_rest_route( 'my-plugin/v1', $route, array( 'methods' => 'GET' ) );
+    });
+}
+register_my_route( '/items' );
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const rest = facts.filter((f) => f.kind === 'rest-endpoint');
+    expect(rest).toHaveLength(1);
+    expect(rest[0]?.anchors[0]?.key).toBe('rest:GET /my-plugin/v1/items');
+    expect(rest[0]?.location.startLine).toBe(7); // line of register_my_route('/items') call
+  });
 });
