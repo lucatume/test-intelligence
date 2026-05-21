@@ -1889,14 +1889,18 @@ final class Visitor extends NodeVisitorAbstract
                     $localVarExprs[$bodyStmt->expr->var->name] = $bodyStmt->expr->expr;
                 }
             }
-            foreach ($this->collectCandidatePatternCalls($stmt) as [$call, $closureUses]) {
+            foreach ($this->collectCandidatePatternCalls($stmt) as [$call, $closureUses, $closureLocalVarExprs]) {
                 $wrappedName = $call->name instanceof Node\Name ? $call->name->toString() : null;
                 if ($wrappedName === null || !isset($callees[$wrappedName])) continue;
                 $innerArgs = [];
                 foreach ($call->args as $a) {
                     if ($a instanceof Node\Arg) $innerArgs[] = $a;
                 }
-                $argSpecs = $this->buildArgSpecs($innerArgs, $stmt->params, $closureUses, $localVarExprs);
+                // Closure-body local vars take priority over outer function local vars
+                // (PHP closure semantics: use($x) exposes outer x, but a local assignment
+                // inside the closure shadows it for subsequent reads within that closure).
+                $effectiveLocalVarExprs = $closureLocalVarExprs !== [] ? $closureLocalVarExprs : $localVarExprs;
+                $argSpecs = $this->buildArgSpecs($innerArgs, $stmt->params, $closureUses, $effectiveLocalVarExprs);
                 if ($argSpecs === null) continue;
                 $hasParam = false;
                 foreach ($argSpecs as $spec) {
@@ -2183,31 +2187,89 @@ final class Visitor extends NodeVisitorAbstract
 
     /**
      * Collect candidate pattern-call sites from a function body.
-     * Returns pairs of [FuncCall, closureUses|null]:
-     * - Direct call at top level: closureUses is null.
+     * Returns triples of [FuncCall, closureUses|null, closureLocalVarExprs]:
+     * - Direct call at top level: closureUses is null, closureLocalVarExprs is [].
      * - Call inside an add_action/add_filter closure: closureUses is the
-     *   closure's use(...) list.
+     *   closure's use(...) list, closureLocalVarExprs is the closure-body
+     *   local-var map with snapshot (last-write-wins, RHS resolved against
+     *   the map state before the current assignment).
      *
      * @param Node\Stmt\Function_ $fn
-     * @return list<array{0: Node\Expr\FuncCall, 1: ?list<Node\Expr\ClosureUse>}>
+     * @return list<array{0: Node\Expr\FuncCall, 1: ?list<Node\Expr\ClosureUse>, 2: array<string, Node\Expr>}>
      */
     private function collectCandidatePatternCalls(Node\Stmt\Function_ $fn): array
     {
         $out = [];
         foreach ($fn->stmts ?? [] as $stmt) {
             if ($stmt instanceof Node\Stmt\Expression && $stmt->expr instanceof Node\Expr\FuncCall) {
-                $out[] = [$stmt->expr, null];
+                $out[] = [$stmt->expr, null, []];
             }
             $closure = $this->extractAddActionClosure($stmt);
             if ($closure !== null) {
+                // Build a local-var expression map for the closure body using
+                // snapshot semantics: when processing statement N, the RHS is
+                // resolved against the map state from statements 1..N-1 only.
+                // This correctly handles self-referential re-assignments like
+                // $opts = array_merge($opts, $extras) where the inner $opts
+                // refers to the previous assignment.
+                $closureLocalVarExprs = [];
                 foreach ($closure->stmts ?? [] as $inner) {
+                    if ($inner instanceof Node\Stmt\Expression
+                        && $inner->expr instanceof Node\Expr\Assign
+                        && $inner->expr->var instanceof Node\Expr\Variable
+                        && is_string($inner->expr->var->name)) {
+                        $varName = $inner->expr->var->name;
+                        $rhs = $inner->expr->expr;
+                        // Resolve the RHS against the current snapshot before updating.
+                        $resolved = $this->resolveExprWithLocalVars($rhs, $closureLocalVarExprs);
+                        // Update the map with the resolved expression (last write wins).
+                        $closureLocalVarExprs[$varName] = $resolved;
+                    }
                     if ($inner instanceof Node\Stmt\Expression && $inner->expr instanceof Node\Expr\FuncCall) {
-                        $out[] = [$inner->expr, $closure->uses];
+                        $out[] = [$inner->expr, $closure->uses, $closureLocalVarExprs];
                     }
                 }
             }
         }
         return $out;
+    }
+
+    /**
+     * Resolve a single expression by substituting variable references through
+     * the given local-var map (one level deep). If a variable is in the map,
+     * replace it with the mapped expression; otherwise return the original node.
+     * Non-variable expressions are returned as-is.
+     *
+     * @param array<string, Node\Expr> $localVarExprs
+     */
+    private function resolveExprWithLocalVars(Node\Expr $expr, array $localVarExprs): Node\Expr
+    {
+        if ($expr instanceof Node\Expr\Variable && is_string($expr->name)) {
+            return $localVarExprs[$expr->name] ?? $expr;
+        }
+        // For array_merge, substitute variable args that are in the map.
+        if ($expr instanceof Node\Expr\FuncCall
+            && $expr->name instanceof Node\Name
+            && strtolower($expr->name->toString()) === 'array_merge') {
+            $newArgs = [];
+            $changed = false;
+            foreach ($expr->args as $arg) {
+                if ($arg instanceof Node\Arg
+                    && $arg->value instanceof Node\Expr\Variable
+                    && is_string($arg->value->name)
+                    && isset($localVarExprs[$arg->value->name])) {
+                    $newArgs[] = new Node\Arg($localVarExprs[$arg->value->name]);
+                    $changed = true;
+                } else {
+                    $newArgs[] = $arg;
+                }
+            }
+            if ($changed) {
+                $newCall = new Node\Expr\FuncCall($expr->name, $newArgs);
+                return $newCall;
+            }
+        }
+        return $expr;
     }
 
     /**

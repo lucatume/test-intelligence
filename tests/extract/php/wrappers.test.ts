@@ -294,4 +294,26 @@ register_my_route( '/items', array( 'methods' => WP_REST_Server::EDITABLE ) );
       'rest:PUT /my-plugin/v1/items',
     ]);
   });
+
+  it('auto-detects a wrapper whose options array is built via closure-body local-var + array_merge chain', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php
+function my_register( $route, $callback, $extras = array() ) {
+    add_action( 'rest_api_init', function () use ( $route, $callback, $extras ) {
+        $opts = array( 'methods' => 'POST', 'callback' => $callback );
+        $opts = array_merge( $opts, $extras );
+        register_rest_route( 'my-ns/v1', $route, $opts );
+    });
+}
+my_register( '/x', 'cb_x' );
+my_register( '/y', 'cb_y', array( 'methods' => 'GET' ) );
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
+    // First call: defaults POST. Second call: caller overrides to GET.
+    expect(keys).toEqual([
+      'rest:GET /my-ns/v1/y',
+      'rest:POST /my-ns/v1/x',
+    ]);
+  });
 });
