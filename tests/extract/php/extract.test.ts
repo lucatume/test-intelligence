@@ -1107,9 +1107,12 @@ ti_deletemeelephant_helper();
 
   it('stamps the unresolved block on a dynamic do_action', async () => {
     const root = getTmp();
+    // `$this->hook` is non-param state, so Widget::run is NOT classified as a
+    // do_action wrapper (the wrapper discriminator requires at least one
+    // param-fed inner arg). The unresolved-block stamping still applies.
     write(root, 'h.php', `<?php
 class Widget {
-  public function run($hook) { do_action($hook); }
+  public function run() { do_action($this->hook); }
 }
 `);
     const facts = await extractPhpFile({ projectRoot: root, relPath: 'h.php', worker });
@@ -1119,7 +1122,7 @@ class Widget {
       scope: string; fields: { field: string; expression: string }[]; exprHash: string;
     } }).unresolved;
     expect(u?.scope).toBe('Widget::run');
-    expect(u?.fields[0]).toEqual({ field: 'hook', expression: '$hook' });
+    expect(u?.fields[0]).toEqual({ field: 'hook', expression: '$this->hook' });
     expect(typeof u?.exprHash).toBe('string');
     expect(u?.exprHash.length).toBe(64);
   });
@@ -1189,17 +1192,21 @@ add_action('boot', function () use ($cb) { do_action($cb); });
       return u?.exprHash ?? '';
     };
 
+    // Use $this->hook (non-param state) so W::run is NOT a do_action wrapper
+    // — the unresolved hook-fire fact stays at the do_action site, which is
+    // what this test inspects. The exprHash stability contract is what's
+    // under test, not the wrapper classification.
     const base = await hashOf(`<?php
-class W { function run($hook) { do_action($hook); } }
+class W { function run() { do_action($this->hook); } }
 `);
     const afterUnrelated = await hashOf(`<?php
 function brand_new_helper() { return 1; }
-class W { function run($hook) { do_action($hook); } }
+class W { function run() { do_action($this->hook); } }
 `);
     expect(afterUnrelated).toBe(base);
 
     const afterExprEdit = await hashOf(`<?php
-class W { function run($h) { do_action($h); } }
+class W { function run() { do_action($this->event); } }
 `);
     expect(afterExprEdit).not.toBe(base);
   });

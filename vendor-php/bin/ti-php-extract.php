@@ -376,7 +376,19 @@ final class Visitor extends NodeVisitorAbstract
             if ($this->classIsPhpUnit && $this->isPhpUnitTestMethod($node)) {
                 $this->facts[] = $this->factTestDef($node, $class, $node->name->name);
             }
-            $this->scopeStack[] = $node->name->name . '@' . ($node->getStartLine() ?: 0);
+            $scopeKey = $node->name->name . '@' . ($node->getStartLine() ?: 0);
+            $this->scopeStack[] = $scopeKey;
+            // If the prePass indexed this class method as a wrapper, suppress
+            // declarative emission inside its body. Mirror of the Function_
+            // branch above: a method that wraps a pattern callee should only
+            // emit synthesized facts at its call sites, not at the pattern
+            // callee inside its body.
+            foreach ($this->wrapperIndex[$node->name->name] ?? [] as $entry) {
+                if (($entry['kind'] ?? 'function') !== 'method') continue;
+                if (($entry['class'] ?? null) !== $class) continue;
+                $this->wrapperScopes[$scopeKey] = true;
+                break;
+            }
             return;
         }
         if ($node instanceof Node\Expr\Include_) {
@@ -510,17 +522,44 @@ final class Visitor extends NodeVisitorAbstract
             $name = $node->name instanceof Node\Identifier ? $node->name->name : null;
             $recv = $node->var instanceof Node\Expr\Variable && is_string($node->var->name) ? $node->var->name : null;
             if ($name !== null) $this->tryEmitDeclarative('method-call', $node, $name, $recv);
+            if ($name !== null) {
+                $inWrapperBody = false;
+                foreach ($this->scopeStack as $frame) {
+                    if (isset($this->wrapperScopes[$frame])) { $inWrapperBody = true; break; }
+                }
+                $isThis = $node->var instanceof Node\Expr\Variable
+                    && is_string($node->var->name)
+                    && $node->var->name === 'this'
+                    && !empty($this->classStack);
+                $lookupClass = $isThis ? end($this->classStack) : null;
+                $callKind = $isThis ? 'method-this' : 'method-instance';
+                $this->trySynthesizeMethodWrapper($name, $node->args, $node, $lookupClass, $callKind, $inWrapperBody);
+            }
             return;
         }
         if ($node instanceof Node\Expr\StaticCall) {
             $name = $node->name instanceof Node\Identifier ? $node->name->name : null;
+            $lookupClass = null;
             if ($node->class instanceof Node\Name) {
                 $this->emitClassUse($node, $node->class);
-                $recv = $this->resolveClassName($node->class);
+                $raw = strtolower($node->class->toString());
+                if (($raw === 'self' || $raw === 'static') && !empty($this->classStack)) {
+                    $lookupClass = end($this->classStack);
+                } else {
+                    $lookupClass = $this->resolveClassName($node->class);
+                }
+                $recv = $lookupClass;
             } else {
                 $recv = null;
             }
             if ($name !== null) $this->tryEmitDeclarative('static-call', $node, $name, $recv);
+            if ($name !== null) {
+                $inWrapperBody = false;
+                foreach ($this->scopeStack as $frame) {
+                    if (isset($this->wrapperScopes[$frame])) { $inWrapperBody = true; break; }
+                }
+                $this->trySynthesizeMethodWrapper($name, $node->args, $node, $lookupClass, 'static-method', $inWrapperBody);
+            }
             return;
         }
         if ($node instanceof Node\Expr\New_) {
@@ -1863,68 +1902,118 @@ final class Visitor extends NodeVisitorAbstract
     // name (e.g. \MyPlugin\register_my_route()) won't synthesize. Out of scope for v1.
 
     /**
-     * Second micro-pass: scan top-level function declarations whose body
-     * directly calls a WP_PHP_PATTERNS callee with literal or param-fed args.
-     * All fully-indexable wrappers are indexed; in-body suppression via
-     * $wrapperScopes prevents double emission without a separate call-site scan.
+     * Second micro-pass: scan top-level function declarations AND class-method
+     * declarations whose body directly calls a WP_PHP_PATTERNS callee with
+     * literal or param-fed args. All fully-indexable wrappers are indexed;
+     * in-body suppression via $wrapperScopes prevents double emission without
+     * a separate call-site scan. Class methods are tagged with their owning
+     * class so call-site lookup can filter by class (for $this->m() and
+     * Class::m()); $instance->m() callers broadcast over all classes.
      *
      * @param array<int, Node> $ast
      */
     private function buildWrapperIndex(array $ast): void
     {
-        $callees = $this->getPatternCallees();
         foreach ($ast as $stmt) {
-            if (!($stmt instanceof Node\Stmt\Function_)) continue;
-            // Build a one-hop local-var expression map for the function body.
-            // Only top-level (depth-1) assignments where the RHS is not itself
-            // a simple variable are included. Used by buildArgSpecs to resolve
-            // aliases like $opts = array_merge($defaults, $extras).
-            $localVarExprs = [];
-            foreach ($stmt->stmts ?? [] as $bodyStmt) {
-                if ($bodyStmt instanceof Node\Stmt\Expression
-                    && $bodyStmt->expr instanceof Node\Expr\Assign
-                    && $bodyStmt->expr->var instanceof Node\Expr\Variable
-                    && is_string($bodyStmt->expr->var->name)
-                    && !($bodyStmt->expr->expr instanceof Node\Expr\Variable)) {
-                    $localVarExprs[$bodyStmt->expr->var->name] = $bodyStmt->expr->expr;
+            if ($stmt instanceof Node\Stmt\Function_) {
+                $this->tryIndexWrapper($stmt, null);
+                continue;
+            }
+            if ($stmt instanceof Node\Stmt\Namespace_) {
+                // Class declarations may sit inside a namespace block; recurse
+                // one level to pick them up. Top-level Function_ inside a
+                // namespace is handled by the outer loop iteration when the
+                // parser yields the namespace's child statements directly —
+                // but PHP-Parser keeps them under Namespace_->stmts, so we
+                // also recurse for functions here.
+                foreach ($stmt->stmts as $inner) {
+                    if ($inner instanceof Node\Stmt\Function_) {
+                        $this->tryIndexWrapper($inner, null);
+                        continue;
+                    }
+                    if ($inner instanceof Node\Stmt\Class_ && $inner->name !== null) {
+                        $className = $stmt->name !== null
+                            ? $stmt->name->toString() . '\\' . $inner->name->name
+                            : $inner->name->name;
+                        foreach ($inner->stmts as $member) {
+                            if ($member instanceof Node\Stmt\ClassMethod) {
+                                $this->tryIndexWrapper($member, $className);
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+            if ($stmt instanceof Node\Stmt\Class_ && $stmt->name !== null) {
+                $className = $stmt->name->name;
+                foreach ($stmt->stmts as $member) {
+                    if ($member instanceof Node\Stmt\ClassMethod) {
+                        $this->tryIndexWrapper($member, $className);
+                    }
                 }
             }
-            foreach ($this->collectCandidatePatternCalls($stmt) as [$call, $closureUses, $closureLocalVarExprs]) {
-                $wrappedName = $call->name instanceof Node\Name ? $call->name->toString() : null;
-                if ($wrappedName === null || !isset($callees[$wrappedName])) continue;
-                $innerArgs = [];
-                foreach ($call->args as $a) {
-                    if ($a instanceof Node\Arg) $innerArgs[] = $a;
-                }
-                // Closure-body local vars take priority over outer function local vars
-                // (PHP closure semantics: use($x) exposes outer x, but a local assignment
-                // inside the closure shadows it for subsequent reads within that closure).
-                $effectiveLocalVarExprs = $closureLocalVarExprs !== [] ? $closureLocalVarExprs : $localVarExprs;
-                $argSpecs = $this->buildArgSpecs($innerArgs, $stmt->params, $closureUses, $effectiveLocalVarExprs);
-                if ($argSpecs === null) continue;
-                $hasParam = false;
-                foreach ($argSpecs as $spec) {
-                    if ($spec['kind'] === 'param') { $hasParam = true; break; }
-                }
-                if (!$hasParam) continue;
-                $name = $stmt->name->name;
-                $scopeKey = $name . '@' . ($stmt->getStartLine() ?: 0);
-                if ($this->hasConfigWrapper($name)) {
-                    // Config entry wins; suppress the body so the inner pattern
-                    // call does not emit a duplicate fact, but do not add an
-                    // auto entry to the index.
-                    $this->wrapperScopes[$scopeKey] = true;
-                } else {
-                    $this->wrapperIndex[$name][] = [
-                        'wraps'        => $wrappedName,
-                        'defFile'      => $this->file,
-                        'defStartLine' => $stmt->getStartLine(),
-                        'defEndLine'   => $stmt->getEndLine(),
-                        'argSpecs'     => $argSpecs,
-                        'source'       => 'auto',
-                    ];
-                    $this->wrapperScopes[$scopeKey] = true;
-                }
+        }
+    }
+
+    /**
+     * Index a single function-like as a wrapper if its body wraps a pattern
+     * callee with at least one parameter-fed arg. $owningClass is null for
+     * top-level functions and the (possibly namespaced) class name for
+     * class methods.
+     */
+    private function tryIndexWrapper(Node\FunctionLike $fn, ?string $owningClass): void
+    {
+        $callees = $this->getPatternCallees();
+        if (!($fn instanceof Node\Stmt\Function_) && !($fn instanceof Node\Stmt\ClassMethod)) {
+            return; // Closures / arrow functions are not wrappers.
+        }
+        if ($fn->name === null) return;
+        // Build a one-hop local-var expression map for the function body.
+        // Only top-level (depth-1) assignments where the RHS is not itself
+        // a simple variable are included. Used by buildArgSpecs to resolve
+        // aliases like $opts = array_merge($defaults, $extras).
+        $localVarExprs = [];
+        foreach ($fn->stmts ?? [] as $bodyStmt) {
+            if ($bodyStmt instanceof Node\Stmt\Expression
+                && $bodyStmt->expr instanceof Node\Expr\Assign
+                && $bodyStmt->expr->var instanceof Node\Expr\Variable
+                && is_string($bodyStmt->expr->var->name)
+                && !($bodyStmt->expr->expr instanceof Node\Expr\Variable)) {
+                $localVarExprs[$bodyStmt->expr->var->name] = $bodyStmt->expr->expr;
+            }
+        }
+        foreach ($this->collectCandidatePatternCalls($fn) as [$call, $closureUses, $closureLocalVarExprs]) {
+            $wrappedName = $call->name instanceof Node\Name ? $call->name->toString() : null;
+            if ($wrappedName === null || !isset($callees[$wrappedName])) continue;
+            $innerArgs = [];
+            foreach ($call->args as $a) {
+                if ($a instanceof Node\Arg) $innerArgs[] = $a;
+            }
+            $effectiveLocalVarExprs = $closureLocalVarExprs !== [] ? $closureLocalVarExprs : $localVarExprs;
+            $argSpecs = $this->buildArgSpecs($innerArgs, $fn->params, $closureUses, $effectiveLocalVarExprs);
+            if ($argSpecs === null) continue;
+            $hasParam = false;
+            foreach ($argSpecs as $spec) {
+                if ($spec['kind'] === 'param') { $hasParam = true; break; }
+            }
+            if (!$hasParam) continue;
+            $name = $fn->name->name;
+            $scopeKey = $name . '@' . ($fn->getStartLine() ?: 0);
+            if ($this->hasConfigWrapper($name)) {
+                $this->wrapperScopes[$scopeKey] = true;
+            } else {
+                $kind = $owningClass === null ? 'function' : 'method';
+                $this->wrapperIndex[$name][] = [
+                    'wraps'        => $wrappedName,
+                    'defFile'      => $this->file,
+                    'defStartLine' => $fn->getStartLine(),
+                    'defEndLine'   => $fn->getEndLine(),
+                    'argSpecs'     => $argSpecs,
+                    'source'       => 'auto',
+                    'class'        => $owningClass,
+                    'kind'         => $kind,
+                ];
+                $this->wrapperScopes[$scopeKey] = true;
             }
         }
     }
@@ -2194,10 +2283,10 @@ final class Visitor extends NodeVisitorAbstract
      *   local-var map with snapshot (last-write-wins, RHS resolved against
      *   the map state before the current assignment).
      *
-     * @param Node\Stmt\Function_ $fn
+     * @param Node\Stmt\Function_|Node\Stmt\ClassMethod $fn
      * @return list<array{0: Node\Expr\FuncCall, 1: ?list<Node\Expr\ClosureUse>, 2: array<string, Node\Expr>}>
      */
-    private function collectCandidatePatternCalls(Node\Stmt\Function_ $fn): array
+    private function collectCandidatePatternCalls(Node\FunctionLike $fn): array
     {
         $out = [];
         foreach ($fn->stmts ?? [] as $stmt) {
@@ -2576,11 +2665,38 @@ final class Visitor extends NodeVisitorAbstract
                 $remaining[] = $stub;
                 continue;
             }
+            // Filter wrapperIndex entries by the stub's call-shape. Stubs from
+            // older builds without `callKind` default to 'function' for backward
+            // compatibility (function calls were the only deferred shape before
+            // class-method wrappers shipped).
+            $callKind = $stub['callKind'] ?? 'function';
+            $lookupClass = $stub['lookupClass'] ?? null;
+            $matchedEntries = [];
+            foreach ($this->wrapperIndex[$stub['callee']] as $entry) {
+                $entryKind = $entry['kind'] ?? 'function';
+                if ($callKind === 'function') {
+                    if ($entryKind !== 'function') continue;
+                } else {
+                    if ($entryKind !== 'method') continue;
+                    if (($callKind === 'method-this' || $callKind === 'static-method')
+                        && $lookupClass !== null
+                        && ($entry['class'] ?? null) !== $lookupClass) continue;
+                    // 'method-instance' or null lookupClass → broadcast across
+                    // all method-kind entries with this name.
+                }
+                $matchedEntries[] = $entry;
+            }
+            if ($matchedEntries === []) {
+                $remaining[] = $stub;
+                continue;
+            }
             // Temporarily swap the absolute file path so location stamps are correct.
             $savedFile = $this->file;
             $this->file = $stub['file'];
             $countBefore = count($this->facts);
-            $this->synthesizeWrappedCallFromStub($stub['callee'], $stub['serializedArgs'], $stub['startLine'], $stub['endLine']);
+            $this->synthesizeWrappedCallFromStub(
+                $stub['callee'], $stub['serializedArgs'], $stub['startLine'], $stub['endLine'], $matchedEntries
+            );
             // Collect the facts that were just appended and splice them out of
             // $this->facts so they don't pollute the current file's fact list.
             for ($i = $countBefore; $i < count($this->facts); $i++) {
@@ -2594,27 +2710,95 @@ final class Visitor extends NodeVisitorAbstract
     }
 
     /**
-     * Synthesize wrapped pattern calls for each wrapperIndex entry matching $wrapperName.
-     * Used for live (same-file) calls where the full AST is available.
+     * Synthesize wrapped pattern calls for each function-kind wrapperIndex
+     * entry matching $wrapperName. Used for live (same-file) function calls
+     * where the full AST is available. Method-kind entries are filtered out
+     * — call-site shape (FuncCall vs MethodCall/StaticCall) drives which
+     * entries are eligible.
+     *
      * @param list<Node\Arg|Node\VariadicPlaceholder> $callerArgs
      */
     private function synthesizeWrappedCall(string $wrapperName, array $callerArgs, Node $callerCallNode): void
     {
         foreach ($this->wrapperIndex[$wrapperName] ?? [] as $entry) {
-            $wrapsCall = $entry['wraps'];
-            $filteredArgs = [];
-            foreach ($callerArgs as $a) {
-                if ($a instanceof Node\Arg) $filteredArgs[] = $a;
-            }
-            $synthesizedArgs = $this->materializeWrappedArgs($entry['argSpecs'], $filteredArgs);
-            if ($synthesizedArgs === null) continue;
-            $synthCall = new Node\Expr\FuncCall(new Node\Name($wrapsCall), $synthesizedArgs);
-            $synthCall->setAttribute('startLine', $callerCallNode->getStartLine());
-            $synthCall->setAttribute('endLine', $callerCallNode->getEndLine());
-            $synthCall->setAttribute('startFilePos', $callerCallNode->getAttribute('startFilePos') ?? 0);
-            $synthCall->setAttribute('endFilePos', $callerCallNode->getAttribute('endFilePos') ?? 0);
-            $this->emitForCallee($wrapsCall, $synthCall, ['resolvedBy' => 'wrapper-auto', 'wrapperName' => $wrapperName, 'wrapperDef' => ['file' => $entry['defFile'], 'startLine' => $entry['defStartLine']]]);
+            if (($entry['kind'] ?? 'function') !== 'function') continue;
+            $this->synthesizeWrappedCallForEntry($entry, $wrapperName, $callerArgs, $callerCallNode);
         }
+    }
+
+    /**
+     * Live-synthesize a single wrapped call from a known wrapperIndex entry.
+     * Shared by the FuncCall / MethodCall / StaticCall synthesis paths so the
+     * AST construction and emit happens in one place.
+     *
+     * @param array<string, mixed>                          $entry
+     * @param list<Node\Arg|Node\VariadicPlaceholder>       $callerArgs
+     */
+    private function synthesizeWrappedCallForEntry(
+        array $entry,
+        string $wrapperName,
+        array $callerArgs,
+        Node $callerCallNode
+    ): void {
+        $wrapsCall = $entry['wraps'];
+        $filteredArgs = [];
+        foreach ($callerArgs as $a) {
+            if ($a instanceof Node\Arg) $filteredArgs[] = $a;
+        }
+        $synthesizedArgs = $this->materializeWrappedArgs($entry['argSpecs'], $filteredArgs);
+        if ($synthesizedArgs === null) return;
+        $synthCall = new Node\Expr\FuncCall(new Node\Name($wrapsCall), $synthesizedArgs);
+        $synthCall->setAttribute('startLine', $callerCallNode->getStartLine());
+        $synthCall->setAttribute('endLine', $callerCallNode->getEndLine());
+        $synthCall->setAttribute('startFilePos', $callerCallNode->getAttribute('startFilePos') ?? 0);
+        $synthCall->setAttribute('endFilePos', $callerCallNode->getAttribute('endFilePos') ?? 0);
+        $this->emitForCallee($wrapsCall, $synthCall, [
+            'resolvedBy' => 'wrapper-auto',
+            'wrapperName' => $wrapperName,
+            'wrapperDef' => ['file' => $entry['defFile'], 'startLine' => $entry['defStartLine']],
+        ]);
+    }
+
+    /**
+     * Live-synthesize for a method/static call: filter wrapperIndex entries to
+     * method-kind and (when $lookupClass is non-null) to the matching owning
+     * class, then synthesize for each match. When no entries match, buffer a
+     * deferred stub so a later file's wrapper def can complete the synthesis.
+     *
+     * @param list<Node\Arg|Node\VariadicPlaceholder> $callerArgs
+     */
+    private function trySynthesizeMethodWrapper(
+        string $name,
+        array $callerArgs,
+        Node $callerCallNode,
+        ?string $lookupClass,
+        string $callKind,
+        bool $inWrapperBody
+    ): void {
+        $matched = false;
+        foreach ($this->wrapperIndex[$name] ?? [] as $entry) {
+            if (($entry['kind'] ?? 'function') !== 'method') continue;
+            if ($lookupClass !== null && ($entry['class'] ?? null) !== $lookupClass) continue;
+            $this->synthesizeWrappedCallForEntry($entry, $name, $callerArgs, $callerCallNode);
+            $matched = true;
+        }
+        if ($matched) return;
+        // No matching wrapper entry yet — buffer for cross-file deferred replay,
+        // mirroring the FuncCall path. Skip builtins / known pattern callees /
+        // calls inside an already-classified wrapper body.
+        if ($inWrapperBody) return;
+        if (self::isBuiltinFunction($name)) return;
+        if (isset($this->getPatternCallees()[$name])) return;
+        $serializedArgs = $this->serializeArgsForDeferred($callerArgs);
+        $this->deferredWrapperCalls[] = [
+            'callee'    => $name,
+            'serializedArgs' => $serializedArgs,
+            'file'      => $this->file,
+            'startLine' => $callerCallNode->getStartLine(),
+            'endLine'   => $callerCallNode->getEndLine(),
+            'callKind'  => $callKind,
+            'lookupClass' => $lookupClass,
+        ];
     }
 
     /**
@@ -2624,7 +2808,21 @@ final class Visitor extends NodeVisitorAbstract
      *
      * @param list<mixed> $serializedArgs Pre-resolved arg values from serializeArgsForDeferred().
      */
-    private function synthesizeWrappedCallFromStub(string $wrapperName, array $serializedArgs, int $startLine, int $endLine): void
+    /**
+     * @param list<mixed>                       $serializedArgs
+     * @param list<array<string, mixed>>|null   $entries       Pre-filtered wrapperIndex
+     *        entries to synthesize against. When null, iterates ALL entries for
+     *        the given $wrapperName — backward-compat for any caller that
+     *        doesn't pre-filter; the new deferred-replay path always passes a
+     *        filtered list.
+     */
+    private function synthesizeWrappedCallFromStub(
+        string $wrapperName,
+        array $serializedArgs,
+        int $startLine,
+        int $endLine,
+        ?array $entries = null
+    ): void
     {
         // Reconstruct Node\Arg[] from serialized scalar values.
         $callerArgs = [];
@@ -2632,7 +2830,8 @@ final class Visitor extends NodeVisitorAbstract
             $callerArgs[] = new Node\Arg($this->literalToNode($val));
         }
 
-        foreach ($this->wrapperIndex[$wrapperName] ?? [] as $entry) {
+        $iter = $entries ?? ($this->wrapperIndex[$wrapperName] ?? []);
+        foreach ($iter as $entry) {
             $wrapsCall = $entry['wraps'];
             $synthesizedArgs = $this->materializeWrappedArgs($entry['argSpecs'], $callerArgs);
             if ($synthesizedArgs === null) continue;
