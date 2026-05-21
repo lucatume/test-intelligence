@@ -3,7 +3,7 @@ import ts from 'typescript';
 import type Database from 'better-sqlite3';
 import type { JsResolveOptions, JsResolveSummary } from './types.js';
 import { buildResolutionProgram, type ResolutionProgram } from './program.js';
-import { resolveExpression, type ResolvedValue } from './resolver.js';
+import { resolveExpression, type ResolveCtx, type ResolvedValue } from './resolver.js';
 import { buildLocalizedGlobals } from './localized-globals.js';
 import { AXIOS_METHODS as AXIOS_METHOD_NAMES } from '../extract/declarative/wp-js-patterns.js';
 import { ACTION_IN_URL } from '../extract/declarative/engine.js';
@@ -54,7 +54,11 @@ function findCallAtLine(sf: ts.SourceFile, targetLine: number): ts.CallExpressio
 // imported from the pattern module so a new axios method stays in sync.
 const AXIOS_METHODS: ReadonlySet<string> = new Set(AXIOS_METHOD_NAMES);
 
-export function restMethodForCall(call: ts.CallExpression): string {
+export function restMethodForCall(
+  call: ts.CallExpression,
+  checker?: ts.TypeChecker,
+  ctx?: ResolveCtx,
+): string {
   const callee = call.expression;
   if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name)) {
     const recv = callee.expression;
@@ -65,11 +69,22 @@ export function restMethodForCall(call: ts.CallExpression): string {
   }
   if (ts.isIdentifier(callee)) {
     // apiFetch(config) keeps the method in arg 0's `method` property;
-    // fetch(url, init) keeps it in arg 1. A literal string lifts to the
-    // method; anything else falls back to GET (the historical default and
-    // what WP_JS_PATTERNS still hardcodes in the anchor template).
+    // fetch(url, init) keeps it in arg 1. Prefer interprocedural resolution
+    // when a checker + ctx are supplied — that lifts `method` threaded through
+    // an identifier, parameter, or imported binding. Fall back to literal-only
+    // parsing for AST-only callers (drift-guard tests construct CallExpressions
+    // with no Program backing them).
     const idx = callee.text === 'fetch' ? 1 : 0;
-    const fromArg = literalMethodFromConfigArg(call.arguments[idx]);
+    const arg = call.arguments[idx];
+    if (checker !== undefined && ctx !== undefined && arg !== undefined) {
+      const resolved = resolveExpression(arg, checker, ctx);
+      if (resolved.kind === 'object') {
+        const m = resolved.props['method'];
+        if (typeof m === 'string') return m.toUpperCase();
+        if (m !== undefined && m.kind === 'string') return m.value.toUpperCase();
+      }
+    }
+    const fromArg = literalMethodFromConfigArg(arg);
     if (fromArg !== null) return fromArg;
   }
   return 'GET';
@@ -242,11 +257,12 @@ export function runJsResolve(db: Database.Database, opts: JsResolveOptions): JsR
       const arg0 = call.arguments[0];
       if (arg0 === undefined) continue;
 
-      const v = resolveExpression(arg0, checker, {
+      const resolveCtx: ResolveCtx = {
         depth: 0,
         projectRoot,
         localized: localized.lookup.bind(localized),
-      });
+      };
+      const v = resolveExpression(arg0, checker, resolveCtx);
 
       let resolvedStr: string | null = null;
       if (row.kind === 'rest-call-js') {
@@ -261,11 +277,7 @@ export function runJsResolve(db: Database.Database, opts: JsResolveOptions): JsR
         if (resolvedStr === null) {
           const arg1 = call.arguments[1];
           if (arg1 !== undefined) {
-            const v1 = resolveExpression(arg1, checker, {
-              depth: 0,
-              projectRoot,
-              localized: localized.lookup.bind(localized),
-            });
+            const v1 = resolveExpression(arg1, checker, resolveCtx);
             resolvedStr = extractAjaxAction(v1);
           }
         }
@@ -289,10 +301,13 @@ export function runJsResolve(db: Database.Database, opts: JsResolveOptions): JsR
       // Build the resolved anchor key matching the PHP-listener keys
       // (`ajax-listener` → `ajax:<action>`, `rest-endpoint` → `rest:<M> <path>`).
       // The method cannot be read from a (usually absent) old anchor — derive
-      // it from the located call's callee.
+      // it from the located call's callee. Pass checker+ctx so a `method:`
+      // threaded through an identifier/parameter resolves interprocedurally.
       let newKey: string;
+      let restMethod: string | null = null;
       if (row.kind === 'rest-call-js') {
-        newKey = `rest:${restMethodForCall(call)} ${normRestPath(resolvedStr)}`;
+        restMethod = restMethodForCall(call, checker, resolveCtx);
+        newKey = `rest:${restMethod} ${normRestPath(resolvedStr)}`;
       } else {
         newKey = `ajax:${resolvedStr}`;
       }
@@ -335,7 +350,7 @@ export function runJsResolve(db: Database.Database, opts: JsResolveOptions): JsR
 
       if (row.kind === 'rest-call-js') {
         payload['route'] = resolvedStr;
-        payload['method'] = restMethodForCall(call);
+        payload['method'] = restMethod ?? 'GET';
       } else {
         payload['action'] = resolvedStr;
       }

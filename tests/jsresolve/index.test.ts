@@ -452,6 +452,107 @@ describe('runJsResolve', () => {
     });
   });
 
+  describe('resolves threaded REST method via TypeChecker (issue B)', () => {
+    const getTmp = useTmpDir('ti-jsresolve-rest-method-thread-');
+
+    it('lifts a cross-file method constant onto the resolved anchor', async () => {
+      const root = getTmp();
+
+      // Fixture: cfg.js exports both the path and the method as cross-file
+      // constants; caller.js imports both. The path import keeps the fact
+      // unresolved at per-file extraction (the extractor has no TypeChecker),
+      // so runJsResolve picks it up. The method import is the case under
+      // test — without the lift, the resolved anchor defaults to GET.
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(
+        join(root, 'src/cfg.js'),
+        `export const PRODUCTS_PATH = '/wc/v3/products';\nexport const METHOD = 'POST';\n`,
+      );
+      writeFileSync(
+        join(root, 'src/caller.js'),
+        `import { PRODUCTS_PATH, METHOD } from './cfg.js';\n` +
+          `apiFetch({ path: PRODUCTS_PATH, method: METHOD });\n`,
+      );
+
+      const db = freshDb();
+      const opts = synthesizeCompilerOptions(root);
+
+      const callerFacts = await extractTsFile({
+        projectRoot: root, relPath: 'src/caller.js', language: 'js',
+        framework: null, compilerOptions: opts, patterns: WP_JS_PATTERNS,
+      });
+      const callerRest = callerFacts.find((f) => f.kind === 'rest-call-js');
+      expect(callerRest).toBeDefined();
+      if (callerRest === undefined) return;
+
+      const factId = seedFact(db, 'src/caller.js', callerRest);
+      const summary = runJsResolve(db, { projectRoot: root });
+      expect(summary.resolved).toBe(1);
+
+      const anchorKeys = (
+        db
+          .prepare(
+            `SELECT a.key FROM fact_anchor fa JOIN anchor a ON a.id = fa.anchor_id
+             WHERE fa.fact_id = ? AND fa.role = 'target'`,
+          )
+          .all(factId) as { key: string }[]
+      ).map((r) => r.key);
+      expect(anchorKeys).toEqual(['rest:POST /wc/v3/products']);
+
+      const row = db
+        .prepare('SELECT payload FROM fact WHERE id = ?')
+        .get(factId) as { payload: string };
+      const payload = JSON.parse(row.payload) as Record<string, unknown>;
+      expect(payload['method']).toBe('POST');
+
+      db.close();
+    });
+
+    it('lifts a method threaded through a function parameter', async () => {
+      const root = getTmp();
+
+      // Fixture: caller.js defines a helper whose two parameters feed apiFetch
+      // — both `path` and `method` come from the parameters. The single call
+      // site binds them to 'PUT' and '/wc/v3/products'. The path-through-param
+      // case is already known to keep the fact unresolved at extraction, so
+      // jsresolve picks it up. The method-through-param is the case under
+      // test — the existing path-side resolution follows single-call-site
+      // parameters via getResolvedSignature; this verifies the method side
+      // does the same.
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(
+        join(root, 'src/caller.js'),
+        `function update(path, method) { apiFetch({ path, method }); }\n` +
+          `update('/wc/v3/products', 'PUT');\n`,
+      );
+
+      const db = freshDb();
+      const opts = synthesizeCompilerOptions(root);
+      const callerFacts = await extractTsFile({
+        projectRoot: root, relPath: 'src/caller.js', language: 'js',
+        framework: null, compilerOptions: opts, patterns: WP_JS_PATTERNS,
+      });
+      const callerRest = callerFacts.find((f) => f.kind === 'rest-call-js');
+      expect(callerRest).toBeDefined();
+      if (callerRest === undefined) return;
+
+      const factId = seedFact(db, 'src/caller.js', callerRest);
+      runJsResolve(db, { projectRoot: root });
+
+      const anchorKeys = (
+        db
+          .prepare(
+            `SELECT a.key FROM fact_anchor fa JOIN anchor a ON a.id = fa.anchor_id
+             WHERE fa.fact_id = ? AND fa.role = 'target'`,
+          )
+          .all(factId) as { key: string }[]
+      ).map((r) => r.key);
+      expect(anchorKeys).toEqual(['rest:PUT /wc/v3/products']);
+
+      db.close();
+    });
+  });
+
   // Drift guard: restMethodForCall hand-re-encodes the REST method of each
   // rest-call-js pattern in WP_JS_PATTERNS. A future pattern it does not cover
   // turns this red.
