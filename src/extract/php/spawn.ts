@@ -40,7 +40,10 @@ export function startPhpWorker(opts: SpawnOptions): Result<PhpWorker, SpawnError
 
   let child: ChildProcessWithoutNullStreams;
   try {
-    child = spawn(bin, [worker], { stdio: ['pipe', 'pipe', 'pipe'], shell: false });
+    // -d memory_limit=512M: large codebases (10k+ PHP files) accumulate deferred
+    // wrapper stubs and parse large vendor stubs files. The default 128M limit is
+    // insufficient; 512M is the practical ceiling for a single-worker build.
+    child = spawn(bin, ['-d', 'memory_limit=512M', worker], { stdio: ['pipe', 'pipe', 'pipe'], shell: false });
   } catch (e) {
     return err({ kind: 'PhpSpawnError', message: `spawn failed: ${(e as Error).message}` });
   }

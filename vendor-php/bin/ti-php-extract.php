@@ -87,8 +87,17 @@ final class Visitor extends NodeVisitorAbstract
      */
     private array $wrapperScopes = [];
 
-    /** @var list<array{callee:string,argNodes:list<Node>,file:string,startLine:int,endLine:int}> */
+    /** @var list<array{callee:string,serializedArgs:list<mixed>,file:string,startLine:int,endLine:int}> */
     private array $deferredWrapperCalls = [];
+
+    /**
+     * Facts synthesized during eager replay (called after each prePass to keep
+     * the deferred queue bounded). These are collected here instead of emitted
+     * immediately so the per-file extract response stays clean (only facts for
+     * the current file). They are emitted as part of flush-deferred output.
+     * @var list<array<string, mixed>>
+     */
+    private array $earlyFlushedFacts = [];
 
     /** @var array<string, true> Static PHP language built-ins. */
     private const PHP_BUILTIN_CLASSES = [
@@ -469,17 +478,20 @@ final class Visitor extends NodeVisitorAbstract
                 // Callee not yet in the wrapper index and not a known pattern callee
                 // or builtin — buffer for cross-file deferred replay. The wrapper
                 // definition may arrive in a later file's prePass.
-                $callerArgs = [];
-                foreach ($node->args as $a) {
-                    if ($a instanceof Node\Arg) $callerArgs[] = $a;
-                }
+                //
+                // Store pre-resolved scalar arg values instead of live AST
+                // Node objects. Keeping Node references alive prevents PHP from
+                // GC-ing the file's entire AST, causing memory growth O(N)
+                // in the number of files. Scalars are tiny; reconstruction at
+                // replay time uses literalToNode() which the synthesis path
+                // already accepts.
+                $serializedArgs = $this->serializeArgsForDeferred($node->args);
                 $this->deferredWrapperCalls[] = [
                     'callee'    => $name,
-                    'argNodes'  => $callerArgs,
+                    'serializedArgs' => $serializedArgs,
                     'file'      => $this->file,
                     'startLine' => $node->getStartLine(),
                     'endLine'   => $node->getEndLine(),
-                    'callNode'  => $node,
                 ];
             }
             if ($name !== null && !self::isBuiltinFunction($name)) {
@@ -1555,7 +1567,8 @@ final class Visitor extends NodeVisitorAbstract
 
     /**
      * Reset all per-file state. Does NOT reset $wrapperIndex, $deferredWrapperCalls,
-     * or $patternCallees — those persist across files for cross-file synthesis.
+     * $earlyFlushedFacts, or $patternCallees — those persist across files for
+     * cross-file synthesis.
      */
     public function resetForFile(string $file, ?string $relFile, string $code): void
     {
@@ -2394,13 +2407,105 @@ final class Visitor extends NodeVisitorAbstract
     }
 
     /**
+     * Serialize a call's argument list to scalar values at stub creation time,
+     * avoiding live AST Node references in the deferred queue. Each arg is
+     * resolved to its literal value (string, int, bool, array) or null when
+     * dynamic. Scalars are tiny compared to AST Node object graphs; this
+     * prevents O(N) memory growth across large codebases.
+     *
+     * @param array<int, Node\Arg|Node\VariadicPlaceholder> $args
+     * @return list<mixed>
+     */
+    private function serializeArgsForDeferred(array $args): array
+    {
+        $out = [];
+        foreach ($args as $a) {
+            if (!$a instanceof Node\Arg) {
+                $out[] = null;
+                continue;
+            }
+            $out[] = $this->serializeNodeValue($a->value);
+        }
+        return $out;
+    }
+
+    /**
+     * Resolve a single expression node to a scalar value for deferred storage.
+     * Returns null when the expression is not statically resolvable.
+     */
+    private function serializeNodeValue(Node $node): mixed
+    {
+        if ($node instanceof Node\Scalar\String_) return $node->value;
+        if ($node instanceof Node\Scalar\LNumber || $node instanceof Node\Scalar\Int_) return $node->value;
+        if ($node instanceof Node\Expr\ConstFetch) {
+            $lname = strtolower($node->name->toString());
+            if ($lname === 'true') return true;
+            if ($lname === 'false') return false;
+            if ($lname === 'null') return null;
+            // Non-boolean const — try defines table
+            return $this->defines[$node->name->toString()] ?? null;
+        }
+        if ($node instanceof Node\Expr\Array_) {
+            $out = [];
+            foreach ($node->items as $item) {
+                if (!$item instanceof Node\ArrayItem) return null;
+                $v = $this->serializeNodeValue($item->value);
+                if ($item->key === null) {
+                    $out[] = $v;
+                } elseif ($item->key instanceof Node\Scalar\String_) {
+                    $out[$item->key->value] = $v;
+                }
+                // Non-string-literal key: skip
+            }
+            return $out;
+        }
+        // For string-typed args, try full readStringSkeleton resolution.
+        $str = $this->readStringSkeleton($node);
+        return $str; // may be null or a skeleton with {*}
+    }
+
+    /**
+     * Eagerly replay deferred stubs whose wrapper was just found in the latest
+     * prePass. Synthesized facts are stored in $earlyFlushedFacts (not returned),
+     * so the per-file extract response stays clean. They will be emitted at
+     * flush-deferred time alongside any remaining deferred stubs' results.
+     *
+     * This keeps the deferred queue bounded: stubs are consumed as their wrappers
+     * are discovered rather than accumulating until flush-deferred. Without this,
+     * large codebases (10k+ files) accumulate enough stubs to exhaust PHP memory.
+     */
+    public function earlyReplayAndBuffer(): void
+    {
+        $facts = $this->doReplayDeferred();
+        foreach ($facts as $f) {
+            $this->earlyFlushedFacts[] = $f;
+        }
+    }
+
+    /**
      * Replay deferred wrapper calls against the current (now-complete) wrapper index.
-     * Returns the facts synthesized during this replay. Calls whose callee is still
-     * absent from the index remain in $deferredWrapperCalls for a subsequent flush.
+     * Returns all synthesized facts: early-buffered ones plus any newly resolved stubs.
+     * Calls whose callee is still absent from the index remain in $deferredWrapperCalls.
      *
      * @return list<array<string, mixed>>
      */
     public function replayDeferredCalls(): array
+    {
+        $newFacts = $this->doReplayDeferred();
+        // Include early-buffered facts from per-file eager replays.
+        $all = array_merge($this->earlyFlushedFacts, $newFacts);
+        $this->earlyFlushedFacts = [];
+        return $all;
+    }
+
+    /**
+     * Internal: replay deferred stubs against the current wrapper index.
+     * Removes resolved stubs from $deferredWrapperCalls. Synthesized facts are
+     * spliced out of $this->facts (so they don't appear in the per-file extract
+     * response) and returned for the caller to route appropriately.
+     * @return list<array<string, mixed>>
+     */
+    private function doReplayDeferred(): array
     {
         $remaining = [];
         $newFacts = [];
@@ -2413,11 +2518,13 @@ final class Visitor extends NodeVisitorAbstract
             $savedFile = $this->file;
             $this->file = $stub['file'];
             $countBefore = count($this->facts);
-            $this->synthesizeWrappedCall($stub['callee'], $stub['argNodes'], $stub['callNode']);
-            // Collect the facts that were just appended.
+            $this->synthesizeWrappedCallFromStub($stub['callee'], $stub['serializedArgs'], $stub['startLine'], $stub['endLine']);
+            // Collect the facts that were just appended and splice them out of
+            // $this->facts so they don't pollute the current file's fact list.
             for ($i = $countBefore; $i < count($this->facts); $i++) {
                 $newFacts[] = $this->facts[$i];
             }
+            array_splice($this->facts, $countBefore);
             $this->file = $savedFile;
         }
         $this->deferredWrapperCalls = $remaining;
@@ -2426,19 +2533,52 @@ final class Visitor extends NodeVisitorAbstract
 
     /**
      * Synthesize wrapped pattern calls for each wrapperIndex entry matching $wrapperName.
-     * @param list<Node\Arg> $callerArgs
+     * Used for live (same-file) calls where the full AST is available.
+     * @param list<Node\Arg|Node\VariadicPlaceholder> $callerArgs
      */
     private function synthesizeWrappedCall(string $wrapperName, array $callerArgs, Node $callerCallNode): void
     {
         foreach ($this->wrapperIndex[$wrapperName] ?? [] as $entry) {
             $wrapsCall = $entry['wraps'];
-            $synthesizedArgs = $this->materializeWrappedArgs($entry['argSpecs'], $callerArgs);
+            $filteredArgs = [];
+            foreach ($callerArgs as $a) {
+                if ($a instanceof Node\Arg) $filteredArgs[] = $a;
+            }
+            $synthesizedArgs = $this->materializeWrappedArgs($entry['argSpecs'], $filteredArgs);
             if ($synthesizedArgs === null) continue;
             $synthCall = new Node\Expr\FuncCall(new Node\Name($wrapsCall), $synthesizedArgs);
             $synthCall->setAttribute('startLine', $callerCallNode->getStartLine());
             $synthCall->setAttribute('endLine', $callerCallNode->getEndLine());
             $synthCall->setAttribute('startFilePos', $callerCallNode->getAttribute('startFilePos') ?? 0);
             $synthCall->setAttribute('endFilePos', $callerCallNode->getAttribute('endFilePos') ?? 0);
+            $this->emitForCallee($wrapsCall, $synthCall, ['resolvedBy' => 'wrapper-auto', 'wrapperName' => $wrapperName, 'wrapperDef' => ['file' => $entry['defFile'], 'startLine' => $entry['defStartLine']]]);
+        }
+    }
+
+    /**
+     * Synthesize wrapped pattern calls from a deferred stub. Uses pre-resolved
+     * scalar arg values (no live AST references). Reconstructs Node\Arg[] from
+     * the serialized values using literalToNode().
+     *
+     * @param list<mixed> $serializedArgs Pre-resolved arg values from serializeArgsForDeferred().
+     */
+    private function synthesizeWrappedCallFromStub(string $wrapperName, array $serializedArgs, int $startLine, int $endLine): void
+    {
+        // Reconstruct Node\Arg[] from serialized scalar values.
+        $callerArgs = [];
+        foreach ($serializedArgs as $val) {
+            $callerArgs[] = new Node\Arg($this->literalToNode($val));
+        }
+
+        foreach ($this->wrapperIndex[$wrapperName] ?? [] as $entry) {
+            $wrapsCall = $entry['wraps'];
+            $synthesizedArgs = $this->materializeWrappedArgs($entry['argSpecs'], $callerArgs);
+            if ($synthesizedArgs === null) continue;
+            $synthCall = new Node\Expr\FuncCall(new Node\Name($wrapsCall), $synthesizedArgs);
+            $synthCall->setAttribute('startLine', $startLine);
+            $synthCall->setAttribute('endLine', $endLine);
+            $synthCall->setAttribute('startFilePos', 0);
+            $synthCall->setAttribute('endFilePos', 0);
             $this->emitForCallee($wrapsCall, $synthCall, ['resolvedBy' => 'wrapper-auto', 'wrapperName' => $wrapperName, 'wrapperDef' => ['file' => $entry['defFile'], 'startLine' => $entry['defStartLine']]]);
         }
     }
@@ -2641,6 +2781,13 @@ while (($line = fgets($stdin)) !== false) {
             $visitor->resetForFile($file, $relFile, $code);
             $visitor->phpUnitBaseClasses = $req['phpUnitBaseClasses'] ?? ['PHPUnit\\Framework\\TestCase'];
             $visitor->prePass($ast);
+            // Eagerly replay any previously-deferred stubs whose wrapper was
+            // just found in this file's prePass. Facts go into an internal
+            // buffer ($earlyFlushedFacts) emitted at flush-deferred time —
+            // NOT included here so the per-file response stays clean (only
+            // facts for the current file). This keeps the deferred queue
+            // bounded, preventing O(N) memory growth on large codebases.
+            $visitor->earlyReplayAndBuffer();
             $traverser = new NodeTraverser();
             $traverser->addVisitor($visitor);
             $traverser->traverse($ast);
