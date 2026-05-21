@@ -104,12 +104,18 @@ function literalMethodFromConfigArg(arg: ts.Expression | undefined): string | nu
   return null;
 }
 
-// A resolved REST path is acceptable when it is either fully literal or has
-// exactly one `{*}` segment and that segment is not the first one (i.e. the
-// namespace prefix is concrete). This matches what produces useful bridges
-// against PHP `register_rest_route` listener anchors, which encode the
-// namespace literally and a single capture group `(?P<id>\\d+)` as `{*}`.
+// A resolved REST path is acceptable when:
+//   1. It is not a bundled-JS module specifier — paths whose first non-slash
+//      character is '@' are scoped-package imports (e.g. '@wordpress/a11y')
+//      carried through bundled output, never real REST routes. Drop them so
+//      they never produce a polluting `rest:GET /@...` anchor.
+//   2. It is either fully literal or has exactly one `{*}` segment, and that
+//      segment is not the first one (i.e. the namespace prefix is concrete).
+//      This matches what produces useful bridges against PHP
+//      `register_rest_route` listener anchors, which encode the namespace
+//      literally and a single capture group `(?P<id>\\d+)` as `{*}`.
 function isAcceptableRestPath(path: string): boolean {
+  if (path.replace(/^\/+/, '').startsWith('@')) return false;
   const count = (path.match(/\{\*\}/g) ?? []).length;
   if (count === 0) return true;
   if (count > 1) return false;
