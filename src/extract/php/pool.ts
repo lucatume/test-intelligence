@@ -13,6 +13,21 @@ export interface PoolOptions extends SpawnOptions {
 interface Slot {
   readonly worker: PhpWorker;
   pending: number;
+  dead: boolean;
+}
+
+// Index of the least-busy slot that is not dead, or -1 if every slot is dead.
+// Exported for unit testing; the pool's pick() wraps it.
+export function pickSlot(slots: readonly { pending: number; dead: boolean }[]): number {
+  let bestIdx = -1;
+  for (let i = 0; i < slots.length; i++) {
+    const s = slots[i];
+    if (s === undefined || s.dead) continue;
+    if (bestIdx === -1 || s.pending < (slots[bestIdx]?.pending ?? Infinity)) {
+      bestIdx = i;
+    }
+  }
+  return bestIdx;
 }
 
 // startPhpWorkerPool wraps N PhpWorkers behind the same interface. Dispatch is
@@ -31,26 +46,28 @@ export function startPhpWorkerPool(opts: PoolOptions): Result<PhpWorker, SpawnEr
       void Promise.all(slots.map((s) => s.worker.shutdown())).catch(() => undefined);
       return r;
     }
-    slots.push({ worker: r.value, pending: 0 });
+    slots.push({ worker: r.value, pending: 0, dead: false });
   }
 
   function pick(): Slot {
-    let best = slots[0];
-    if (!best) throw new Error('pool empty');
-    for (let i = 1; i < slots.length; i++) {
-      const s = slots[i];
-      if (s && s.pending < best.pending) best = s;
-    }
-    return best;
+    const idx = pickSlot(slots);
+    if (idx === -1) throw new Error('all php workers are dead');
+    const s = slots[idx];
+    if (s === undefined) throw new Error('all php workers are dead');
+    return s;
   }
+
+  const liveSlots = (): Slot[] => slots.filter((s) => !s.dead);
 
   const pool: PhpWorker = {
     async ping(): Promise<boolean> {
-      const results = await Promise.all(slots.map((s) => s.worker.ping()));
+      const live = liveSlots();
+      if (live.length === 0) return false;
+      const results = await Promise.all(live.map((s) => s.worker.ping()));
       return results.every((b) => b);
     },
     async registerPatterns(patterns): Promise<number> {
-      const counts = await Promise.all(slots.map((s) => s.worker.registerPatterns(patterns)));
+      const counts = await Promise.all(liveSlots().map((s) => s.worker.registerPatterns(patterns)));
       return counts[0] ?? 0;
     },
     async extract(absFile, phpUnitBaseClasses, relFile): Promise<unknown> {
@@ -58,6 +75,12 @@ export function startPhpWorkerPool(opts: PoolOptions): Result<PhpWorker, SpawnEr
       slot.pending++;
       try {
         return await slot.worker.extract(absFile, phpUnitBaseClasses, relFile);
+      } catch (e) {
+        // A rejected request means the worker subprocess is gone. Evict the
+        // slot so subsequent files route to live workers instead of all
+        // piling onto the dead one.
+        slot.dead = true;
+        throw e;
       } finally {
         slot.pending--;
       }
@@ -67,17 +90,17 @@ export function startPhpWorkerPool(opts: PoolOptions): Result<PhpWorker, SpawnEr
     },
     async dumpWrapperIndex(): Promise<unknown[]> {
       // De-duplication is the receiver's job (see mergeWrapperIndexEntries).
-      const all = await Promise.all(slots.map((s) => s.worker.dumpWrapperIndex()));
+      const all = await Promise.all(liveSlots().map((s) => s.worker.dumpWrapperIndex()));
       const out: unknown[] = [];
       for (const arr of all) for (const e of arr) out.push(e);
       return out;
     },
     async mergeWrapperIndex(entries): Promise<void> {
-      await Promise.all(slots.map((s) => s.worker.mergeWrapperIndex(entries)));
+      await Promise.all(liveSlots().map((s) => s.worker.mergeWrapperIndex(entries)));
     },
     async flushDeferred(): Promise<unknown> {
-      // Fan out to all slots: each worker may have its own deferred call buffer.
-      const results = await Promise.all(slots.map((s) => s.worker.flushDeferred()));
+      // Fan out to all live slots: each worker may have its own deferred call buffer.
+      const results = await Promise.all(liveSlots().map((s) => s.worker.flushDeferred()));
       // Merge the facts arrays and wrapperIndex arrays from each slot's response.
       const mergedFacts: unknown[] = [];
       const mergedWrapperIndex: unknown[] = [];
