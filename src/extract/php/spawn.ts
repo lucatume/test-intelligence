@@ -10,6 +10,8 @@ export interface PhpWorker {
   registerPatterns(patterns: readonly unknown[]): Promise<number>;
   extract(absFile: string, phpUnitBaseClasses?: readonly string[], relFile?: string): Promise<unknown>;
   flushDeferred(): Promise<unknown>;
+  dumpWrapperIndex(): Promise<unknown[]>;
+  mergeWrapperIndex(entries: readonly unknown[]): Promise<void>;
   resetState(): Promise<void>;
   shutdown(): Promise<void>;
 }
@@ -74,6 +76,16 @@ export function startPhpWorker(opts: SpawnOptions): Result<PhpWorker, SpawnError
     },
     async flushDeferred(): Promise<unknown> {
       return await proto.request({ op: 'flush-deferred' });
+    },
+    async dumpWrapperIndex(): Promise<unknown[]> {
+      const r = await proto.request({ op: 'dump-wrapper-index' });
+      const env = r as { entries?: unknown[] };
+      return Array.isArray(env.entries) ? env.entries : [];
+    },
+    async mergeWrapperIndex(entries): Promise<void> {
+      // Implemented in Task 2.
+      void entries;
+      return Promise.resolve();
     },
     async resetState(): Promise<void> {
       await proto.request({ op: 'reset-state' });

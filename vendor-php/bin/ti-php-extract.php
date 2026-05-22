@@ -1584,6 +1584,35 @@ final class Visitor extends NodeVisitorAbstract
     }
 
     /**
+     * Dump this worker's source='auto' wrapper entries in full in-memory shape
+     * for cross-worker merging. Config entries are excluded — they are seeded
+     * identically on every worker via register-patterns.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function dumpWrapperIndexForMerge(): array
+    {
+        $out = [];
+        foreach ($this->wrapperIndex as $wrapperName => $entries) {
+            foreach ($entries as $entry) {
+                if (($entry['source'] ?? 'auto') !== 'auto') continue;
+                $out[] = [
+                    'wrapperName'  => $wrapperName,
+                    'wraps'        => $entry['wraps'],
+                    'defFile'      => $entry['defFile'],
+                    'defStartLine' => $entry['defStartLine'],
+                    'defEndLine'   => $entry['defEndLine'],
+                    'argSpecs'     => $entry['argSpecs'],
+                    'source'       => 'auto',
+                    'class'        => $entry['class'] ?? null,
+                    'kind'         => $entry['kind'] ?? 'function',
+                ];
+            }
+        }
+        return $out;
+    }
+
+    /**
      * Directly set the wrapperIndex (used to restore config-source entries after reset-state).
      * @param array<string, list<array<string, mixed>>> $index
      */
@@ -3081,6 +3110,10 @@ while (($line = fgets($stdin)) !== false) {
         } catch (\Throwable $t) {
             emit(['op' => 'error', 'message' => 'flush-deferred failed: ' . $t->getMessage()]);
         }
+        continue;
+    }
+    if ($op === 'dump-wrapper-index') {
+        emit(['op' => 'wrapper-index', 'entries' => $visitor->dumpWrapperIndexForMerge()]);
         continue;
     }
     if ($op === 'reset-state') {

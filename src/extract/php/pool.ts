@@ -65,6 +65,15 @@ export function startPhpWorkerPool(opts: PoolOptions): Result<PhpWorker, SpawnEr
     async resetState(): Promise<void> {
       await Promise.all(slots.map((s) => s.worker.resetState()));
     },
+    async dumpWrapperIndex(): Promise<unknown[]> {
+      const all = await Promise.all(slots.map((s) => s.worker.dumpWrapperIndex()));
+      const out: unknown[] = [];
+      for (const arr of all) for (const e of arr) out.push(e);
+      return out;
+    },
+    async mergeWrapperIndex(entries): Promise<void> {
+      await Promise.all(slots.map((s) => s.worker.mergeWrapperIndex(entries)));
+    },
     async flushDeferred(): Promise<unknown> {
       // Fan out to all slots: each worker may have its own deferred call buffer.
       const results = await Promise.all(slots.map((s) => s.worker.flushDeferred()));
