@@ -281,9 +281,10 @@ register_block_type_from_metadata( __DIR__ . '/cart' );`);
 
   it('produces identical totals across php worker pool sizes', async () => {
     // Concurrency MUST be a performance lever, not a correctness one. Build the
-    // same fixture under phpWorkers=1 and phpWorkers=4 and require the four
-    // counters in BuildSummary to match exactly. If they ever drift, the
-    // parallel build is dropping work somewhere — silent and dangerous.
+    // same fixture — plain classes plus a cross-file wrapper and its callers —
+    // under phpWorkers=1 and phpWorkers=4 and require the four BuildSummary
+    // counters to match exactly. If they ever drift, the parallel build is
+    // dropping or duplicating work somewhere — silent and dangerous.
     const root = getTmp();
     for (let i = 0; i < 12; i++) {
       const cls = `Cart${String(i)}`;
@@ -299,9 +300,18 @@ class ${cls}Test extends TestCase {
 }`);
     }
 
+    // A cross-file wrapper plus callers, so the identical-totals assertion also
+    // covers the dump/merge barrier: under phpWorkers=4 the wrapper def and its
+    // callers spread across workers.
+    write(root, 'lib/route-helper.php', `<?php
+function ti_register_route( $path ) {
+    register_rest_route( 'app/v1', $path, array( 'methods' => 'GET' ) );
+}`);
+    for (let i = 0; i < 6; i++) {
+      write(root, `routes/r${String(i)}.php`, `<?php ti_register_route( '/res${String(i)}' );`);
+    }
+
     async function buildOnce(workers: number) {
-      // Each invocation runs against a fresh .test-intelligence so the
-      // upsert/insert path is exercised fully, not just touched.
       const cfg = parseConfig({
         concurrency: { phpWorkers: workers },
         confidence: { threshold: 0 },
@@ -319,9 +329,10 @@ class ${cls}Test extends TestCase {
     }
 
     const one = await buildOnce(1);
-    // wipe and rebuild
+    // Wipe .ti so the 4-worker build is a genuine cold start: all files are
+    // extracted fresh and every row goes through the insert path, not upsert.
     const fs = await import('node:fs/promises');
-    await fs.rm(join(root, '.test-intelligence'), { recursive: true, force: true });
+    await fs.rm(join(root, '.ti'), { recursive: true, force: true });
     const four = await buildOnce(4);
 
     expect(four.filesExtracted).toBe(one.filesExtracted);

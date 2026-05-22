@@ -19,11 +19,11 @@ function write(root: string, rel: string, src: string): void {
 
 const getTmp = useTmpDir('ti-build-wrappers-pool-');
 
-// Regression guard: cross-file wrapper synthesis must survive even when the
-// build processes multiple PHP files. Previously a multi-worker pool would
-// silently drop deferred stubs when the wrapper-def and caller files landed on
-// different workers. A single-file unit test cannot catch this — only a full
-// runBuild over several files can.
+// Regression guard: cross-file wrapper synthesis must hold when the build runs
+// a multi-worker PHP pool. The wrapper-def file and its caller files land on
+// different workers; the dump/merge barrier reconciles their partial wrapper
+// indexes before flush-deferred. A single-file unit test cannot catch this —
+// only a full runBuild over several files with phpWorkers > 1 can.
 it.skipIf(!hasPhpAvailable())(
   'synthesizes wrapper facts when wrapper-def and call sites live in different files (full build)',
   async () => {
@@ -40,7 +40,7 @@ function register_my_route( $route ) {
     write(root, 'features/b.php', "<?php register_my_route( '/orders' );");
     write(root, 'features/c.php', "<?php register_my_route( '/customers' );");
 
-    const cfgRes = parseConfig({ confidence: { threshold: 0 } });
+    const cfgRes = parseConfig({ confidence: { threshold: 0 }, concurrency: { phpWorkers: 4 } });
     if (cfgRes.kind === 'err') throw new Error('cfg');
 
     const r = await runBuild({
