@@ -89,23 +89,9 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
     try {
       const setupStart = opts.clock.nowMillis();
       const repoRoot = opts.repoRoot ?? resolveRepoRoot();
-      const phpWorkers = resolvePhpWorkers(opts.config.concurrency.phpWorkers);
       const wpPatternWrappers = opts.config.wpPatternWrappers;
-      if (mayHavePhp(opts) && hasPhpAvailable()) {
-        const wRes = startPhpWorkerPool({ repoRoot, size: phpWorkers, wpPatternWrappers });
-        if (wRes.kind === 'ok') {
-          worker = wRes.value;
-          await worker.registerPatterns(WP_PHP_PATTERNS);
-        } else if (verbosity !== 'quiet') {
-          opts.stderr.write(
-            `ti: php worker unavailable (${wRes.error.message}) — PHP files will be skipped\n`,
-          );
-        }
-      }
-      const setupMs = opts.clock.nowMillis() - setupStart;
-      const extractPhaseStart = opts.clock.nowMillis();
-
       const compilerOptionsResolver = new CompilerOptionsResolver(opts.projectRoot);
+
       // When updating a subset of paths, expand the set to include any caller
       // file that holds a synthesized fact backed by a wrapper whose def_file
       // is among the updated paths. Without this, the old synthesized facts for
@@ -123,6 +109,32 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
           `DELETE FROM wrapper_index WHERE def_file IN (${defPlaceholders})`
         ).run(...opts.onlyPaths);
       }
+
+      // Resolve the PHP worker pool size. For a subset update the .php file
+      // count is known up front, so the pool scales down (see resolvePhpWorkers).
+      // A full build's streaming walk has no cheap upfront count — base is used.
+      const phpFileCountHint = effectiveOnlyPaths !== undefined
+        ? effectiveOnlyPaths.filter((p) => p.endsWith('.php')).length
+        : undefined;
+      const phpWorkers = resolvePhpWorkers({
+        configured: opts.config.concurrency.phpWorkers,
+        cpuCount: cpus().length,
+        phpFileCount: phpFileCountHint,
+      });
+      if (mayHavePhp(opts) && hasPhpAvailable()) {
+        const wRes = startPhpWorkerPool({ repoRoot, size: phpWorkers, wpPatternWrappers });
+        if (wRes.kind === 'ok') {
+          worker = wRes.value;
+          await worker.registerPatterns(WP_PHP_PATTERNS);
+        } else if (verbosity !== 'quiet') {
+          opts.stderr.write(
+            `ti: php worker unavailable (${wRes.error.message}) — PHP files will be skipped\n`,
+          );
+        }
+      }
+      const setupMs = opts.clock.nowMillis() - setupStart;
+      const extractPhaseStart = opts.clock.nowMillis();
+
       const source = effectiveOnlyPaths !== undefined
         ? listFromPaths(effectiveOnlyPaths, opts.projectRoot, opts.config, opts.stderr, verbosity)
         : walk(opts.projectRoot, opts.config);
@@ -276,6 +288,13 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
         // Flush any cross-file deferred wrapper calls that couldn't be resolved
         // during per-file extraction (caller processed before wrapper-def file).
         if (worker !== undefined) {
+          // Barrier: each worker built only a partial wrapper index — it saw
+          // only its share of files. Gather every worker's auto entries,
+          // broadcast the union back, so each worker's flush-deferred replay
+          // resolves wrappers defined on a different worker. For a size-1 pool
+          // this is a harmless self round-trip.
+          const globalWrapperIndex = await worker.dumpWrapperIndex();
+          await worker.mergeWrapperIndex(globalWrapperIndex);
           const flushResult = await flushDeferredPhpFacts({
             projectRoot: opts.projectRoot,
             worker,
@@ -519,16 +538,29 @@ function toAsyncIterator<T>(src: AsyncIterable<T> | Iterable<T>): AsyncIterator<
   return wrapped;
 }
 
+// One PHP worker handles roughly this many files before a second worker pays
+// for its ~512M process and startup cost. Used only to scale down small
+// subset updates; full builds always use the resolved base count.
+const PHP_FILES_PER_WORKER = 32;
+
 // Resolve the PHP worker pool size.
-// MUST remain 1: $wrapperIndex and $deferredWrapperCalls are per-worker
-// state. With N>1 workers, a wrapper-def file and its call sites can land on
-// different workers; neither worker can synthesize the cross-file fact and
-// deferred stubs are silently dropped. TS files still process concurrently
-// via the lane loop, so mixed TS/PHP projects retain parallelism.
-// The configured value is ignored; lift this cap only after the wrapper index
-// is shared across workers.
-function resolvePhpWorkers(_configured: number | undefined): number {
-  return 1;
+// - configured: concurrency.phpWorkers from config (clamped to >= 1 — PHP
+//   always needs a subprocess, so 0 is meaningless and treated as 1).
+// - cpuCount: os.cpus().length, injected for testability.
+// - phpFileCount: number of .php files when known up front (subset updates);
+//   undefined for a full build's streaming walk. When known, the pool scales
+//   down so a few-file `ti update` does not spawn the whole pool.
+export function resolvePhpWorkers(opts: {
+  configured: number | undefined;
+  cpuCount: number;
+  phpFileCount?: number | undefined;
+}): number {
+  const base = opts.configured !== undefined
+    ? Math.max(1, Math.floor(opts.configured))
+    : Math.min(Math.max(opts.cpuCount - 2, 1), 8);
+  if (opts.phpFileCount === undefined) return base;
+  const scaled = Math.max(1, Math.ceil(opts.phpFileCount / PHP_FILES_PER_WORKER));
+  return Math.min(base, scaled);
 }
 
 // Resolve the derive worker_threads pool size. Default: cpus-2 clamped to
