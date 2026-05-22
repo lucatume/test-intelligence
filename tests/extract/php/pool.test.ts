@@ -5,7 +5,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { startPhpWorkerPool } from '../../../src/extract/php/pool.js';
 import { hasPhpAvailable } from '../../../src/extract/php/spawn.js';
 import { WP_PHP_PATTERNS } from '../../../src/extract/declarative/wp-php-patterns.js';
-import { extractPhpFile } from '../../../src/extract/php/extract.js';
+import { extractPhpFile, flushDeferredPhpFacts } from '../../../src/extract/php/extract.js';
 import { useTmpDir } from '../../helpers/tmpDir.js';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -91,5 +91,45 @@ describe.skipIf(!hasPhpAvailable())('startPhpWorkerPool', () => {
   it('rejects size < 1', () => {
     const r = startPhpWorkerPool({ repoRoot, size: 0 });
     expect(r.kind).toBe('err');
+  });
+
+  it('synthesizes cross-worker wrappers via the dump/merge barrier', async () => {
+    const r = startPhpWorkerPool({ repoRoot, size: 2 });
+    if (r.kind !== 'ok') throw new Error('pool failed');
+    const pool = r.value;
+    try {
+      await pool.registerPatterns(WP_PHP_PATTERNS);
+      const root = getTmp();
+      write(root, 'wrapper.php', `<?php
+function register_my_route( $route ) {
+    register_rest_route( 'my-plugin/v1', $route, array( 'methods' => 'GET' ) );
+}
+`);
+      write(root, 'a.php', "<?php register_my_route( '/items' );");
+      write(root, 'b.php', "<?php register_my_route( '/orders' );");
+      // Concurrent dispatch spreads the three files across both slots.
+      const perFile = await Promise.all([
+        extractPhpFile({ projectRoot: root, relPath: 'wrapper.php', worker: pool }),
+        extractPhpFile({ projectRoot: root, relPath: 'a.php', worker: pool }),
+        extractPhpFile({ projectRoot: root, relPath: 'b.php', worker: pool }),
+      ]);
+      // Barrier: gather every worker's wrapper entries, broadcast the union.
+      const globalIndex = await pool.dumpWrapperIndex();
+      await pool.mergeWrapperIndex(globalIndex);
+      const flush = await flushDeferredPhpFacts({ projectRoot: root, worker: pool });
+
+      const restKeys = [...perFile.flat(), ...flush.facts]
+        .filter((f) => f.kind === 'rest-endpoint')
+        .flatMap((f) => f.anchors.map((a) => a.key))
+        .sort();
+      expect(restKeys).toEqual([
+        'rest:GET /my-plugin/v1/items',
+        'rest:GET /my-plugin/v1/orders',
+      ]);
+      // The wrapper index is persisted once, not once per slot.
+      expect(flush.wrapperIndex).toHaveLength(1);
+    } finally {
+      await pool.shutdown();
+    }
   });
 });

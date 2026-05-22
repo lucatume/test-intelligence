@@ -99,21 +99,21 @@ export function startPhpWorkerPool(opts: PoolOptions): Result<PhpWorker, SpawnEr
       await Promise.all(liveSlots().map((s) => s.worker.mergeWrapperIndex(entries)));
     },
     async flushDeferred(): Promise<unknown> {
-      // Fan out to all live slots: each worker may have its own deferred call buffer.
+      // Each live worker replays its own deferred buffer; facts are merged.
+      // After the host's dump/merge barrier every worker holds the same global
+      // wrapper index, so the persisted index is taken from the first slot
+      // only — concatenating all slots would write N duplicate rows.
       const results = await Promise.all(liveSlots().map((s) => s.worker.flushDeferred()));
-      // Merge the facts arrays and wrapperIndex arrays from each slot's response.
       const mergedFacts: unknown[] = [];
-      const mergedWrapperIndex: unknown[] = [];
       for (const r of results) {
-        const env = r as { op?: string; facts?: unknown[]; wrapperIndex?: unknown[] };
+        const env = r as { op?: string; facts?: unknown[] };
         if (env.op === 'facts' && Array.isArray(env.facts)) {
           for (const f of env.facts) mergedFacts.push(f);
         }
-        if (Array.isArray(env.wrapperIndex)) {
-          for (const w of env.wrapperIndex) mergedWrapperIndex.push(w);
-        }
       }
-      return { op: 'facts', facts: mergedFacts, wrapperIndex: mergedWrapperIndex };
+      const first = results[0] as { wrapperIndex?: unknown[] } | undefined;
+      const wrapperIndex = Array.isArray(first?.wrapperIndex) ? first.wrapperIndex : [];
+      return { op: 'facts', facts: mergedFacts, wrapperIndex };
     },
     async shutdown(): Promise<void> {
       await Promise.all(slots.map((s) => s.worker.shutdown()));
