@@ -76,10 +76,13 @@ export function startPhpWorkerPool(opts: PoolOptions): Result<PhpWorker, SpawnEr
       try {
         return await slot.worker.extract(absFile, phpUnitBaseClasses, relFile);
       } catch (e) {
-        // A rejected request means the worker subprocess is gone. Evict the
-        // slot so subsequent files route to live workers instead of all
-        // piling onto the dead one.
-        slot.dead = true;
+        // A rejection is either a one-off PHP-side error for a single bad file
+        // (the worker emitted op:'error' but is still alive and reading) or a
+        // dead subprocess. Probe with ping: only evict the slot when the
+        // worker is genuinely gone, so one pathological file does not take the
+        // whole worker — and, on a size-1 pool, all remaining PHP — down.
+        const alive = await slot.worker.ping().catch(() => false);
+        if (!alive) slot.dead = true;
         throw e;
       } finally {
         slot.pending--;
