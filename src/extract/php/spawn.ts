@@ -83,9 +83,7 @@ export function startPhpWorker(opts: SpawnOptions): Result<PhpWorker, SpawnError
       return Array.isArray(env.entries) ? env.entries : [];
     },
     async mergeWrapperIndex(entries): Promise<void> {
-      // Implemented in Task 2.
-      void entries;
-      return Promise.resolve();
+      await proto.request({ op: 'merge-wrapper-index', entries });
     },
     async resetState(): Promise<void> {
       await proto.request({ op: 'reset-state' });

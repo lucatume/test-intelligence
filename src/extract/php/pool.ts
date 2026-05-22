@@ -66,6 +66,7 @@ export function startPhpWorkerPool(opts: PoolOptions): Result<PhpWorker, SpawnEr
       await Promise.all(slots.map((s) => s.worker.resetState()));
     },
     async dumpWrapperIndex(): Promise<unknown[]> {
+      // De-duplication is the receiver's job (see mergeWrapperIndexEntries).
       const all = await Promise.all(slots.map((s) => s.worker.dumpWrapperIndex()));
       const out: unknown[] = [];
       for (const arr of all) for (const e of arr) out.push(e);

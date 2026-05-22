@@ -1613,6 +1613,49 @@ final class Visitor extends NodeVisitorAbstract
     }
 
     /**
+     * Merge auto wrapper entries discovered on other workers into this index.
+     * An entry is skipped when this worker already holds one with the same
+     * (defFile, defStartLine, kind) — so a worker silently ignores its own
+     * entries echoed back in the broadcast. Returns the count added.
+     *
+     * @param list<mixed> $entries  JSON-decoded entries from dumpWrapperIndexForMerge.
+     */
+    public function mergeWrapperIndexEntries(array $entries): int
+    {
+        $added = 0;
+        foreach ($entries as $e) {
+            if (!is_array($e)) continue;
+            $name = $e['wrapperName'] ?? null;
+            if (!is_string($name) || $name === '') continue;
+            $defFile = $e['defFile'] ?? null;
+            $defStartLine = $e['defStartLine'] ?? null;
+            $kind = $e['kind'] ?? 'function';
+            $dup = false;
+            foreach ($this->wrapperIndex[$name] ?? [] as $existing) {
+                if (($existing['defFile'] ?? null) === $defFile
+                    && ($existing['defStartLine'] ?? null) === $defStartLine
+                    && ($existing['kind'] ?? 'function') === $kind) {
+                    $dup = true;
+                    break;
+                }
+            }
+            if ($dup) continue;
+            $this->wrapperIndex[$name][] = [
+                'wraps'        => $e['wraps'] ?? '',
+                'defFile'      => $defFile,
+                'defStartLine' => $defStartLine,
+                'defEndLine'   => $e['defEndLine'] ?? 0,
+                'argSpecs'     => is_array($e['argSpecs'] ?? null) ? $e['argSpecs'] : [],
+                'source'       => 'auto',
+                'class'        => $e['class'] ?? null,
+                'kind'         => $kind,
+            ];
+            $added++;
+        }
+        return $added;
+    }
+
+    /**
      * Directly set the wrapperIndex (used to restore config-source entries after reset-state).
      * @param array<string, list<array<string, mixed>>> $index
      */
@@ -3114,6 +3157,12 @@ while (($line = fgets($stdin)) !== false) {
     }
     if ($op === 'dump-wrapper-index') {
         emit(['op' => 'wrapper-index', 'entries' => $visitor->dumpWrapperIndexForMerge()]);
+        continue;
+    }
+    if ($op === 'merge-wrapper-index') {
+        $entries = is_array($req['entries'] ?? null) ? $req['entries'] : [];
+        $count = $visitor->mergeWrapperIndexEntries($entries);
+        emit(['op' => 'merged', 'count' => $count]);
         continue;
     }
     if ($op === 'reset-state') {
