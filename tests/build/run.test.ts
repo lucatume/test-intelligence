@@ -311,6 +311,19 @@ function ti_register_route( $path ) {
       write(root, `routes/r${String(i)}.php`, `<?php ti_register_route( '/res${String(i)}' );`);
     }
 
+    // Pin the denylist-name regression: a user-defined wrapper whose name is
+    // in PHP_BUILTIN_FUNCTIONS. Under the old single-pass + denylist gate the
+    // caller's worker — if it never saw wrapper.php — would refuse to buffer
+    // a stub, dropping the hook-fire fact. Multiple callers in separate
+    // files make cross-worker scatter likely under phpWorkers=4.
+    write(root, 'lib/option-wrapper.php', `<?php
+function delete_option( $name ) {
+    do_action( 'ti_deletemeelephant_evt', $name );
+}`);
+    for (let i = 0; i < 6; i++) {
+      write(root, `callers/c${String(i)}.php`, `<?php delete_option( 'opt${String(i)}' );`);
+    }
+
     async function buildOnce(workers: number) {
       const cfg = parseConfig({
         concurrency: { phpWorkers: workers },
