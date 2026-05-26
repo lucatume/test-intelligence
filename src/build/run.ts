@@ -189,6 +189,15 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
           })());
         }
         await Promise.all(prepassLanes);
+        // If every pool slot died during phase-1 (catastrophic PHP subprocess
+        // failure), the lanes will have swallowed N rejections into stderr
+        // and we'd start phase-2 with an empty wrapper index plus every
+        // extract call immediately throwing. Detect once at the barrier and
+        // bail loud.
+        const aliveAfterPrepass = await twoPhaseWorker.ping().catch(() => false);
+        if (!aliveAfterPrepass) {
+          return err({ kind: 'BuildError', message: 'php workers died during phase-1 prepass' });
+        }
         // Barrier: gather every worker's partial index, broadcast the union.
         const globalIndex = await twoPhaseWorker.dumpWrapperIndex();
         await twoPhaseWorker.mergeWrapperIndex(globalIndex);
@@ -345,11 +354,12 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
         // Flush any cross-file deferred wrapper calls that couldn't be resolved
         // during per-file extraction (caller processed before wrapper-def file).
         if (worker !== undefined) {
-          // Barrier: each worker built only a partial wrapper index — it saw
-          // only its share of files. Gather every worker's auto entries,
-          // broadcast the union back, so each worker's flush-deferred replay
-          // resolves wrappers defined on a different worker. For a size-1 pool
-          // this is a harmless self round-trip.
+          // For onlyPaths updates (single-pass), each worker built only a
+          // partial wrapper index; this barrier unifies them so flush-deferred
+          // replay sees every wrapper. For full builds (two-phase) every
+          // worker already holds the complete index post-phase-1; this is a
+          // self round-trip whose only output is the dumpWrapperIndex payload
+          // that feeds wrapper_index row writes via flushDeferredPhpFacts.
           const globalWrapperIndex = await worker.dumpWrapperIndex();
           await worker.mergeWrapperIndex(globalWrapperIndex);
           const flushResult = await flushDeferredPhpFacts({
