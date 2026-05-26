@@ -73,11 +73,12 @@ add_submenu_page( 'parent', 'T', 'T', 'cap', 'ti_deletemeelephant_slug', functio
 add_submenu_page( 'parent2', 'T', 'T', 'cap', 'ti_deletemeelephant_slug2', $cb );
 `);
     const facts = (await worker.extract(join(root, 'menu.php'), [], 'menu.php')) as { facts: Array<{ kind: string; anchors: Array<{ key: string }>; payload: Record<string, unknown> }> };
-    // Callback-sibling symbol-uses are distinguished by their empty `anchors`
-    // (the regular call-site symbol-use for `add_submenu_page` itself carries
-    // a `php-symbol:add_submenu_page` target anchor). Filter to siblings only.
+    // The extractor still emits the regular call-site symbol-use for
+    // `add_submenu_page` itself. Filter that out and assert no callback-sibling
+    // symbol-use remains: closure / variable callbacks must not produce a
+    // synthetic name to anchor on.
     const callbackSiblings = facts.facts.filter(
-      (f) => f.kind === 'symbol-use' && f.anchors.length === 0,
+      (f) => f.kind === 'symbol-use' && f.payload['name'] !== 'add_submenu_page',
     );
     expect(callbackSiblings).toEqual([]);
   });

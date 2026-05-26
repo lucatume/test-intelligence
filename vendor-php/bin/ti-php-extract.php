@@ -1155,11 +1155,15 @@ final class Visitor extends NodeVisitorAbstract
         $args = $this->extractArgs($n);
         $callbackName = $this->adminPageCallbackName($args[5] ?? null);
         if ($callbackName !== null) {
+            // Anchor at php-symbol:<name> role 'subject' so the derive
+            // symbol-call bridge (which scans subjectsByAnchor's complement
+            // targetsByAnchor) joins this use to the symbol-def in the
+            // callback's defining file — the second hop of the e2e edge.
             $this->facts[] = [
                 'kind' => 'symbol-use',
                 'resolved' => true,
                 'location' => $this->loc($n),
-                'anchors' => [],
+                'anchors' => [['key' => 'php-symbol:' . $callbackName, 'role' => 'subject']],
                 'payload' => [
                     'kind' => 'symbol-use',
                     'name' => $callbackName,

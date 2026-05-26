@@ -252,6 +252,7 @@ function enqueueDownstream(
       // the BFS on WP-core-dense graphs. Siblings carry arrivalKind=null: they
       // propagate but record no edge of their own.
       enqueueEnqueueSiblings(graph, partner.fact, partnerDepth, queue, enqueued);
+      enqueueAdminPageCallbackSiblings(graph, partner.fact, partnerDepth, queue, enqueued);
       if (enqueued.has(partner.fact.id)) continue;
       enqueued.add(partner.fact.id);
       queue.push({
@@ -284,6 +285,35 @@ function enqueueEnqueueSiblings(
 ): void {
   for (const f of graph.factsByFile.get(anchorFact.fileId) ?? []) {
     if (f.kind !== 'enqueue-script') continue;
+    if (enqueued.has(f.id)) continue;
+    enqueued.add(f.id);
+    queue.push({
+      fact: f, depth, arrivalKind: null, arrivalFactId: null,
+      arrivalPrecision: 'exact', arrivalIsBridge: false,
+    });
+  }
+}
+
+/**
+ * When an admin-page-mediated bridge arrives at an `admin-page-register` fact,
+ * surface the sibling `symbol-use` fact(s) the PHP extractor emits at the same
+ * `add_menu_page` / `add_submenu_page` call — anchored at `php-symbol:<cb>`
+ * role 'subject'. Those uses bridge via the symbol-call kind to the
+ * `symbol-def` in the callback's defining file (the second hop of the e2e
+ * edge). Scoped narrowly to admin-page-register sibling expansion to avoid
+ * turning every bridge into a full-file fan-out.
+ */
+function enqueueAdminPageCallbackSiblings(
+  graph: Graph,
+  anchorFact: FactRow,
+  depth: number,
+  queue: QueueItem[],
+  enqueued: Set<number>,
+): void {
+  if (anchorFact.kind !== 'admin-page-register') return;
+  for (const f of graph.factsByFile.get(anchorFact.fileId) ?? []) {
+    if (f.kind !== 'symbol-use') continue;
+    if (f.startLine !== anchorFact.startLine) continue;
     if (enqueued.has(f.id)) continue;
     enqueued.add(f.id);
     queue.push({
