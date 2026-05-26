@@ -354,6 +354,60 @@ function delete_option( $name ) {
     expect(four.edgesWritten).toBe(one.edgesWritten);
   });
 
+  it('is deterministic across cold builds at phpWorkers > 1 for denylisted wrappers', async () => {
+    // Build the same denylist-wrapper fixture twice at phpWorkers=4. The
+    // sorted anchor-key set for hook-fire facts must be byte-identical
+    // across runs. With no deferral, phase-2 extraction is a pure function
+    // of (file, complete index); fact content does not depend on worker
+    // count or file distribution.
+    const root = getTmp();
+    write(root, 'lib/option-wrapper.php', `<?php
+function delete_option( $name ) {
+    do_action( 'ti_deletemeelephant_evt', $name );
+}`);
+    for (let i = 0; i < 12; i++) {
+      write(root, `callers/c${String(i)}.php`, `<?php delete_option( 'opt${String(i)}' );`);
+    }
+
+    async function buildAndDumpHookFireAnchors(): Promise<string[]> {
+      const cfg = parseConfig({
+        concurrency: { phpWorkers: 4 },
+        confidence: { threshold: 0 },
+      });
+      if (cfg.kind === 'err') throw new Error('cfg');
+      const r = await runBuild({
+        projectRoot: root,
+        config: cfg.value,
+        clock: systemClock,
+        stderr: { write: () => {} },
+        repoRoot,
+      });
+      if (r.kind !== 'ok') throw new Error('build failed');
+      const s = openStore(root);
+      if (s.kind !== 'ok') throw new Error('store');
+      try {
+        const rows = s.value.db.prepare(`
+          SELECT a.key
+          FROM fact f
+          JOIN fact_anchor fa ON fa.fact_id = f.id
+          JOIN anchor a ON a.id = fa.anchor_id
+          WHERE f.kind = 'hook-fire'
+          ORDER BY a.key
+        `).all() as Array<{ key: string }>;
+        return rows.map((r) => r.key);
+      } finally {
+        s.value.close();
+      }
+    }
+
+    const first = await buildAndDumpHookFireAnchors();
+    expect(first.length).toBeGreaterThan(0);
+    const fs = await import('node:fs/promises');
+    await fs.rm(join(root, '.ti'), { recursive: true, force: true });
+    const second = await buildAndDumpHookFireAnchors();
+    expect(second).toEqual(first);
+  });
+
   it('does not emit edges into nested vendor directories', async () => {
     // Earlier `vendor` detection only matched top-level vendor/; monorepos
     // place vendor/ under every package, so phpunit edges leaked into
