@@ -70,6 +70,11 @@ export function restMethodForCall(
     ) {
       return name.toUpperCase();
     }
+    // @wordpress/e2e-test-utils-playwright fixture: requestUtils.deleteAllPosts
+    // is a fixed DELETE call against wp/v2/posts (plan 04).
+    if (ts.isIdentifier(recv) && recv.text === 'requestUtils' && name === 'deleteAllPosts') {
+      return 'DELETE';
+    }
   }
   if (ts.isIdentifier(callee)) {
     // apiFetch(config) keeps the method in arg 0's `method` property;

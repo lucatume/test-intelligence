@@ -1,3 +1,9 @@
+// Patterns for WP-shaped JS/TS call sites. The fixture-method patterns at the
+// bottom of WP_JS_PATTERNS were added by plan 04 (e2e → PHP, wp-develop
+// fixture-method resolution) — they bind to `@wordpress/e2e-test-utils-playwright`
+// fixtures (`admin`, `editor`, `requestUtils`) and emit facts whose anchor
+// keys match anchors already produced by the PHP extractor. See
+// docs/superpowers/plans/2026-05-26-e2e-php-04-wp-fixture-method-resolution.md.
 import type { UserPattern } from './pattern.js';
 
 export const AXIOS_METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const;
@@ -238,5 +244,38 @@ export const WP_JS_PATTERNS: readonly UserPattern[] = [
     emit: 'admin-page-nav',
     transform: 'admin-page-slug-from-url',
     anchor: { template: 'wp-admin-page:{slug}', role: 'target' },
+  },
+  // --- @wordpress/e2e-test-utils-playwright fixture methods (plan 04) -------
+  // These are hand-coded patterns for the four highest-traffic fixture methods
+  // in wp-develop's e2e suite. Each emits an anchor key that joins to a fact
+  // already produced by the PHP extractor today (core admin pages register via
+  // add_*_page; wp/v2/posts is core REST). The receivers `admin`, `editor`,
+  // and `requestUtils` are Playwright `test.extend` fixtures — receiver match
+  // alone is the gate because no other library uses those identifiers as a
+  // method-call receiver in WP-shaped codebases.
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'visitAdminPage', receiver: 'admin' },
+    bind: { adminPath: { arg: 0, type: 'string' } },
+    emit: 'admin-page-nav',
+    transform: 'admin-page-slug-from-url-or-slug',
+    anchor: { template: 'wp-admin-page:{slug}', role: 'target' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'createNewPost', receiver: 'admin' },
+    bind: {},
+    emit: 'admin-page-nav',
+    anchor: { template: 'wp-admin-page:post-new.php', role: 'target' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'publishPost', receiver: 'editor' },
+    bind: {},
+    emit: 'admin-page-nav',
+    anchor: { template: 'wp-admin-page:post.php', role: 'target' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'deleteAllPosts', receiver: 'requestUtils' },
+    bind: {},
+    emit: 'rest-call-js',
+    anchor: { template: 'rest:DELETE /wp/v2/posts/{*}', role: 'target' },
   },
 ];

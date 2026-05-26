@@ -442,7 +442,10 @@ function readLiteral(n: ts.Expression, type: string, inits: LiteralInitMap): unk
 
 function renderTemplate(tpl: string, fields: Record<string, unknown>): string | null {
   const state = { ok: true };
-  const out = tpl.replace(/\{([^}]+)\}/g, (_match: string, name: string): string => {
+  const out = tpl.replace(/\{([^}]+)\}/g, (match: string, name: string): string => {
+    // `{*}` is the wildcard sentinel used elsewhere in the engine; leave it as
+    // a literal so anchor templates can embed it (e.g., `rest:DELETE /wp/v2/posts/{*}`).
+    if (name === '*') return match;
     const path = name.split('.');
     let cur: unknown = fields;
     for (const segment of path) {
