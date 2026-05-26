@@ -70,7 +70,7 @@ describe('branded type identities', () => {
     const _f: FromArray extends AnchorType ? true : false = true;
     const _g: AnchorType extends FromArray ? true : false = true;
     void _f; void _g;
-    expect(ALL_ANCHOR_TYPES.length).toBe(13);
+    expect(ALL_ANCHOR_TYPES.length).toBe(14);
   });
 
   it('FactKind has the sealed v1 set', () => {

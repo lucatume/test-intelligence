@@ -63,6 +63,7 @@ export type AnchorType =
   | 'ajax'
   | 'script-handle'
   | 'wp-admin-page'
+  | 'wp-frontend'
   | 'wp-store'
   | 'shortcode'
   | 'block'
@@ -85,6 +86,7 @@ export const ALL_ANCHOR_TYPES = [
   'ajax',
   'script-handle',
   'wp-admin-page',
+  'wp-frontend',
   'wp-store',
   'shortcode',
   'block',

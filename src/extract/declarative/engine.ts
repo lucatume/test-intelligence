@@ -275,6 +275,50 @@ function adminPageSlugFromUrlOrSlug(value: string): string | null {
 // Test-only export.
 export const __testAdminPageSlugFromUrlOrSlug = adminPageSlugFromUrlOrSlug;
 
+// Static catalogue of canonical front-end and core wp-admin URLs that map to
+// fixed anchor keys. Pretty permalinks and admin-page-slug (`admin.php?page=…`)
+// URLs are deliberately excluded — those go through `adminPageSlugFromUrl`.
+const WP_URL_CATALOGUE: ReadonlyMap<string, string> = new Map([
+  ['/',                              'wp-frontend:home'],
+  ['/wp-admin',                      'wp-admin-page:index.php'],
+  ['/wp-admin/',                     'wp-admin-page:index.php'],
+  ['/wp-admin/index.php',            'wp-admin-page:index.php'],
+  ['/wp-admin/edit.php',             'wp-admin-page:edit.php'],
+  ['/wp-admin/edit-tags.php',        'wp-admin-page:edit-tags.php'],
+  ['/wp-admin/post.php',             'wp-admin-page:post.php'],
+  ['/wp-admin/post-new.php',         'wp-admin-page:post-new.php'],
+  ['/wp-admin/upload.php',           'wp-admin-page:upload.php'],
+  ['/wp-admin/media-new.php',        'wp-admin-page:media-new.php'],
+  ['/wp-admin/themes.php',           'wp-admin-page:themes.php'],
+  ['/wp-admin/plugins.php',          'wp-admin-page:plugins.php'],
+  ['/wp-admin/users.php',            'wp-admin-page:users.php'],
+  ['/wp-admin/user-new.php',         'wp-admin-page:user-new.php'],
+  ['/wp-admin/profile.php',          'wp-admin-page:profile.php'],
+  ['/wp-admin/tools.php',            'wp-admin-page:tools.php'],
+  ['/wp-admin/options-general.php',    'wp-admin-page:options-general.php'],
+  ['/wp-admin/options-writing.php',    'wp-admin-page:options-writing.php'],
+  ['/wp-admin/options-reading.php',    'wp-admin-page:options-reading.php'],
+  ['/wp-admin/options-discussion.php', 'wp-admin-page:options-discussion.php'],
+  ['/wp-admin/options-media.php',      'wp-admin-page:options-media.php'],
+  ['/wp-admin/options-permalink.php',  'wp-admin-page:options-permalink.php'],
+  ['/wp-login.php',                  'wp-frontend:login'],
+]);
+
+function wpFrontendOrAdminUrl(url: string): string | null {
+  if (url === '') return null;
+  // Strip scheme + host if present.
+  const hostStripped = url.replace(/^https?:\/\/[^/]+/, '');
+  // Strip a trailing query/fragment.
+  const qIdx = hostStripped.indexOf('?');
+  const hIdx = hostStripped.indexOf('#');
+  const end = [qIdx, hIdx].filter((i) => i >= 0).reduce((a, b) => Math.min(a, b), hostStripped.length);
+  const path = hostStripped.slice(0, end);
+  return WP_URL_CATALOGUE.get(path) ?? null;
+}
+
+// Test-only export.
+export const __testWpFrontendOrAdminUrl = wpFrontendOrAdminUrl;
+
 function applyPattern(
   m: MatchedCall,
   p: UserPattern,
@@ -328,6 +372,15 @@ function applyPattern(
     const slug = adminPageSlugFromUrlOrSlug(raw);
     if (slug === null) return null;
     fields['slug'] = slug;
+  }
+  if (p.transform === 'wp-frontend-or-admin-url') {
+    fields['method'] = m.name;
+    const url = fields['url'];
+    if (typeof url !== 'string') return null;
+    const anchor = wpFrontendOrAdminUrl(url);
+    if (anchor === null) return null;
+    // Push the resolved anchor key directly into a field the template can read.
+    fields['anchor'] = anchor;
   }
   if (resolved && containsWildcard(fields)) resolved = false;
 
