@@ -132,4 +132,32 @@ function register_my_route( $route ) {
       await pool.shutdown();
     }
   });
+
+  it('fan-outs prepass across slots so the union covers every file', async () => {
+    // Two slots, two wrapper files dispatched concurrently — pickSlot's
+    // least-busy selection forces one wrapper onto slot 0 and the other onto
+    // slot 1. dumpWrapperIndex on the pool gathers from every live slot, so
+    // the union is the full set.
+    const r = startPhpWorkerPool({ repoRoot, size: 2 });
+    if (r.kind !== 'ok') throw new Error('pool failed');
+    try {
+      await r.value.registerPatterns(WP_PHP_PATTERNS);
+      const root = getTmp();
+      write(root, 'a.php', `<?php
+function ti_route_a( $r ) { register_rest_route( 'a/v1', $r, array( 'methods' => 'GET' ) ); }
+`);
+      write(root, 'b.php', `<?php
+function ti_route_b( $r ) { register_rest_route( 'b/v1', $r, array( 'methods' => 'GET' ) ); }
+`);
+      await Promise.all([
+        r.value.prepass(join(root, 'a.php'), 'a.php'),
+        r.value.prepass(join(root, 'b.php'), 'b.php'),
+      ]);
+      const entries = await r.value.dumpWrapperIndex() as Array<{ wrapperName?: string }>;
+      const names = entries.map((e) => e.wrapperName).sort();
+      expect(names).toEqual(['ti_route_a', 'ti_route_b']);
+    } finally {
+      await r.value.shutdown();
+    }
+  });
 });
