@@ -37,7 +37,8 @@ export interface UserPattern {
     | 'admin-page-slug-from-url'
     | 'admin-page-slug'
     | 'block-render'
-    | 'localize-data';
+    | 'localize-data'
+    | 'rest-url-normalise';
 }
 
 const ALL_FACT_KINDS: readonly FactKind[] = [
@@ -89,6 +90,7 @@ const patternSchema = P.object(
         'admin-page-slug-from-url',
         'admin-page-slug',
         'block-render',
+        'rest-url-normalise',
       ] as const),
     ),
   },
