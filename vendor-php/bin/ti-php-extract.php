@@ -1970,6 +1970,20 @@ final class Visitor extends NodeVisitorAbstract
         $this->buildWrapperIndex($ast);
     }
 
+    /**
+     * Phase-1 entry point. The AST has already been parsed by the caller; this
+     * method runs ONLY buildWrapperIndex, accumulating $wrapperIndex entries
+     * with no defines/consts micro-pass, no main traverse, and no fact
+     * emission. The caller is responsible for invoking resetForFile() first so
+     * $this->file is set (defFile is derived from it).
+     *
+     * @param array<int, Node> $ast
+     */
+    public function buildWrapperIndexOnly(array $ast): void
+    {
+        $this->buildWrapperIndex($ast);
+    }
+
     // Note: wrapperIndex keys are unqualified names. Calls using a fully-qualified
     // name (e.g. \MyPlugin\register_my_route()) won't synthesize. Out of scope for v1.
 
@@ -3097,6 +3111,30 @@ while (($line = fgets($stdin)) !== false) {
             $visitor->seedConfigWrappers($req['wpPatternWrappers']);
         }
         emit(['op' => 'registered', 'count' => count(Patterns::$entries)]);
+        continue;
+    }
+    if ($op === 'prepass') {
+        $file = $req['file'] ?? '';
+        $relFile = isset($req['relFile']) && is_string($req['relFile']) ? $req['relFile'] : null;
+        if (!is_string($file) || !is_file($file)) {
+            emit(['op' => 'prepass-ok']);
+            continue;
+        }
+        try {
+            $code = file_get_contents($file);
+            if ($code === false) { emit(['op' => 'prepass-ok']); continue; }
+            $ast = $parser->parse($code);
+            if ($ast === null) { emit(['op' => 'prepass-ok']); continue; }
+            $visitor->resetForFile($file, $relFile, $code);
+            $visitor->buildWrapperIndexOnly($ast);
+            emit(['op' => 'prepass-ok']);
+        } catch (ParserError $e) {
+            // A file that cannot be parsed contributes no wrappers. The phase-2
+            // extract of the same file emits the parse-error fact as today.
+            emit(['op' => 'prepass-ok']);
+        } catch (\Throwable $t) {
+            emit(['op' => 'error', 'message' => 'prepass failed: ' . $t->getMessage()]);
+        }
         continue;
     }
     if ($op === 'extract') {

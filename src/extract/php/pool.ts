@@ -88,6 +88,23 @@ export function startPhpWorkerPool(opts: PoolOptions): Result<PhpWorker, SpawnEr
         slot.pending--;
       }
     },
+    async prepass(absFile, relFile): Promise<void> {
+      // Phase-1 dispatch: each file's wrapper-index work goes to the least-busy
+      // live slot. The dump/merge barrier (separate op, host-driven) is what
+      // unifies per-slot indexes after phase-1; this method only places the
+      // work. Eviction policy mirrors extract().
+      const slot = pick();
+      slot.pending++;
+      try {
+        await slot.worker.prepass(absFile, relFile);
+      } catch (e) {
+        const alive = await slot.worker.ping().catch(() => false);
+        if (!alive) slot.dead = true;
+        throw e;
+      } finally {
+        slot.pending--;
+      }
+    },
     async resetState(): Promise<void> {
       await Promise.all(slots.map((s) => s.worker.resetState()));
     },

@@ -9,6 +9,7 @@ export interface PhpWorker {
   ping(): Promise<boolean>;
   registerPatterns(patterns: readonly unknown[]): Promise<number>;
   extract(absFile: string, phpUnitBaseClasses?: readonly string[], relFile?: string): Promise<unknown>;
+  prepass(absFile: string, relFile?: string): Promise<void>;
   flushDeferred(): Promise<unknown>;
   dumpWrapperIndex(): Promise<unknown[]>;
   mergeWrapperIndex(entries: readonly unknown[]): Promise<void>;
@@ -72,6 +73,13 @@ export function startPhpWorker(opts: SpawnOptions): Result<PhpWorker, SpawnError
         file: absFile,
         ...(relFile !== undefined ? { relFile } : {}),
         ...(phpUnitBaseClasses !== undefined ? { phpUnitBaseClasses } : {}),
+      });
+    },
+    async prepass(absFile, relFile): Promise<void> {
+      await proto.request({
+        op: 'prepass',
+        file: absFile,
+        ...(relFile !== undefined ? { relFile } : {}),
       });
     },
     async flushDeferred(): Promise<unknown> {
