@@ -35,6 +35,7 @@ export interface UserPattern {
     | 'enqueue-src'
     | 'ajax-action-from-url'
     | 'admin-page-slug-from-url'
+    | 'admin-page-slug-from-url-or-slug'
     | 'admin-page-slug'
     | 'block-render'
     | 'localize-data'
@@ -44,7 +45,9 @@ export interface UserPattern {
 const ALL_FACT_KINDS: readonly FactKind[] = [
   'symbol-def', 'symbol-use', 'import-edge', 'php-include',
   'hook-listener', 'hook-fire', 'rest-endpoint', 'rest-call-js',
-  'ajax-listener', 'ajax-call-js', 'enqueue-script', 'store-register', 'store-access', 'script-localize',
+  'ajax-listener', 'ajax-call-js', 'enqueue-script',
+  'admin-page-nav', 'admin-page-register',
+  'store-register', 'store-access', 'script-localize',
   'script-localize-inline', 'shortcode', 'block-render', 'test-def', 'parse-error',
 ];
 
@@ -88,6 +91,7 @@ const patternSchema = P.object(
         'enqueue-src',
         'ajax-action-from-url',
         'admin-page-slug-from-url',
+        'admin-page-slug-from-url-or-slug',
         'admin-page-slug',
         'block-render',
         'rest-url-normalise',
