@@ -175,6 +175,45 @@ function extractActionFromUrl(fields: Record<string, unknown>): void {
   }
 }
 
+const REST_URL_RE = /(?:^|\b)wp-json(\/[^?#]*)/;
+const NORMALISED_REST_RE = /^\/[A-Za-z0-9_-]+\/v\d+(?:\/|$)/;
+
+/**
+ * Strip the `./`, leading `/`, scheme + host, the `/wp-json/` prefix, and any
+ * `?query`/`#fragment` from a Playwright `request.<method>(url)` value, leaving
+ * the namespaced REST path that matches PHP-side `register_rest_route` anchors.
+ *
+ * Returns null when the URL is empty or has no `/wp-json/` segment AND does not
+ * already look like a namespaced REST path — in which case it is not a REST
+ * call and the fact should be dropped.
+ */
+function restUrlNormalise(url: string): string | null {
+  if (url === '') return null;
+  const m = REST_URL_RE.exec(url);
+  if (m !== null && m[1] !== undefined) {
+    const path = m[1];
+    const qIdx = path.indexOf('?');
+    const hIdx = path.indexOf('#');
+    const end = [qIdx, hIdx].filter((i) => i >= 0).reduce((a, b) => Math.min(a, b), path.length);
+    const stripped = path.slice(0, end);
+    return stripped === '' ? null : stripped;
+  }
+  // Already-normalised case: `/wc/v3/customers`. The regex above only matches
+  // strings that contain `wp-json`; a bare namespaced REST path passes through
+  // unchanged. URLs like `/wp-admin/admin.php` do not match the namespace
+  // shape and stay rejected.
+  if (NORMALISED_REST_RE.test(url)) {
+    const qIdx = url.indexOf('?');
+    const hIdx = url.indexOf('#');
+    const end = [qIdx, hIdx].filter((i) => i >= 0).reduce((a, b) => Math.min(a, b), url.length);
+    return url.slice(0, end);
+  }
+  return null;
+}
+
+// Test-only export — never call this from production code.
+export const __testRestUrlNormalise = restUrlNormalise;
+
 const PAGE_SLUG_IN_URL = /[?&]page=([A-Za-z0-9_-]+)/;
 
 // Pulls the WordPress admin-page slug out of a `page.goto`/`page.route` URL
@@ -229,6 +268,13 @@ function applyPattern(
     fields['method'] = m.name;
     // No page= slug → not an admin-page navigation; suppress the fact.
     if (!adminPageSlugFromUrl(fields)) return null;
+  }
+  if (p.transform === 'rest-url-normalise') {
+    const url = fields['url'];
+    if (typeof url !== 'string') return null;
+    const normalised = restUrlNormalise(url);
+    if (normalised === null) return null;
+    fields['url'] = normalised;
   }
   if (resolved && containsWildcard(fields)) resolved = false;
 
