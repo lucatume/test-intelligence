@@ -40,4 +40,45 @@ add_submenu_page( 'parent', 'Title', 'Title', 'cap', 'ti_deletemeelephant_slug',
     const cb = symbolUses.find((f) => f.payload['name'] === 'ti_deletemeelephant_render_page');
     expect(cb).toBeDefined();
   });
+
+  it('emits symbol-use for array($this, "method") callback', async () => {
+    const root = getTmp();
+    write(root, 'menu.php', `<?php
+class Ti_Menu {
+  public function register(): void {
+    add_submenu_page( 'parent', 'T', 'T', 'cap', 'ti_deletemeelephant_slug', array( $this, 'render_page' ) );
+  }
+}
+`);
+    const facts = (await worker.extract(join(root, 'menu.php'), [], 'menu.php')) as { facts: Array<{ kind: string; payload: Record<string, unknown> }> };
+    const cb = facts.facts.find((f) => f.kind === 'symbol-use' && f.payload['name'] === 'render_page');
+    expect(cb).toBeDefined();
+  });
+
+  it('emits symbol-use for array(Class::class, "method") callback', async () => {
+    const root = getTmp();
+    write(root, 'menu.php', `<?php
+add_submenu_page( 'parent', 'T', 'T', 'cap', 'ti_deletemeelephant_slug', array( Ti_Renderer::class, 'render_page' ) );
+`);
+    const facts = (await worker.extract(join(root, 'menu.php'), [], 'menu.php')) as { facts: Array<{ kind: string; payload: Record<string, unknown> }> };
+    const cb = facts.facts.find((f) => f.kind === 'symbol-use' && f.payload['name'] === 'render_page');
+    expect(cb).toBeDefined();
+  });
+
+  it('does not emit symbol-use for closure or variable callback', async () => {
+    const root = getTmp();
+    write(root, 'menu.php', `<?php
+$cb = 'whatever';
+add_submenu_page( 'parent', 'T', 'T', 'cap', 'ti_deletemeelephant_slug', function () {} );
+add_submenu_page( 'parent2', 'T', 'T', 'cap', 'ti_deletemeelephant_slug2', $cb );
+`);
+    const facts = (await worker.extract(join(root, 'menu.php'), [], 'menu.php')) as { facts: Array<{ kind: string; anchors: Array<{ key: string }>; payload: Record<string, unknown> }> };
+    // Callback-sibling symbol-uses are distinguished by their empty `anchors`
+    // (the regular call-site symbol-use for `add_submenu_page` itself carries
+    // a `php-symbol:add_submenu_page` target anchor). Filter to siblings only.
+    const callbackSiblings = facts.facts.filter(
+      (f) => f.kind === 'symbol-use' && f.anchors.length === 0,
+    );
+    expect(callbackSiblings).toEqual([]);
+  });
 });
