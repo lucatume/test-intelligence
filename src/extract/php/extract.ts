@@ -8,6 +8,7 @@ export interface ExtractPhpInput {
   readonly relPath: string;
   readonly worker: PhpWorker;
   readonly phpUnitBaseClasses?: readonly string[];
+  readonly wrapperIndexComplete?: boolean;
 }
 
 export interface FlushDeferredInput {
@@ -32,7 +33,12 @@ export interface FlushDeferredResult {
 
 export async function extractPhpFile(input: ExtractPhpInput): Promise<Fact[]> {
   const abs = resolve(input.projectRoot, input.relPath);
-  const res = await input.worker.extract(abs, input.phpUnitBaseClasses, input.relPath);
+  const res = await input.worker.extract(
+    abs,
+    input.phpUnitBaseClasses,
+    input.relPath,
+    input.wrapperIndexComplete,
+  );
   const env = res as { op?: string; file?: string; facts?: unknown[] };
   if (env.op !== 'facts' || !Array.isArray(env.facts)) return [];
 

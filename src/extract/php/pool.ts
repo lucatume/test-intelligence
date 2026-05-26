@@ -70,11 +70,11 @@ export function startPhpWorkerPool(opts: PoolOptions): Result<PhpWorker, SpawnEr
       const counts = await Promise.all(liveSlots().map((s) => s.worker.registerPatterns(patterns)));
       return counts[0] ?? 0;
     },
-    async extract(absFile, phpUnitBaseClasses, relFile): Promise<unknown> {
+    async extract(absFile, phpUnitBaseClasses, relFile, wrapperIndexComplete): Promise<unknown> {
       const slot = pick();
       slot.pending++;
       try {
-        return await slot.worker.extract(absFile, phpUnitBaseClasses, relFile);
+        return await slot.worker.extract(absFile, phpUnitBaseClasses, relFile, wrapperIndexComplete);
       } catch (e) {
         // A rejection is either a one-off PHP-side error for a single bad file
         // (the worker emitted op:'error' but is still alive and reading) or a

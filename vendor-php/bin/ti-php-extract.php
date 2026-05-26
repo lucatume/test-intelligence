@@ -91,6 +91,16 @@ final class Visitor extends NodeVisitorAbstract
     private array $deferredWrapperCalls = [];
 
     /**
+     * When true: the host has signalled that $wrapperIndex is the complete
+     * build-wide union (post-barrier). prePass skips buildWrapperIndex
+     * (re-running it would duplicate auto entries); wrapperScopes is seeded
+     * from the complete index; FuncCall and method-call defer branches are
+     * disabled — a name absent from the complete index is definitively not a
+     * wrapper. Set per-request by the extract op handler.
+     */
+    private bool $wrapperIndexComplete = false;
+
+    /**
      * Facts synthesized during eager replay (called after each prePass to keep
      * the deferred queue bounded). These are collected here instead of emitted
      * immediately so the per-file extract response stays clean (only facts for
@@ -482,14 +492,16 @@ final class Visitor extends NodeVisitorAbstract
             }
             if ($name !== null && isset($this->wrapperIndex[$name])) {
                 $this->synthesizeWrappedCall($name, $node->args, $node);
-            } elseif ($name !== null
+            } elseif (!$this->wrapperIndexComplete
+                && $name !== null
                 && !self::isBuiltinFunction($name)
                 && !isset($this->getPatternCallees()[$name])
                 && !$inWrapperBody
             ) {
-                // Callee not yet in the wrapper index and not a known pattern callee
-                // or builtin — buffer for cross-file deferred replay. The wrapper
-                // definition may arrive in a later file's prePass.
+                // Single-pass mode only: callee not yet in the wrapper index
+                // and not a known pattern callee or builtin — buffer for
+                // cross-file deferred replay. The wrapper definition may
+                // arrive in a later file's prePass.
                 //
                 // Store pre-resolved scalar arg values instead of live AST
                 // Node objects. Keeping Node references alive prevents PHP from
@@ -1664,6 +1676,11 @@ final class Visitor extends NodeVisitorAbstract
         $this->wrapperIndex = $index;
     }
 
+    public function setWrapperIndexComplete(bool $complete): void
+    {
+        $this->wrapperIndexComplete = $complete;
+    }
+
     /**
      * Return true when the wrapperIndex already has at least one config-source
      * entry for $name. Used by buildWrapperIndex to let config win on collision.
@@ -1967,7 +1984,12 @@ final class Visitor extends NodeVisitorAbstract
         };
         $traverser->addVisitor($finder);
         $traverser->traverse($ast);
-        $this->buildWrapperIndex($ast);
+        if (!$this->wrapperIndexComplete) {
+            // Phase-1 prepass and direct-worker (single-pass) builds populate
+            // the index here. In phase-2 with a complete index seeded via
+            // merge, skipping avoids appending duplicate auto entries.
+            $this->buildWrapperIndex($ast);
+        }
     }
 
     /**
@@ -1982,6 +2004,25 @@ final class Visitor extends NodeVisitorAbstract
     public function buildWrapperIndexOnly(array $ast): void
     {
         $this->buildWrapperIndex($ast);
+    }
+
+    /**
+     * Phase-2 helper. With wrapperIndexComplete=true buildWrapperIndex is
+     * skipped, so wrapperScopes — which the main traverse uses to suppress a
+     * wrapper definition's own body from emitting facts — must be seeded from
+     * the complete index instead. Scope-key shape mirrors tryIndexWrapper:
+     * "<name>@<defStartLine>". Only entries whose defFile equals the current
+     * file matter for body suppression.
+     */
+    public function populateWrapperScopesFromCompleteIndex(): void
+    {
+        foreach ($this->wrapperIndex as $name => $entries) {
+            foreach ($entries as $e) {
+                if (($e['defFile'] ?? null) !== $this->file) continue;
+                $startLine = $e['defStartLine'] ?? 0;
+                $this->wrapperScopes[$name . '@' . $startLine] = true;
+            }
+        }
     }
 
     // Note: wrapperIndex keys are unqualified names. Calls using a fully-qualified
@@ -2869,7 +2910,8 @@ final class Visitor extends NodeVisitorAbstract
             $matched = true;
         }
         if ($matched) return;
-        // No matching wrapper entry yet — buffer for cross-file deferred replay,
+        if ($this->wrapperIndexComplete) return;
+        // Single-pass mode only — buffer for cross-file deferred replay,
         // mirroring the FuncCall path. Skip builtins / known pattern callees /
         // calls inside an already-classified wrapper body.
         if ($inWrapperBody) return;
@@ -3149,16 +3191,21 @@ while (($line = fgets($stdin)) !== false) {
             if ($code === false) { emit(['op' => 'facts', 'file' => $file, 'facts' => []]); continue; }
             $ast = $parser->parse($code);
             if ($ast === null) { emit(['op' => 'facts', 'file' => $file, 'facts' => []]); continue; }
+            $wrapperIndexComplete = isset($req['wrapperIndexComplete']) && $req['wrapperIndexComplete'] === true;
             $visitor->resetForFile($file, $relFile, $code);
             $visitor->phpUnitBaseClasses = $req['phpUnitBaseClasses'] ?? ['PHPUnit\\Framework\\TestCase'];
+            $visitor->setWrapperIndexComplete($wrapperIndexComplete);
             $visitor->prePass($ast);
-            // Eagerly replay any previously-deferred stubs whose wrapper was
-            // just found in this file's prePass. Facts go into an internal
-            // buffer ($earlyFlushedFacts) emitted at flush-deferred time —
-            // NOT included here so the per-file response stays clean (only
-            // facts for the current file). This keeps the deferred queue
-            // bounded, preventing O(N) memory growth on large codebases.
-            $visitor->earlyReplayAndBuffer();
+            if ($wrapperIndexComplete) {
+                // The index is complete — no deferral happens, so there is
+                // nothing to replay. wrapperScopes must still be seeded so the
+                // main traverse suppresses the wrapper-def body itself.
+                $visitor->populateWrapperScopesFromCompleteIndex();
+            } else {
+                // Single-pass mode: eagerly drain stubs whose wrapper was just
+                // found in this file's prePass.
+                $visitor->earlyReplayAndBuffer();
+            }
             $traverser = new NodeTraverser();
             $traverser->addVisitor($visitor);
             $traverser->traverse($ast);

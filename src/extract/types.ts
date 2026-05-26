@@ -13,6 +13,7 @@ export interface ExtractInput {
   readonly phpWorker?: PhpWorker;
   readonly includeBuiltins?: boolean;
   readonly phpUnitBaseClasses?: readonly string[];
+  readonly wrapperIndexComplete?: boolean;
 }
 
 export interface ExtractError {

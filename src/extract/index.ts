@@ -43,6 +43,7 @@ export async function extractFile(input: ExtractInput): Promise<Result<Fact[], E
           relPath: input.path,
           worker: input.phpWorker,
           ...(input.phpUnitBaseClasses !== undefined ? { phpUnitBaseClasses: input.phpUnitBaseClasses } : {}),
+          ...(input.wrapperIndexComplete === true ? { wrapperIndexComplete: true } : {}),
         });
         return ok([...facts, ...deriveAjaxListeners(facts)]);
       } catch (e) {
