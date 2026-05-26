@@ -1115,6 +1115,11 @@ final class Visitor extends NodeVisitorAbstract
      * anchor and is the project-wrapper indirection the spec declares out of
      * scope, so the fact is dropped.
      *
+     * Side-effect: when arg 5 (callback) is a literal string or a known
+     * `array($this, 'method')` / `array(Class::class, 'method')` pair, emit a
+     * sibling `symbol-use` fact so the derive `symbol-call` bridge carries the
+     * edge from the menu-registration file to the callback's defining file.
+     *
      * @param array<string, mixed> $payload
      */
     private function emitAdminPageRegisterFact(Node $n, array $payload, ?string $name): void
@@ -1146,6 +1151,50 @@ final class Visitor extends NodeVisitorAbstract
             'anchors' => [['key' => 'wp-admin-page:' . $slug, 'role' => 'subject']],
             'payload' => $outPayload,
         ];
+
+        $args = $this->extractArgs($n);
+        $callbackName = $this->adminPageCallbackName($args[5] ?? null);
+        if ($callbackName !== null) {
+            $this->facts[] = [
+                'kind' => 'symbol-use',
+                'resolved' => true,
+                'location' => $this->loc($n),
+                'anchors' => [],
+                'payload' => [
+                    'kind' => 'symbol-use',
+                    'name' => $callbackName,
+                ],
+            ];
+        }
+    }
+
+    /**
+     * Classify a WP admin-page-register callback argument and return the
+     * referenced symbol name, or null if the argument shape is not one the
+     * derive bridge can follow:
+     *
+     *   - `'render_function'`         → 'render_function'
+     *   - `array( $this, 'method' )`  → 'method'
+     *   - `array( Class::class, 'method' )` → 'method'
+     *   - anything else (closure, variable, expression) → null
+     */
+    private function adminPageCallbackName(?Node $node): ?string
+    {
+        if ($node === null) return null;
+        if ($node instanceof Node\Scalar\String_) {
+            $v = $node->value;
+            return $v !== '' ? $v : null;
+        }
+        if ($node instanceof Node\Expr\Array_) {
+            $items = $node->items;
+            if (count($items) === 2 && $items[1] !== null) {
+                $second = $items[1]->value;
+                if ($second instanceof Node\Scalar\String_ && $second->value !== '') {
+                    return $second->value;
+                }
+            }
+        }
+        return null;
     }
 
     /**
