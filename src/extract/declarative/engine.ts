@@ -230,6 +230,51 @@ function adminPageSlugFromUrl(fields: Record<string, unknown>): boolean {
   return true;
 }
 
+const CORE_ADMIN_PAGES: ReadonlySet<string> = new Set([
+  'index.php',
+  'edit.php',
+  'edit-tags.php',
+  'post.php',
+  'post-new.php',
+  'upload.php',
+  'media-new.php',
+  'themes.php',
+  'theme-editor.php',
+  'plugins.php',
+  'plugin-editor.php',
+  'users.php',
+  'user-new.php',
+  'profile.php',
+  'tools.php',
+  'options-general.php',
+  'options-writing.php',
+  'options-reading.php',
+  'options-discussion.php',
+  'options-media.php',
+  'options-permalink.php',
+  'admin.php',
+]);
+
+function adminPageSlugFromUrlOrSlug(value: string): string | null {
+  if (value === '') return null;
+  // Strip a leading `/wp-admin/` or `./wp-admin/` prefix.
+  const trimmed = value.replace(/^\.?\/?wp-admin\//, '');
+  // 1) `admin.php?page=<slug>` → <slug>.
+  if (trimmed.startsWith('admin.php')) {
+    const m = /[?&]page=([A-Za-z0-9_-]+)/.exec(trimmed);
+    if (m !== null && m[1] !== undefined) return m[1];
+    // bare 'admin.php' with no page= is ambiguous — suppress.
+    return null;
+  }
+  // 2) A core wp-admin page name with or without trailing query.
+  const head = trimmed.split('?', 1)[0] ?? trimmed;
+  if (CORE_ADMIN_PAGES.has(head)) return head;
+  return null;
+}
+
+// Test-only export.
+export const __testAdminPageSlugFromUrlOrSlug = adminPageSlugFromUrlOrSlug;
+
 function applyPattern(
   m: MatchedCall,
   p: UserPattern,
@@ -275,6 +320,14 @@ function applyPattern(
     const normalised = restUrlNormalise(url);
     if (normalised === null) return null;
     fields['url'] = normalised;
+  }
+  if (p.transform === 'admin-page-slug-from-url-or-slug') {
+    fields['method'] = m.name;
+    const raw = fields['adminPath'] ?? fields['url'];
+    if (typeof raw !== 'string') return null;
+    const slug = adminPageSlugFromUrlOrSlug(raw);
+    if (slug === null) return null;
+    fields['slug'] = slug;
   }
   if (resolved && containsWildcard(fields)) resolved = false;
 
