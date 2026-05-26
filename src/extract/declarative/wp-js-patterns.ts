@@ -278,4 +278,25 @@ export const WP_JS_PATTERNS: readonly UserPattern[] = [
     emit: 'rest-call-js',
     anchor: { template: 'rest:DELETE /wp/v2/posts/{*}', role: 'target' },
   },
+  // Front-end and bare wp-admin URL catalogue lookup (plan 05). This rule and
+  // the admin-page-slug rule above co-exist: the slug rule fires first; when
+  // its `admin-page-slug-from-url` transform returns null (because the URL has
+  // no `page=<slug>` query) the engine moves on and this rule attempts the
+  // catalogue. Only one of the two will emit a fact for a given call site;
+  // both running for the same node is fine because the engine deduplicates
+  // facts by (kind, location, anchor key).
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'goto', receiver: 'page' },
+    bind: { url: { arg: 0, type: 'string' } },
+    emit: 'admin-page-nav',
+    transform: 'wp-frontend-or-admin-url',
+    anchor: { template: '{anchor}', role: 'target' },
+  },
+  {
+    match: { lang: 'ts', nodeKind: 'method-call', name: 'route', receiver: 'page' },
+    bind: { url: { arg: 0, type: 'string' } },
+    emit: 'admin-page-nav',
+    transform: 'wp-frontend-or-admin-url',
+    anchor: { template: '{anchor}', role: 'target' },
+  },
 ];
