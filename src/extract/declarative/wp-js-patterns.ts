@@ -9,6 +9,21 @@ const axiosPatterns: readonly UserPattern[] = AXIOS_METHODS.map((method) => ({
   anchor: { template: `rest:${method.toUpperCase()} {url}`, role: 'target' as const },
 }));
 
+// Playwright APIRequestContext (`request` fixture) and @wordpress/e2e-test-utils-playwright `requestUtils` wrapper.
+// URL is normalised by the rest-url-normalise transform so `./wp-json/wc/v3/x`
+// and `/wp-json/wc/v3/x` both become `/wc/v3/x` — matching the PHP-side
+// register_rest_route anchor key. A URL with no `wp-json` segment yields null
+// and the fact is suppressed.
+function playwrightRequestPatterns(receiver: 'request' | 'requestUtils'): readonly UserPattern[] {
+  return AXIOS_METHODS.map((method) => ({
+    match: { lang: 'ts' as const, nodeKind: 'method-call' as const, name: method, receiver },
+    bind: { url: { arg: 0, type: 'string' as const } },
+    emit: 'rest-call-js' as const,
+    anchor: { template: `rest:${method.toUpperCase()} {url}`, role: 'target' as const },
+    transform: 'rest-url-normalise' as const,
+  }));
+}
+
 export const WP_JS_PATTERNS: readonly UserPattern[] = [
   // apiFetch({ path: '/myplugin/v1/items' }) — @wordpress/api-fetch
   {
@@ -25,6 +40,8 @@ export const WP_JS_PATTERNS: readonly UserPattern[] = [
     anchor: { template: 'rest:GET {url}', role: 'target' },
   },
   ...axiosPatterns,
+  ...playwrightRequestPatterns('request'),
+  ...playwrightRequestPatterns('requestUtils'),
   // jQuery.ajax({ url: ajaxurl, data: { action: 'x' } }) and $.post(ajaxurl, { action })
   {
     match: { lang: 'ts', nodeKind: 'method-call', name: 'ajax', receiver: 'jQuery' },

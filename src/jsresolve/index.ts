@@ -63,7 +63,11 @@ export function restMethodForCall(
   if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name)) {
     const recv = callee.expression;
     const name = callee.name.text;
-    if (ts.isIdentifier(recv) && recv.text === 'axios' && AXIOS_METHODS.has(name)) {
+    if (
+      ts.isIdentifier(recv) &&
+      (recv.text === 'axios' || recv.text === 'request' || recv.text === 'requestUtils') &&
+      AXIOS_METHODS.has(name)
+    ) {
       return name.toUpperCase();
     }
   }
