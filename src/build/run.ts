@@ -135,10 +135,64 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       const setupMs = opts.clock.nowMillis() - setupStart;
       const extractPhaseStart = opts.clock.nowMillis();
 
-      const source = effectiveOnlyPaths !== undefined
-        ? listFromPaths(effectiveOnlyPaths, opts.projectRoot, opts.config, opts.stderr, verbosity)
-        : walk(opts.projectRoot, opts.config);
-      const it = toAsyncIterator(source);
+      // Two-phase needs the full file list before phase 2 starts, so we
+      // materialize once. Memory is trivial (DiscoveredFile is ~6 fields,
+      // even 34k files fit comfortably).
+      const discoveredFiles: DiscoveredFile[] = [];
+      if (effectiveOnlyPaths !== undefined) {
+        for (const f of listFromPaths(effectiveOnlyPaths, opts.projectRoot, opts.config, opts.stderr, verbosity)) {
+          discoveredFiles.push(f);
+        }
+      } else {
+        for await (const f of walk(opts.projectRoot, opts.config)) {
+          discoveredFiles.push(f);
+        }
+      }
+
+      // Two-phase build applies to full builds with a PHP worker.
+      //
+      // Phase 1: every worker parses every PHP file and runs buildWrapperIndex
+      // only — no facts. Barrier: dump/merge so every worker holds the
+      // complete index. Phase 2: the existing extract loop, with
+      // wrapperIndexComplete=true so wrapper calls always resolve via the
+      // live path (no per-worker partial knowledge, no denylist gate
+      // dropping legitimate wrappers).
+      //
+      // onlyPaths updates keep the single-pass path. The scatter that
+      // triggers the multi-worker drop does not arise at update scale, and
+      // adding two-phase + index-seeding for updates is scope creep.
+      const useTwoPhase = effectiveOnlyPaths === undefined && worker !== undefined;
+
+      // The `worker !== undefined` check is already in useTwoPhase, but TS
+      // control-flow narrowing does not carry through the boolean. Re-check
+      // here so the binding below is typed as `PhpWorker`, not `PhpWorker | undefined`.
+      if (useTwoPhase && worker !== undefined) {
+        const twoPhaseWorker = worker;
+        const phpFiles = discoveredFiles.filter((f) => f.language === 'php');
+        let nextPrepassIdx = 0;
+        const prepassLanes: Promise<void>[] = [];
+        for (let i = 0; i < phpWorkers; i++) {
+          prepassLanes.push((async (): Promise<void> => {
+            for (;;) {
+              const idx = nextPrepassIdx++;
+              if (idx >= phpFiles.length) return;
+              const file = phpFiles[idx];
+              if (file === undefined) return;
+              try {
+                await twoPhaseWorker.prepass(join(opts.projectRoot, file.path), file.path);
+              } catch (e) {
+                if (verbosity !== 'quiet') {
+                  opts.stderr.write(`ti: prepass failed ${file.path}: ${(e as Error).message}\n`);
+                }
+              }
+            }
+          })());
+        }
+        await Promise.all(prepassLanes);
+        // Barrier: gather every worker's partial index, broadcast the union.
+        const globalIndex = await twoPhaseWorker.dumpWrapperIndex();
+        await twoPhaseWorker.mergeWrapperIndex(globalIndex);
+      }
 
       // Batched writes: open one BEGIN, COMMIT every EXTRACT_BATCH_SIZE files,
       // final COMMIT after the lanes drain. Raw BEGIN/COMMIT (not
@@ -154,12 +208,14 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       // are synchronous and so naturally serialize between the lanes' awaits.
       const laneCount = phpWorkers;
       const lanes: Promise<void>[] = [];
+      let nextFileIdx = 0;
       for (let i = 0; i < laneCount; i++) {
         lanes.push((async (): Promise<void> => {
           for (;;) {
-            const next = await it.next();
-            if (next.done === true) return;
-            const file = next.value;
+            const idx = nextFileIdx++;
+            if (idx >= discoveredFiles.length) return;
+            const file = discoveredFiles[idx];
+            if (file === undefined) return;
             const text = await readFile(join(opts.projectRoot, file.path), 'utf8').catch(() => null);
             if (text === null) {
               if (verbosity === 'verbose') opts.stderr.write(`ti: skipped (read failed) ${file.path}\n`);
@@ -193,6 +249,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
               compilerOptions,
               patterns: [],
               ...(worker !== undefined ? { phpWorker: worker } : {}),
+              ...(useTwoPhase && file.language === 'php' ? { wrapperIndexComplete: true } : {}),
             });
             const extractElapsed = opts.clock.nowMillis() - extractStart;
             if (file.language === 'php') {
@@ -523,19 +580,6 @@ function formatTimings(t: BuildTimings): string {
     }
   }
   return out;
-}
-
-function toAsyncIterator<T>(src: AsyncIterable<T> | Iterable<T>): AsyncIterator<T> {
-  if (Symbol.asyncIterator in src) {
-    return src[Symbol.asyncIterator]();
-  }
-  const sync = src[Symbol.iterator]();
-  const wrapped: AsyncIterator<T> = {
-    next(): Promise<IteratorResult<T>> {
-      return Promise.resolve(sync.next());
-    },
-  };
-  return wrapped;
 }
 
 // One PHP worker handles roughly this many files before a second worker pays
