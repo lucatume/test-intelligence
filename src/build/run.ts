@@ -35,6 +35,7 @@ import { resolveRestEndpoints } from './resolve-rest-endpoints.js';
 import { resolveEnqueueScripts } from './resolve-enqueue-scripts.js';
 import { resolveBlockJson } from './resolve-block-json.js';
 import { runJsResolve } from '../jsresolve/index.js';
+import { emitCoreAdminEntryPointFacts } from '../extract/php/wp-bootstrap.js';
 import { HOOK_STOP_LIST_BUILTINS, type ValidatedConfig } from '../config/parse.js';
 import type { BuildOptions, BuildSummary, BuildError, BuildTimings, SlowFile } from './types.js';
 import type { DiscoveredFile } from '../discover/types.js';
@@ -457,6 +458,43 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
         });
         resolveBlockJson(db, { projectRoot: opts.projectRoot });
         runJsResolve(db, { projectRoot: opts.projectRoot });
+
+        // Plan 05: emit synthetic admin-page-register facts for canonical
+        // WordPress core entry-point files (wp-admin/edit.php, wp-login.php,
+        // …). These are the join partners for JS-side `admin-page-nav` facts
+        // produced by the `wp-frontend-or-admin-url` catalogue. Core files are
+        // not registered via add_menu_page so the static extractor never emits
+        // anchors for them; this fills the gap. Idempotent: each file row is
+        // upserted and its facts replaced.
+        const bootstrapFacts = await emitCoreAdminEntryPointFacts({ projectRoot: opts.projectRoot });
+        for (const f of bootstrapFacts) {
+          const fileId = upsertFile(db, {
+            path: f.relativePath,
+            language: 'php',
+            contentHash: '',
+            extractedAt: opts.clock.now(),
+            isTest: false,
+            framework: null,
+            frameworkClass: null,
+          });
+          clearFactsForFile(db, fileId);
+          const factId = insertFact(db, {
+            fileId,
+            kind: f.kind,
+            resolved: f.resolved,
+            startLine: f.startLine,
+            endLine: f.endLine,
+            payload: f.payload,
+          });
+          factsInserted++;
+          for (const a of f.anchors) {
+            const parsed = parseAnchor(a.key);
+            if (parsed.kind === 'err') continue;
+            const anchorId = upsertAnchor(db, { key: parsed.value.key, type: parsed.value.type });
+            insertFactAnchor(db, { factId, anchorId, role: a.role });
+          }
+        }
+
         db.exec('COMMIT');
       } catch (e) {
         try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
