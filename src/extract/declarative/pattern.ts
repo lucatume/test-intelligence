@@ -39,7 +39,8 @@ export interface UserPattern {
     | 'admin-page-slug'
     | 'block-render'
     | 'localize-data'
-    | 'rest-url-normalise';
+    | 'rest-url-normalise'
+    | 'wp-frontend-or-admin-url';
 }
 
 const ALL_FACT_KINDS: readonly FactKind[] = [
@@ -95,6 +96,7 @@ const patternSchema = P.object(
         'admin-page-slug',
         'block-render',
         'rest-url-normalise',
+        'wp-frontend-or-admin-url',
       ] as const),
     ),
   },
