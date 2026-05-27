@@ -21,7 +21,10 @@ export interface TraversalResult {
 interface EvidenceAgg {
   // kind -> contributing fact ids + the attenuated confidence of each
   // contributing path. combineConfidence consumes `values` directly.
-  readonly kinds: Map<EdgeKind, { ids: Set<number>; values: number[] }>;
+  // `ids` is the union of arrival + destination fact ids (provenance display).
+  // `destIds` is the dedup key for value pushes: one observation per destination
+  // fact per kind, regardless of how many seed facts reached it.
+  readonly kinds: Map<EdgeKind, { ids: Set<number>; destIds: Set<number>; values: number[] }>;
 }
 
 interface QueueItem {
@@ -424,7 +427,7 @@ function evidenceSlot(
   store: Map<number, EvidenceAgg>,
   fileId: number,
   kind: EdgeKind,
-): { ids: Set<number>; values: number[] } {
+): { ids: Set<number>; destIds: Set<number>; values: number[] } {
   let entry = store.get(fileId);
   if (!entry) {
     entry = { kinds: new Map() };
@@ -432,7 +435,7 @@ function evidenceSlot(
   }
   let slot = entry.kinds.get(kind);
   if (!slot) {
-    slot = { ids: new Set(), values: [] };
+    slot = { ids: new Set(), destIds: new Set(), values: [] };
     entry.kinds.set(kind, slot);
   }
   return slot;
@@ -441,9 +444,16 @@ function evidenceSlot(
 /**
  * Record one bridge/structural arrival as evidence: the two endpoint fact ids
  * (arriving fact + destination fact) go into the provenance set, and the
- * attenuated confidence of the path is pushed ONCE — one arrival is one
- * independent observation, not two. Re-recording the same arriving fact does
- * not re-push the value: the same path arriving again is the same observation.
+ * attenuated confidence is pushed ONCE per destination fact per edge kind.
+ *
+ * The dedup key is the destination fact id, not the arrival fact id. Multiple
+ * seed facts in the test file all reaching the SAME destination fact (e.g.
+ * 59 rest-call-js facts wildcard-matching one broad-wildcard rest-endpoint
+ * PHP subject) is one observation firing N times, not N independent paths —
+ * pushing N values into combineConfidence's `1 - ∏(1-c)` formula saturates to
+ * ~1.00 even with heavy precision attenuation. Distinct destination facts in
+ * the same source file remain genuinely independent observations and combine
+ * disjunctively, preserving the spec's confidence-combination semantic.
  */
 function recordEvidence(
   store: Map<number, EvidenceAgg>,
@@ -454,10 +464,11 @@ function recordEvidence(
   confidence: number,
 ): void {
   const slot = evidenceSlot(store, fileId, kind);
-  const fresh = !slot.ids.has(arrivalFactId);
   slot.ids.add(arrivalFactId);
   slot.ids.add(destFactId);
-  if (fresh) slot.values.push(confidence);
+  if (slot.destIds.has(destFactId)) return;
+  slot.destIds.add(destFactId);
+  slot.values.push(confidence);
 }
 
 function complementaryFactsForRole(
