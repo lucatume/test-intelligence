@@ -30,18 +30,21 @@ describe.skipIf(!hasPhpAvailable())('admin-page-register callback as symbol-use'
   });
   afterAll(async () => { await worker.shutdown(); });
 
-  it('emits symbol-use for a literal-string callback', async () => {
+  it('emits symbol-use anchored at php-symbol:<func> for a literal-string callback', async () => {
     const root = getTmp();
     write(root, 'menu.php', `<?php
 add_submenu_page( 'parent', 'Title', 'Title', 'cap', 'ti_deletemeelephant_slug', 'ti_deletemeelephant_render_page' );
 `);
-    const facts = (await worker.extract(join(root, 'menu.php'), [], 'menu.php')) as { facts: Array<{ kind: string; payload: Record<string, unknown> }> };
-    const symbolUses = facts.facts.filter((f) => f.kind === 'symbol-use');
+    const out = (await worker.extract(join(root, 'menu.php'), [], 'menu.php')) as {
+      facts: Array<{ kind: string; anchors: Array<{ key: string; role: string }>; payload: Record<string, unknown> }>;
+    };
+    const symbolUses = out.facts.filter((f) => f.kind === 'symbol-use');
     const cb = symbolUses.find((f) => f.payload['name'] === 'ti_deletemeelephant_render_page');
     expect(cb).toBeDefined();
+    expect(cb?.anchors).toContainEqual({ key: 'php-symbol:ti_deletemeelephant_render_page', role: 'subject' });
   });
 
-  it('emits symbol-use for array($this, "method") callback', async () => {
+  it('emits symbol-use anchored at php-symbol:<Class>::<method> for array($this, "method")', async () => {
     const root = getTmp();
     write(root, 'menu.php', `<?php
 class Ti_Menu {
@@ -50,19 +53,38 @@ class Ti_Menu {
   }
 }
 `);
-    const facts = (await worker.extract(join(root, 'menu.php'), [], 'menu.php')) as { facts: Array<{ kind: string; payload: Record<string, unknown> }> };
-    const cb = facts.facts.find((f) => f.kind === 'symbol-use' && f.payload['name'] === 'render_page');
+    const out = (await worker.extract(join(root, 'menu.php'), [], 'menu.php')) as {
+      facts: Array<{ kind: string; anchors: Array<{ key: string; role: string }>; payload: Record<string, unknown> }>;
+    };
+    const cb = out.facts.find((f) => f.kind === 'symbol-use' && f.payload['name'] === 'Ti_Menu::render_page');
     expect(cb).toBeDefined();
+    expect(cb?.anchors).toContainEqual({ key: 'php-symbol:Ti_Menu::render_page', role: 'subject' });
   });
 
-  it('emits symbol-use for array(Class::class, "method") callback', async () => {
+  it('emits symbol-use anchored at php-symbol:<Class>::<method> for array(Class::class, "method")', async () => {
     const root = getTmp();
     write(root, 'menu.php', `<?php
 add_submenu_page( 'parent', 'T', 'T', 'cap', 'ti_deletemeelephant_slug', array( Ti_Renderer::class, 'render_page' ) );
 `);
-    const facts = (await worker.extract(join(root, 'menu.php'), [], 'menu.php')) as { facts: Array<{ kind: string; payload: Record<string, unknown> }> };
-    const cb = facts.facts.find((f) => f.kind === 'symbol-use' && f.payload['name'] === 'render_page');
+    const out = (await worker.extract(join(root, 'menu.php'), [], 'menu.php')) as {
+      facts: Array<{ kind: string; anchors: Array<{ key: string; role: string }>; payload: Record<string, unknown> }>;
+    };
+    const cb = out.facts.find((f) => f.kind === 'symbol-use' && f.payload['name'] === 'Ti_Renderer::render_page');
     expect(cb).toBeDefined();
+    expect(cb?.anchors).toContainEqual({ key: 'php-symbol:Ti_Renderer::render_page', role: 'subject' });
+  });
+
+  it('emits symbol-use anchored at php-symbol:<Class>::<method> for array("Class", "method")', async () => {
+    const root = getTmp();
+    write(root, 'menu.php', `<?php
+add_submenu_page( 'parent', 'T', 'T', 'cap', 'ti_deletemeelephant_slug', array( 'Ti_Renderer', 'render_page' ) );
+`);
+    const out = (await worker.extract(join(root, 'menu.php'), [], 'menu.php')) as {
+      facts: Array<{ kind: string; anchors: Array<{ key: string; role: string }>; payload: Record<string, unknown> }>;
+    };
+    const cb = out.facts.find((f) => f.kind === 'symbol-use' && f.payload['name'] === 'Ti_Renderer::render_page');
+    expect(cb).toBeDefined();
+    expect(cb?.anchors).toContainEqual({ key: 'php-symbol:Ti_Renderer::render_page', role: 'subject' });
   });
 
   it('does not emit symbol-use for closure or variable callback', async () => {

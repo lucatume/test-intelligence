@@ -1153,50 +1153,75 @@ final class Visitor extends NodeVisitorAbstract
         ];
 
         $args = $this->extractArgs($n);
-        $callbackName = $this->adminPageCallbackName($args[5] ?? null);
-        if ($callbackName !== null) {
+        $cb = $this->adminPageCallback($args[5] ?? null);
+        if ($cb !== null) {
             // Anchor at php-symbol:<name> role 'subject' so the derive
             // symbol-call bridge (which scans subjectsByAnchor's complement
             // targetsByAnchor) joins this use to the symbol-def in the
             // callback's defining file — the second hop of the e2e edge.
+            // For class-method callbacks the class context produces the FQN
+            // shape that matches factSymbolDef's anchor for class methods
+            // (`<Class>::<method>`); top-level function callbacks stay bare.
+            $anchorName = $cb['class'] !== null ? $cb['class'] . '::' . $cb['name'] : $cb['name'];
             $this->facts[] = [
                 'kind' => 'symbol-use',
                 'resolved' => true,
                 'location' => $this->loc($n),
-                'anchors' => [['key' => 'php-symbol:' . $callbackName, 'role' => 'subject']],
+                'anchors' => [['key' => 'php-symbol:' . $anchorName, 'role' => 'subject']],
                 'payload' => [
                     'kind' => 'symbol-use',
-                    'name' => $callbackName,
+                    'name' => $anchorName,
                 ],
             ];
         }
     }
 
     /**
-     * Classify a WP admin-page-register callback argument and return the
-     * referenced symbol name, or null if the argument shape is not one the
-     * derive bridge can follow:
+     * Classify a WP admin-page-register callback argument and return
+     * `['name' => method, 'class' => ?Fqn]`, or null if the argument shape is
+     * not one the derive bridge can follow.
      *
-     *   - `'render_function'`         → 'render_function'
-     *   - `array( $this, 'method' )`  → 'method'
-     *   - `array( Class::class, 'method' )` → 'method'
-     *   - anything else (closure, variable, expression) → null
+     *   - `'render_function'`               → ['name' => 'render_function', 'class' => null]
+     *   - `array( $this, 'method' )`        → ['name' => 'method', 'class' => <enclosing class FQN>]
+     *   - `array( Foo::class, 'method' )`   → ['name' => 'method', 'class' => 'Foo' (resolved)]
+     *   - `array( 'Foo', 'method' )`        → ['name' => 'method', 'class' => 'Foo']
+     *   - anything else (closure, variable, expression, new Foo()) → null
+     *
+     * @return array{name: string, class: ?string}|null
      */
-    private function adminPageCallbackName(?Node $node): ?string
+    private function adminPageCallback(?Node $node): ?array
     {
         if ($node === null) return null;
         if ($node instanceof Node\Scalar\String_) {
             $v = $node->value;
-            return $v !== '' ? $v : null;
+            return $v !== '' ? ['name' => $v, 'class' => null] : null;
         }
-        if ($node instanceof Node\Expr\Array_) {
-            $items = $node->items;
-            if (count($items) === 2 && $items[1] !== null) {
-                $second = $items[1]->value;
-                if ($second instanceof Node\Scalar\String_ && $second->value !== '') {
-                    return $second->value;
-                }
-            }
+        if (!($node instanceof Node\Expr\Array_)) return null;
+        $items = $node->items;
+        if (count($items) !== 2 || $items[0] === null || $items[1] === null) return null;
+        $second = $items[1]->value;
+        if (!($second instanceof Node\Scalar\String_) || $second->value === '') return null;
+        $method = $second->value;
+        $first = $items[0]->value;
+
+        // array($this, 'method') — class is the enclosing class.
+        if ($first instanceof Node\Expr\Variable && $first->name === 'this') {
+            $class = end($this->classStack);
+            if ($class === false || $class === '') return null;
+            return ['name' => $method, 'class' => $class];
+        }
+        // array(Foo::class, 'method').
+        if ($first instanceof Node\Expr\ClassConstFetch
+            && $first->class instanceof Node\Name
+            && $first->name instanceof Node\Identifier
+            && strtolower($first->name->name) === 'class') {
+            $class = $this->resolveClassName($first->class);
+            if ($class === '') return null;
+            return ['name' => $method, 'class' => $class];
+        }
+        // array('Foo', 'method').
+        if ($first instanceof Node\Scalar\String_ && $first->value !== '') {
+            return ['name' => $method, 'class' => $first->value];
         }
         return null;
     }
