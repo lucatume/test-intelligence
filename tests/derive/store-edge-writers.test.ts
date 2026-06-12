@@ -246,7 +246,7 @@ describe('deleteEdgesForTests', () => {
         });
       }
       insertEdgesBulk(db, edges);
-      // Must not throw SqliteError on the boundary — no empty IN () chunk.
+      // Boundary documentation: an exact chunk multiple must still delete everything. (SQLite tolerates a trailing empty IN () chunk as a no-op, so this pins behavior, not an error path.)
       deleteEdgesForTests(db, ids);
       const n = (db.prepare('SELECT COUNT(*) AS n FROM edge').get() as { n: number }).n;
       expect(n).toBe(0);
