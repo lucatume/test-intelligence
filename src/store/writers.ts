@@ -185,6 +185,25 @@ export function clearAllEdges(db: Database.Database): void {
   db.prepare('DELETE FROM edge').run();
 }
 
+// SQLite's bound-parameter ceiling is 32766 (MAX_VARIABLE_NUMBER); chunk
+// well under it so the statement cache stays small.
+const EDGE_DELETE_CHUNK = 500;
+
+export function deleteEdgesForTests(db: Database.Database, testIds: readonly string[]): void {
+  for (let i = 0; i < testIds.length; i += EDGE_DELETE_CHUNK) {
+    const chunk = testIds.slice(i, i + EDGE_DELETE_CHUNK);
+    const placeholders = chunk.map(() => '?').join(',');
+    db.prepare(`DELETE FROM edge WHERE test_id IN (${placeholders})`).run(...chunk);
+  }
+}
+
+/** Remove edges whose test vanished (deleted/renamed test file). The full
+ *  derive path gets this for free from clearAllEdges; the scoped path must
+ *  do it explicitly. */
+export function purgeOrphanEdges(db: Database.Database): void {
+  db.prepare('DELETE FROM edge WHERE test_id NOT IN (SELECT test_id FROM test)').run();
+}
+
 // Delete every fact row for one file. fact_anchor rows cascade via
 // ON DELETE CASCADE; anchor rows are keyed on `key` and shared across files,
 // so they are intentionally left in place. Used per file in runBuild so a

@@ -5,8 +5,11 @@ import {
   insertFact,
   insertEdge,
   insertEdgesBulk,
+  insertTest,
   clearEdgesForTest,
   clearAllEdges,
+  deleteEdgesForTests,
+  purgeOrphanEdges,
   type EdgeInsert,
 } from '../../src/store/writers.js';
 import { useTmpDir } from '../helpers/tmpDir.js';
@@ -191,6 +194,121 @@ describe('insertEdgesBulk', () => {
       const last = db.prepare('SELECT test_id, provenance FROM edge ORDER BY test_id DESC LIMIT 1').get() as { test_id: string; provenance: string };
       expect(last.test_id).toBe(`ti_deletemeelephant_t${String(N - 1).padStart(5, '0')}`);
       expect(JSON.parse(last.provenance)).toEqual([N - 1]);
+    } finally { close(); }
+  });
+});
+
+describe('deleteEdgesForTests', () => {
+  const getTmp = useTmpDir('ti-edge-delete-');
+
+  it('removes only the specified test edges; unrelated test rows survive', () => {
+    const s = openStore(getTmp());
+    if (s.kind === 'err') throw new Error(s.error.message);
+    const { db, close } = s.value;
+    try {
+      insertEdge(db, {
+        testId: 'ti_deletemeelephant_t1', source: 'src/a.ts', confidence: 0.9, partial: false,
+        evidence: {}, derivedAt: '2026-05-13T00:00:00.000Z', provenance: [],
+      });
+      insertEdge(db, {
+        testId: 'ti_deletemeelephant_t2', source: 'src/b.ts', confidence: 0.9, partial: false,
+        evidence: {}, derivedAt: '2026-05-13T00:00:00.000Z', provenance: [],
+      });
+      insertEdge(db, {
+        testId: 'ti_deletemeelephant_t3', source: 'src/c.ts', confidence: 0.9, partial: false,
+        evidence: {}, derivedAt: '2026-05-13T00:00:00.000Z', provenance: [],
+      });
+      deleteEdgesForTests(db, ['ti_deletemeelephant_t1', 'ti_deletemeelephant_t3']);
+      const remaining = db.prepare('SELECT test_id FROM edge ORDER BY test_id').all() as Array<{ test_id: string }>;
+      expect(remaining.map((r) => r.test_id)).toEqual(['ti_deletemeelephant_t2']);
+    } finally { close(); }
+  });
+
+  it('handles more ids than one chunk (1203 tests, each with one edge)', () => {
+    const s = openStore(getTmp());
+    if (s.kind === 'err') throw new Error(s.error.message);
+    const { db, close } = s.value;
+    try {
+      const N = 1203;
+      const ids: string[] = [];
+      const edges: EdgeInsert[] = [];
+      for (let i = 0; i < N; i++) {
+        const id = `ti_deletemeelephant_bulk${String(i).padStart(5, '0')}`;
+        ids.push(id);
+        edges.push({
+          testId: id,
+          source: `src/ti_deletemeelephant_${String(i)}.ts`,
+          confidence: 0.9,
+          partial: false,
+          evidence: {},
+          derivedAt: '2026-05-13T00:00:00.000Z',
+          provenance: [],
+        });
+      }
+      insertEdgesBulk(db, edges);
+      deleteEdgesForTests(db, ids);
+      const n = (db.prepare('SELECT COUNT(*) AS n FROM edge').get() as { n: number }).n;
+      expect(n).toBe(0);
+    } finally { close(); }
+  });
+});
+
+describe('purgeOrphanEdges', () => {
+  const getTmp = useTmpDir('ti-edge-orphan-');
+
+  it('removes edges whose test_id has no test row; keeps edges that do', () => {
+    const s = openStore(getTmp());
+    if (s.kind === 'err') throw new Error(s.error.message);
+    const { db, close } = s.value;
+    try {
+      // Set up a real test row so one edge is anchored.
+      const fileId = upsertFile(db, {
+        path: 'tests/ti_deletemeelephant_foo.test.ts',
+        language: 'ts',
+        contentHash: 'h1',
+        extractedAt: '2026-05-13T00:00:00.000Z',
+        isTest: true,
+        framework: 'jest',
+        frameworkClass: 'unit',
+      });
+      const factId = insertFact(db, {
+        fileId,
+        kind: 'symbol-def',
+        resolved: true,
+        startLine: 1,
+        endLine: 1,
+        payload: { kind: 'symbol-def', name: 'ti_deletemeelephant_x', exported: true },
+      });
+      insertTest(db, {
+        testId: 'ti_deletemeelephant_anchored',
+        fileId,
+        framework: 'jest',
+        frameworkClass: 'unit',
+        factId,
+      });
+      // Edge for the anchored test (must survive).
+      insertEdge(db, {
+        testId: 'ti_deletemeelephant_anchored',
+        source: 'src/ti_deletemeelephant_a.ts',
+        confidence: 0.9,
+        partial: false,
+        evidence: {},
+        derivedAt: '2026-05-13T00:00:00.000Z',
+        provenance: [],
+      });
+      // Orphan edge: no matching test row.
+      insertEdge(db, {
+        testId: 'ti_deletemeelephant_gone',
+        source: 'src/ti_deletemeelephant_b.ts',
+        confidence: 0.9,
+        partial: false,
+        evidence: {},
+        derivedAt: '2026-05-13T00:00:00.000Z',
+        provenance: [],
+      });
+      purgeOrphanEdges(db);
+      const remaining = db.prepare('SELECT test_id FROM edge ORDER BY test_id').all() as Array<{ test_id: string }>;
+      expect(remaining.map((r) => r.test_id)).toEqual(['ti_deletemeelephant_anchored']);
     } finally { close(); }
   });
 });
