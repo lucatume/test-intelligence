@@ -74,6 +74,58 @@ describe('fact-change tracker', () => {
     close();
   });
 
+  it('records file ids when a fact row is updated (UPDATE trigger)', () => {
+    const { db, close } = open(getTmp());
+    const fa = addFile(db, 'a.php');
+    const factId = insertFact(db, {
+      fileId: fa, kind: 'symbol-def', resolved: false, startLine: 1, endLine: 1,
+      payload: { kind: 'symbol-def', name: 'MyClass', exported: true },
+    });
+
+    installFactChangeTracker(db);
+    expect(readChangedFileIds(db).size).toBe(0);
+
+    // Resolver-style UPDATE — only touches `resolved`, not file_id.
+    db.prepare('UPDATE fact SET resolved = 1 WHERE id = ?').run(factId);
+
+    expect(readChangedFileIds(db).has(fa)).toBe(true);
+
+    dropFactChangeTracker(db);
+    close();
+  });
+
+  it('starts empty after reinstall and records only post-reinstall activity', () => {
+    const { db, close } = open(getTmp());
+    const fa = addFile(db, 'a.php');
+    const fb = addFile(db, 'b.php');
+
+    installFactChangeTracker(db);
+    // Record something so the tracker is non-empty before drop.
+    insertFact(db, {
+      fileId: fa, kind: 'symbol-def', resolved: true, startLine: 1, endLine: 1,
+      payload: { kind: 'symbol-def', name: 'OldSym', exported: true },
+    });
+    expect(readChangedFileIds(db).has(fa)).toBe(true);
+
+    dropFactChangeTracker(db);
+    installFactChangeTracker(db);
+
+    // After reinstall the table is fresh — no carry-over from the first install.
+    expect(readChangedFileIds(db).size).toBe(0);
+
+    // Only activity after reinstall should be recorded.
+    insertFact(db, {
+      fileId: fb, kind: 'symbol-def', resolved: true, startLine: 2, endLine: 2,
+      payload: { kind: 'symbol-def', name: 'NewSym', exported: true },
+    });
+    const changed = readChangedFileIds(db);
+    expect(changed.has(fb)).toBe(true);
+    expect(changed.has(fa)).toBe(false);
+
+    dropFactChangeTracker(db);
+    close();
+  });
+
   it('snapshotFactAnchors captures pre-state queryable as ti_pre_fact_anchor', () => {
     const { db, close } = open(getTmp());
     const fa = addFile(db, 'a.php');
