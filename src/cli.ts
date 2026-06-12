@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { realpathSync } from 'node:fs';
 import type { Io } from './cli/io.js';
+import { exitAfterFlush } from './cli/exit.js';
 import { HELP_TEXT } from './cli/help.js';
 import { parseArgv } from './cli/parseArgv.js';
 import { versionString } from './cli/version.js';
@@ -141,10 +142,10 @@ if (isMain) {
   };
   run(process.argv.slice(2), realIo)
     .then((code) => {
-      process.exit(code);
+      exitAfterFlush([process.stdout, process.stderr], code, (c) => { process.exit(c); });
     })
     .catch((e: unknown) => {
       process.stderr.write(`ti: error: ${e instanceof Error ? e.message : String(e)}\n`);
-      process.exit(1);
+      exitAfterFlush([process.stdout, process.stderr], 1, (c) => { process.exit(c); });
     });
 }
