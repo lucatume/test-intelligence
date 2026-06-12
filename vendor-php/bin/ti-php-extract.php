@@ -524,7 +524,7 @@ final class Visitor extends NodeVisitorAbstract
                     'kind' => 'symbol-use',
                     'resolved' => true,
                     'location' => $this->loc($node),
-                    'anchors' => [['key' => 'php-symbol:' . $resolved, 'role' => 'target']],
+                    'anchors' => [['key' => 'php-symbol:' . $resolved, 'role' => 'subject']],
                     'payload' => ['kind' => 'symbol-use', 'name' => $resolved],
                 ];
             }

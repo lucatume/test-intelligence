@@ -424,7 +424,11 @@ ti_deletemeelephant_helper();
       (f) => f.kind === 'symbol-use' && (f.payload as { name?: string }).name === 'ti_deletemeelephant_helper',
     );
     expect(use?.anchors[0]?.key).toBe('php-symbol:ti_deletemeelephant_helper');
-    expect(use?.anchors[0]?.role).toBe('target');
+    // role 'subject' — symbol-defs anchor at role 'target', and the derive
+    // bridge pairs subject↔target. A function-call use at role 'target' can
+    // never pair with its def (which is also 'target'); class references
+    // already emit 'subject' for the same reason.
+    expect(use?.anchors[0]?.role).toBe('subject');
   });
 
   it('still emits symbol-use for FuncCall when a declarative pattern also matched', async () => {
