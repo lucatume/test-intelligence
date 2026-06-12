@@ -11,10 +11,9 @@ function makeStubStream(): FlushableStream & { drain(): void; pending: number } 
       return false;
     },
     drain(): void {
-      while (cbs.length > 0) {
-        const cb = cbs.shift();
-        if (cb) cb();
-      }
+      // Iterate without consuming so a second drain() re-fires all callbacks —
+      // models a misbehaving stream that invokes the write callback more than once.
+      for (const cb of cbs) cb();
     },
     get pending(): number {
       return cbs.length;
