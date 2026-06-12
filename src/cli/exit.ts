@@ -12,6 +12,10 @@ export interface FlushableStream {
  * chunks have been handed to the OS — exactly the barrier we need. Forced
  * exit is kept (vs. `process.exitCode` + natural exit) so a lingering
  * handle can never turn truncation into a hang.
+ *
+ * Flush errors are deliberately ignored: by the time the write callback fires
+ * with an error, the data is already lost. Exiting with the intended code is
+ * still correct and necessary — the alternative is a hang.
  */
 export function exitAfterFlush(
   streams: readonly FlushableStream[],
@@ -32,6 +36,12 @@ export function exitAfterFlush(
     return;
   }
   for (const s of streams) {
-    s.write('', () => { settle(); });
+    let settled = false;
+    s.write('', () => {
+      if (!settled) {
+        settled = true;
+        settle();
+      }
+    });
   }
 }

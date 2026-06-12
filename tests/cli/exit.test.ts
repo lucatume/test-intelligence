@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { exitAfterFlush, type FlushableStream } from '../../src/cli/exit.js';
 
+// Pins that process.stdout satisfies FlushableStream without a cast — required
+// for the CLI wiring in src/cli.ts to remain cast-free.
+void (process.stdout satisfies FlushableStream);
+
 // Stub stream that queues write callbacks and releases them only when the
 // test calls drain() — models a pipe with a slow consumer.
 function makeStubStream(): FlushableStream & { drain(): void; pending: number } {
@@ -48,5 +52,29 @@ describe('exitAfterFlush', () => {
     const calls: number[] = [];
     exitAfterFlush([], 1, (code) => calls.push(code));
     expect(calls).toEqual([1]);
+  });
+
+  it('a double-firing stream does not cause exit before other streams flush', () => {
+    const a = makeStubStream();
+    const b = makeStubStream();
+    const calls: number[] = [];
+    exitAfterFlush([a, b], 7, (code) => calls.push(code));
+    a.drain();
+    a.drain();          // double-fire on a
+    expect(calls).toEqual([]);   // b still pending — must NOT have exited
+    b.drain();
+    expect(calls).toEqual([7]);
+  });
+
+  it('ignores flush errors and still exits exactly once with the right code', () => {
+    const errStream: FlushableStream = {
+      write(_chunk: string, cb?: (err?: Error | null) => void): boolean {
+        if (cb) cb(new Error('EPIPE'));
+        return false;
+      },
+    };
+    const calls: number[] = [];
+    exitAfterFlush([errStream], 2, (code) => calls.push(code));
+    expect(calls).toEqual([2]);
   });
 });
