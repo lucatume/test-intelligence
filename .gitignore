@@ -4,3 +4,5 @@ coverage/
 *.log
 .DS_Store
 .claude/settings.local.json
+# Handoff documents are ephemeral by design and should not be tracked.
+handoff-*
