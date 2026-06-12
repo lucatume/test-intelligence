@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(npm run lint)",
+      "Bash(npm run typecheck)",
+      "Bash(npm run build)",
+      "Bash(npm test)",
+      "Bash(npm test -- *)",
+      "Bash(npx vitest run)",
+      "Bash(npx vitest run *)",
+      "Bash(/opt/homebrew/opt/php@8.3/bin/php vendor/bin/phpstan *)",
+      "Bash(/opt/homebrew/opt/php@8.3/bin/php vendor/bin/phpcs *)",
+      "Bash(git add *)",
+      "Bash(git rm *)",
+      "Bash(git commit *)"
+    ]
+  }
+}
