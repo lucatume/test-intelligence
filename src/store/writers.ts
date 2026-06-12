@@ -185,8 +185,9 @@ export function clearAllEdges(db: Database.Database): void {
   db.prepare('DELETE FROM edge').run();
 }
 
-// SQLite's bound-parameter ceiling is 32766 (MAX_VARIABLE_NUMBER); chunk
-// well under it so the statement cache stays small.
+// SQLite's bound-parameter ceiling is 32766 (MAX_VARIABLE_NUMBER); 500 keeps
+// the per-chunk variable count well below that ceiling. Caller owns the
+// transaction when batching is required.
 const EDGE_DELETE_CHUNK = 500;
 
 export function deleteEdgesForTests(db: Database.Database, testIds: readonly string[]): void {

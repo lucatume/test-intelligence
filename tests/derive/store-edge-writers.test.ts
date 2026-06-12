@@ -224,6 +224,35 @@ describe('deleteEdgesForTests', () => {
     } finally { close(); }
   });
 
+  it('exact chunk-multiple (500 ids) deletes all and emits no empty IN () clause', () => {
+    const s = openStore(getTmp());
+    if (s.kind === 'err') throw new Error(s.error.message);
+    const { db, close } = s.value;
+    try {
+      const N = 500;
+      const ids: string[] = [];
+      const edges: EdgeInsert[] = [];
+      for (let i = 0; i < N; i++) {
+        const id = `ti_deletemeelephant_exact${String(i).padStart(4, '0')}`;
+        ids.push(id);
+        edges.push({
+          testId: id,
+          source: `src/ti_deletemeelephant_exact_${String(i)}.ts`,
+          confidence: 0.9,
+          partial: false,
+          evidence: {},
+          derivedAt: '2026-05-13T00:00:00.000Z',
+          provenance: [],
+        });
+      }
+      insertEdgesBulk(db, edges);
+      // Must not throw SqliteError on the boundary — no empty IN () chunk.
+      deleteEdgesForTests(db, ids);
+      const n = (db.prepare('SELECT COUNT(*) AS n FROM edge').get() as { n: number }).n;
+      expect(n).toBe(0);
+    } finally { close(); }
+  });
+
   it('handles more ids than one chunk (1203 tests, each with one edge)', () => {
     const s = openStore(getTmp());
     if (s.kind === 'err') throw new Error(s.error.message);
