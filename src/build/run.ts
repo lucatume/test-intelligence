@@ -9,6 +9,12 @@ import { err, ok } from '../result.js';
 import { acquireLock, releaseLock } from '../store/lock.js';
 import { openStore } from '../store/open.js';
 import {
+  dropFactChangeTracker,
+  installFactChangeTracker,
+  readChangedFileIds,
+  snapshotFactAnchors,
+} from '../store/changed-files.js';
+import {
   upsertFile,
   insertFact,
   upsertAnchor,
@@ -31,6 +37,7 @@ import { WP_PHP_PATTERNS } from '../extract/declarative/wp-php-patterns.js';
 import { parseProjectRelativePath } from '../paths.js';
 import { parseAnchor } from '../anchors/parse.js';
 import { derive } from '../derive/derive.js';
+import { computeDeriveScope } from '../derive/scope.js';
 import { resolveRestEndpoints } from './resolve-rest-endpoints.js';
 import { resolveEnqueueScripts } from './resolve-enqueue-scripts.js';
 import { resolveBlockJson } from './resolve-block-json.js';
@@ -134,6 +141,11 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
         }
       }
       const setupMs = opts.clock.nowMillis() - setupStart;
+      const isUpdate = opts.skipUnchanged === true;
+      if (isUpdate) {
+        snapshotFactAnchors(db);
+        installFactChangeTracker(db);
+      }
       const extractPhaseStart = opts.clock.nowMillis();
 
       // Two-phase needs the full file list before phase 2 starts, so we
@@ -505,6 +517,13 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       for (const h of opts.config.hooks.stopList.add) stopList.add(h);
       for (const h of opts.config.hooks.stopList.remove) stopList.delete(h);
 
+      let deriveScope: ReadonlySet<string> | undefined;
+      if (isUpdate) {
+        const scope = computeDeriveScope(db, readChangedFileIds(db));
+        if (scope.kind === 'scoped') deriveScope = scope.testIds;
+        dropFactChangeTracker(db);
+      }
+
       const derivePhaseStart = opts.clock.nowMillis();
       const deriveSummary = await derive({
         db,
@@ -517,9 +536,11 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
           maxWildcardMatchesPerAnchor: opts.config.traversal.maxWildcardMatchesPerAnchor,
         },
         workers: resolveDeriveWorkers(opts.config.concurrency.deriveWorkers),
+        ...(deriveScope === undefined ? {} : { scope: deriveScope }),
       });
       const derivePhaseMs = opts.clock.nowMillis() - derivePhaseStart;
 
+      const edgesTotal = (db.prepare('SELECT COUNT(*) AS n FROM edge').get() as { n: number }).n;
       const evidenceCount = (
         db.prepare('SELECT COUNT(*) AS n FROM edge, json_each(edge.evidence)').get() as { n: number }
       ).n;
@@ -547,6 +568,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
         factsInserted,
         testsFound,
         edgesWritten: deriveSummary.edgesWritten,
+        deriveScopedTo: deriveScope?.size ?? null,
         evidenceCount,
         testsBounded: deriveSummary.testsBounded,
         elapsedMillis,
@@ -557,9 +579,10 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
           `ti: build complete — ${String(filesExtracted)} files` +
           (filesSkipped > 0 ? `, ${String(filesSkipped)} skipped` : '') +
           `, ${String(factsInserted)} facts, ` +
-          `${String(testsFound)} tests, ${String(deriveSummary.edgesWritten)} edges, ` +
+          `${String(testsFound)} tests, ${String(edgesTotal)} edges, ` +
           `${String(evidenceCount)} evidence` +
           (deriveSummary.testsBounded > 0 ? ` (${String(deriveSummary.testsBounded)} bounded)` : '') +
+          (deriveScope === undefined ? '' : `, derive scoped to ${String(deriveScope.size)} tests`) +
           ` in ${String(elapsedMillis)}ms\n`,
         );
         if (emitTiming) {

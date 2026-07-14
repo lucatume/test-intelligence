@@ -65,6 +65,8 @@ export interface BuildSummary {
   readonly factsInserted: number;
   readonly testsFound: number;
   readonly edgesWritten: number;
+  // Candidate-test count for scoped updates; null when derive fell back/full.
+  readonly deriveScopedTo: number | null;
   // Total evidence-kind count across all edges:
   // SELECT COUNT(*) FROM edge, json_each(edge.evidence). Rises when extraction
   // finds a new evidence path to an already-known (test, source) pair — a more
