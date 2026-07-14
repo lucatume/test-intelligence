@@ -6,7 +6,9 @@ import { traverseTest, type TraversalResult } from './traverse.js';
 import { startDeriveWorkerPool } from './pool.js';
 import {
   clearAllEdges,
+  deleteEdgesForTests,
   insertEdgesBulk,
+  purgeOrphanEdges,
   type EdgeInsert,
 } from '../store/writers.js';
 
@@ -25,6 +27,8 @@ export interface DeriveOptions {
   // 0 (or omitted) runs traversal in-process. >=1 spawns that many
   // worker_threads, each holding its own copy of the graph + anchor index.
   readonly workers?: number;
+  // Undefined rebuilds every edge; an empty set is a valid no-op scope.
+  readonly scope?: ReadonlySet<string>;
 }
 
 export interface DeriveTimings {
@@ -92,10 +96,14 @@ export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
   const buildIndexMs = opts.clock.nowMillis() - indexStart;
   const derivedAt = opts.clock.now();
   const workers = opts.workers ?? 0;
+  const scope = opts.scope;
+  const testsToRun = scope === undefined
+    ? graph.tests
+    : graph.tests.filter((t) => scope.has(t.testId));
 
   // Spinning up workers + cloning the graph costs more than running BFS for
   // a handful of tests. Stay in-process when there's little work to spread.
-  const useWorkers = workers > 0 && graph.tests.length > workers;
+  const useWorkers = workers > 0 && testsToRun.length > workers;
 
   // Streaming write context. `edgeBuf` accumulates across traversal results
   // and flushes whenever the threshold trips. `writeMs` sums only the time
@@ -116,10 +124,15 @@ export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
   opts.db.exec('BEGIN');
   let committed = false;
   try {
-    clearAllEdges(opts.db);
-    // Drop the secondary index for the duration of the write so each bulk
-    // INSERT avoids per-row B-tree updates. Recreate after the final flush.
-    opts.db.exec('DROP INDEX IF EXISTS edge_source_idx');
+    if (scope === undefined) {
+      clearAllEdges(opts.db);
+      // Drop the secondary index for the duration of the write so each bulk
+      // INSERT avoids per-row B-tree updates. Recreate after the final flush.
+      opts.db.exec('DROP INDEX IF EXISTS edge_source_idx');
+    } else {
+      deleteEdgesForTests(opts.db, [...scope]);
+      purgeOrphanEdges(opts.db);
+    }
 
     const flushEdges = (): void => {
       if (edgeBuf.length === 0) return;
@@ -159,8 +172,8 @@ export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
       // No overlap to gain when traversal is sync on the main thread; the
       // streaming buffer + flushes still apply but degenerate into one
       // final flush for small fixtures.
-      for (let i = 0; i < graph.tests.length; i++) {
-        const t = graph.tests[i];
+      for (let i = 0; i < testsToRun.length; i++) {
+        const t = testsToRun[i];
         if (!t) continue;
         const r = traverseTest(graph, index, t.factId, t.testId, {
           maxDepth: opts.params.maxDepth,
@@ -186,8 +199,8 @@ export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
           lanes.push((async (): Promise<void> => {
             for (;;) {
               const idx = nextIdx++;
-              if (idx >= graph.tests.length) return;
-              const t = graph.tests[idx];
+              if (idx >= testsToRun.length) return;
+              const t = testsToRun[idx];
               if (!t) continue;
               const r = await pool.derive({
                 testFactId: t.factId,
@@ -209,7 +222,9 @@ export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
     // Recreate the dropped index inside the same tx so subsequent reads
     // (query/ commands) still hit it. CREATE INDEX inside an open tx is
     // fine for better-sqlite3.
-    opts.db.exec('CREATE INDEX edge_source_idx ON edge(source)');
+    if (scope === undefined) {
+      opts.db.exec('CREATE INDEX edge_source_idx ON edge(source)');
+    }
 
     opts.db.exec('COMMIT');
     committed = true;
