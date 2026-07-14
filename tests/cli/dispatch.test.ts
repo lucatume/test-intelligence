@@ -24,10 +24,10 @@ describe('cli.run', () => {
     expect(t.err).toContain('frobnicate');
   });
 
-  it('not-implemented verb exits 1 with stderr message', async () => {
+  it('removed stateful command exits 1 as unknown', async () => {
     const t = makeIo();
-    const code = await run(['export'], t.io);
+    const code = await run(['build'], t.io);
     expect(code).toBe(1);
-    expect(t.err).toContain('not yet implemented');
+    expect(t.err).toContain('unknown command');
   });
 });

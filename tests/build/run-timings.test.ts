@@ -42,7 +42,6 @@ describe('a', () => { it('works', () => { void a; }); });
     if (r.kind !== 'ok') return;
     const t = r.value.timings;
     expect(t.totalMs).toBeGreaterThanOrEqual(0);
-    expect(t.lockMs).toBeGreaterThanOrEqual(0);
     expect(t.setupMs).toBeGreaterThanOrEqual(0);
     expect(t.extractPhaseMs).toBeGreaterThanOrEqual(0);
     expect(t.extractTsFiles).toBeGreaterThan(0);

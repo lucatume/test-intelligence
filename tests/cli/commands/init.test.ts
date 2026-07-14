@@ -8,13 +8,13 @@ import { useTmpDir } from '../../helpers/tmpDir.js';
 describe('initCommand', () => {
   const getTmp = useTmpDir('ti-init-');
 
-  it('creates ti.config.ts in an empty directory and ensures .ti/ exists', async () => {
+  it('creates only ti.config.ts in an empty directory', async () => {
     const root = getTmp();
     const t = makeIo();
     const code = await initCommand({ projectRoot: root, io: t.io });
     expect(code).toBe(0);
     expect(existsSync(join(root, 'ti.config.ts'))).toBe(true);
-    expect(existsSync(join(root, '.ti'))).toBe(true);
+    expect(existsSync(join(root, '.ti'))).toBe(false);
     const content = readFileSync(join(root, 'ti.config.ts'), 'utf8');
     expect(content).toContain('export default');
     // Generated config must not import 'ti' so it loads in projects that
@@ -124,14 +124,4 @@ describe('initCommand', () => {
     expect(content).not.toContain('jest:');
   });
 
-  it('exits 1 with stderr when .ti/ cannot be created', async () => {
-    const root = getTmp();
-    // Use a non-directory parent so mkdirSync(join(parent, '.ti'), ...) fails with ENOTDIR.
-    const notADir = join(root, 'not-a-dir');
-    writeFileSync(notADir, 'regular file');
-    const t = makeIo();
-    const code = await initCommand({ projectRoot: notADir, io: t.io });
-    expect(code).toBe(1);
-    expect(t.err).toContain('failed to create .ti/');
-  });
 });

@@ -6,9 +6,7 @@ import { traverseTest, type TraversalResult } from './traverse.js';
 import { startDeriveWorkerPool } from './pool.js';
 import {
   clearAllEdges,
-  deleteEdgesForTests,
   insertEdgesBulk,
-  purgeOrphanEdges,
   type EdgeInsert,
 } from '../store/writers.js';
 
@@ -27,8 +25,6 @@ export interface DeriveOptions {
   // 0 (or omitted) runs traversal in-process. >=1 spawns that many
   // worker_threads, each holding its own copy of the graph + anchor index.
   readonly workers?: number;
-  // Undefined rebuilds every edge; an empty set is a valid no-op scope.
-  readonly scope?: ReadonlySet<string>;
 }
 
 export interface DeriveTimings {
@@ -96,10 +92,7 @@ export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
   const buildIndexMs = opts.clock.nowMillis() - indexStart;
   const derivedAt = opts.clock.now();
   const workers = opts.workers ?? 0;
-  const scope = opts.scope;
-  const testsToRun = scope === undefined
-    ? graph.tests
-    : graph.tests.filter((t) => scope.has(t.testId));
+  const testsToRun = graph.tests;
 
   // Spinning up workers + cloning the graph costs more than running BFS for
   // a handful of tests. Stay in-process when there's little work to spread.
@@ -124,15 +117,10 @@ export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
   opts.db.exec('BEGIN');
   let committed = false;
   try {
-    if (scope === undefined) {
-      clearAllEdges(opts.db);
-      // Drop the secondary index for the duration of the write so each bulk
-      // INSERT avoids per-row B-tree updates. Recreate after the final flush.
-      opts.db.exec('DROP INDEX IF EXISTS edge_source_idx');
-    } else {
-      deleteEdgesForTests(opts.db, [...scope]);
-      purgeOrphanEdges(opts.db);
-    }
+    clearAllEdges(opts.db);
+    // Drop the secondary index for the duration of the write so each bulk
+    // INSERT avoids per-row B-tree updates. Recreate after the final flush.
+    opts.db.exec('DROP INDEX IF EXISTS edge_source_idx');
 
     const flushEdges = (): void => {
       if (edgeBuf.length === 0) return;
@@ -222,9 +210,7 @@ export async function derive(opts: DeriveOptions): Promise<DeriveSummary> {
     // Recreate the dropped index inside the same tx so subsequent reads
     // (query/ commands) still hit it. CREATE INDEX inside an open tx is
     // fine for better-sqlite3.
-    if (scope === undefined) {
-      opts.db.exec('CREATE INDEX edge_source_idx ON edge(source)');
-    }
+    opts.db.exec('CREATE INDEX edge_source_idx ON edge(source)');
 
     opts.db.exec('COMMIT');
     committed = true;

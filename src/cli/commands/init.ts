@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Io } from '../io.js';
 
@@ -31,17 +31,6 @@ interface Detected {
 
 export function initCommand(opts: InitCommandOpts): Promise<number> {
   const { projectRoot, io } = opts;
-
-  // Ensure .ti/ exists regardless.
-  const tiDir = join(projectRoot, '.ti');
-  if (!existsSync(tiDir)) {
-    try {
-      mkdirSync(tiDir, { recursive: true });
-    } catch (e) {
-      io.stderr.write(`ti: error: failed to create .ti/: ${(e as Error).message}\n`);
-      return Promise.resolve(1);
-    }
-  }
 
   const configPath = join(projectRoot, 'ti.config.ts');
   if (existsSync(configPath)) {

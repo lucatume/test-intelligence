@@ -1,4 +1,4 @@
-export { openStore } from './open.js';
+export { createMemoryStore, openStore } from './open.js';
 export type { OpenStore, OpenStoreError } from './open.js';
 export { CURRENT_SCHEMA_VERSION } from './migrations.js';
 export { acquireLock, releaseLock } from './lock.js';
@@ -14,7 +14,6 @@ export {
   clearEdgesForTest,
   clearAllEdges,
   clearFactsForFile,
-  readFileExtractState,
   updateFactResolvedPayload,
   repointFactAnchor,
 } from './writers.js';
@@ -25,7 +24,6 @@ export type {
   FactAnchorInsert,
   TestInsert,
   EdgeInsert,
-  FileExtractState,
   FactUpdate,
   FactAnchorRepoint,
 } from './writers.js';

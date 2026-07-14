@@ -1,5 +1,6 @@
 import type { ValidatedConfig } from '../config/parse.js';
 import type { Clock } from '../clock.js';
+import type Database from 'better-sqlite3';
 
 export interface BuildTimingOptions {
   // Emit the timings breakdown line(s) after the build-complete line.
@@ -13,12 +14,7 @@ export interface BuildOptions {
   readonly projectRoot: string;
   readonly config: ValidatedConfig;
   readonly clock: Clock;
-  readonly onlyPaths?: readonly string[];
-  // When true, a discovered file whose content hash matches the stored
-  // `file.content_hash` and that already has facts is skipped — its facts,
-  // anchors, and test rows are left intact. Default (omitted/false) extracts
-  // every file. Set by `ti update`; `ti build` leaves it off (full cold start).
-  readonly skipUnchanged?: boolean;
+  readonly db?: Database.Database;
   readonly stderr: { write(s: string): void };
   readonly verbosity?: 'quiet' | 'normal' | 'verbose';
   readonly timing?: BuildTimingOptions;
@@ -35,7 +31,6 @@ export interface SlowFile {
 
 export interface BuildTimings {
   // Wallclocks measured on the main thread via the injected Clock.
-  readonly lockMs: number;
   // Store-open + PHP worker spawn + pattern registration, before the walk.
   readonly setupMs: number;
   // End-to-end wallclock of the extract loop (walk + read + extract + writes).
@@ -59,14 +54,9 @@ export interface BuildTimings {
 
 export interface BuildSummary {
   readonly filesExtracted: number;
-  // Files skipped because their content hash matched the stored hash and they
-  // already had facts. Always 0 when skipUnchanged is not set (`ti build`).
-  readonly filesSkipped: number;
   readonly factsInserted: number;
   readonly testsFound: number;
   readonly edgesWritten: number;
-  // Candidate-test count for scoped updates; null when derive fell back/full.
-  readonly deriveScopedTo: number | null;
   // Total evidence-kind count across all edges:
   // SELECT COUNT(*) FROM edge, json_each(edge.evidence). Rises when extraction
   // finds a new evidence path to an already-known (test, source) pair — a more

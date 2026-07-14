@@ -23,21 +23,6 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         projectRoot: process.cwd(),
         io,
       });
-    case 'build':
-      return (await import('./cli/commands/build.js')).buildCommand({
-        projectRoot: process.cwd(),
-        io,
-        verbosity: cmd.verbosity,
-        timing: cmd.timing,
-      });
-    case 'update':
-      return (await import('./cli/commands/update.js')).updateCommand({
-        projectRoot: process.cwd(),
-        io,
-        verbosity: cmd.verbosity,
-        paths: cmd.paths,
-        timing: cmd.timing,
-      });
     case 'tests':
       return (await import('./cli/commands/tests.js')).testsCommand({
         projectRoot: process.cwd(),
@@ -47,6 +32,7 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         format: cmd.format,
         minConfidence: cmd.minConfidence,
         strict: cmd.strict,
+        timing: cmd.timing,
       });
     case 'sources':
       return (await import('./cli/commands/sources.js')).sourcesCommand({
@@ -56,50 +42,8 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         format: cmd.format,
         minConfidence: cmd.minConfidence,
         strict: cmd.strict,
+        timing: cmd.timing,
       });
-    case 'unlock':
-      return (await import('./cli/commands/unlock.js')).unlockCommand({
-        projectRoot: process.cwd(),
-        io,
-        force: cmd.force,
-      });
-    case 'clean':
-      return (await import('./cli/commands/clean.js')).cleanCommand({
-        projectRoot: process.cwd(),
-        io,
-        all: cmd.all,
-        force: cmd.force,
-      });
-    case 'migrate':
-      return (await import('./cli/commands/migrate.js')).migrateCommand({
-        projectRoot: process.cwd(),
-        io,
-      });
-    case 'explain':
-      return (await import('./cli/commands/explain.js')).explainCommand({
-        projectRoot: process.cwd(),
-        io,
-        target: cmd.target,
-        format: cmd.format,
-      });
-    case 'resolve': {
-      const { resolveCommand } = await import('./cli/commands/resolve.js');
-      if (cmd.sub === 'export') {
-        return resolveCommand({
-          sub: 'export', projectRoot: process.cwd(), io,
-          kinds: cmd.kinds, limit: cmd.limit, force: cmd.force, out: cmd.out,
-        });
-      }
-      if (cmd.sub === 'import') {
-        return resolveCommand({
-          sub: 'import', projectRoot: process.cwd(), io, input: cmd.input,
-        });
-      }
-      return resolveCommand({ sub: 'status', projectRoot: process.cwd(), io });
-    }
-    case 'not-implemented':
-      io.stderr.write(`ti: ${cmd.verb} is not yet implemented in this build\n`);
-      return 1;
     case 'unknown-command':
       io.stderr.write(`ti: unknown command "${cmd.input}" - see \`ti --help\`\n`);
       return 1;

@@ -1,9 +1,13 @@
 import type { Io } from '../io.js';
-import { openStore } from '../../store/open.js';
+import { createMemoryStore } from '../../store/open.js';
 import { testsFromSources } from '../../query/testsFromSources.js';
 import { emitArgs } from '../../emit/args.js';
 import { emitJson } from '../../emit/json.js';
 import type { FrameworkName } from '../../types.js';
+import { runBuild } from '../../build/run.js';
+import { systemClock } from '../../clock.js';
+import type { TimingFlags } from '../parseArgv.js';
+import { loadEffectiveConfig } from './loadConfig.js';
 
 const FRAMEWORKS: ReadonlySet<string> = new Set(['phpunit', 'jest', 'playwright']);
 
@@ -15,6 +19,7 @@ export interface TestsCommandArgs {
   readonly format: 'args' | 'json';
   readonly minConfidence: number;
   readonly strict: boolean;
+  readonly timing?: TimingFlags;
 }
 
 export async function testsCommand(args: TestsCommandArgs): Promise<number> {
@@ -31,12 +36,26 @@ export async function testsCommand(args: TestsCommandArgs): Promise<number> {
     args.io.stderr.write('ti: no source paths given (pass paths positionally or via stdin)\n');
     return 1;
   }
-  const s = openStore(args.projectRoot);
+  const cfg = await loadEffectiveConfig(args.projectRoot, args.io);
+  if (cfg === null) return 1;
+  const s = createMemoryStore();
   if (s.kind === 'err') {
     args.io.stderr.write(`ti: ${s.error.message}\n`);
     return 1;
   }
   try {
+    const build = await runBuild({
+      projectRoot: args.projectRoot,
+      config: cfg,
+      clock: systemClock,
+      db: s.value.db,
+      stderr: args.io.stderr,
+      ...(args.timing !== undefined ? { timing: args.timing } : {}),
+    });
+    if (build.kind === 'err') {
+      args.io.stderr.write(`ti: ${build.error.message}\n`);
+      return 1;
+    }
     const r = testsFromSources(s.value.db, {
       sources: inputs,
       framework: args.framework as FrameworkName,

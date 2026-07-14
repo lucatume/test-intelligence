@@ -7,7 +7,6 @@ import {
   insertFactAnchor,
   insertTest,
   clearFactsForFile,
-  readFileExtractState,
   updateFactResolvedPayload,
   repointFactAnchor,
   upsertResolution,
@@ -114,28 +113,6 @@ describe('store writers', () => {
       const b = db.prepare('SELECT COUNT(*) AS n FROM fact WHERE file_id = ?').get(fileB) as { n: number };
       expect(a.n).toBe(0);
       expect(b.n).toBe(1);
-    } finally { close(); }
-  });
-
-  it('readFileExtractState returns hash + fact count, null for a missing path', () => {
-    const s = openStore(getTmp());
-    if (s.kind === 'err') throw new Error(s.error.message);
-    const { db, close } = s.value;
-    try {
-      const fileId = upsertFile(db, {
-        path: 'src/a.ts', language: 'ts', contentHash: 'deadbeef',
-        extractedAt: '2026-05-15T00:00:00.000Z', isTest: false, framework: null, frameworkClass: null,
-      });
-
-      const empty = readFileExtractState(db, 'src/a.ts');
-      expect(empty).toEqual({ fileId, contentHash: 'deadbeef', factCount: 0 });
-
-      insertFact(db, { fileId, kind: 'symbol-def', resolved: true, startLine: 1, endLine: 1, payload: {} });
-      insertFact(db, { fileId, kind: 'symbol-def', resolved: true, startLine: 2, endLine: 2, payload: {} });
-      const withFacts = readFileExtractState(db, 'src/a.ts');
-      expect(withFacts).toEqual({ fileId, contentHash: 'deadbeef', factCount: 2 });
-
-      expect(readFileExtractState(db, 'src/missing.ts')).toBeNull();
     } finally { close(); }
   });
 

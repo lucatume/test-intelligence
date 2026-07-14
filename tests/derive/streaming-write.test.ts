@@ -176,40 +176,4 @@ describe('derive streamed write', () => {
     } finally { close(); }
   });
 
-  it('scoped derive rewrites only selected tests', async () => {
-    const s = openStore(getTmp());
-    if (s.kind === 'err') throw new Error(s.error.message);
-    const { db, close } = s.value;
-    try {
-      seedFixture(db, 2);
-      const params = { maxDepth: 10, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set<string>(), maxWildcardMatchesPerAnchor: 32 };
-      await derive({ db, params, clock: systemClock });
-      const before = db.prepare('SELECT test_id, source FROM edge ORDER BY test_id, source').all();
-
-      const summary = await derive({
-        db, params, clock: systemClock,
-        scope: new Set(['jest:tests/t0.test.ts::t']),
-      });
-
-      expect(summary.testsProcessed).toBe(1);
-      expect(db.prepare('SELECT test_id, source FROM edge ORDER BY test_id, source').all()).toEqual(before);
-    } finally { close(); }
-  });
-
-  it('empty scoped derive keeps existing edges and traverses nothing', async () => {
-    const s = openStore(getTmp());
-    if (s.kind === 'err') throw new Error(s.error.message);
-    const { db, close } = s.value;
-    try {
-      seedFixture(db, 2);
-      const params = { maxDepth: 10, maxMillisPerTest: 5000, threshold: 0, hookStopList: new Set<string>(), maxWildcardMatchesPerAnchor: 32 };
-      await derive({ db, params, clock: systemClock });
-      const before = db.prepare('SELECT COUNT(*) AS n FROM edge').get();
-
-      const summary = await derive({ db, params, clock: systemClock, scope: new Set() });
-
-      expect(summary.testsProcessed).toBe(0);
-      expect(db.prepare('SELECT COUNT(*) AS n FROM edge').get()).toEqual(before);
-    } finally { close(); }
-  });
 });

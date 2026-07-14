@@ -35,7 +35,7 @@ describe('ti CLI smoke (built artifact)', () => {
     expect(r.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
   });
 
-  it('init creates ti.config.ts and .ti/', () => {
+  it('init creates ti.config.ts without persistent state', () => {
     const root = getTmp();
     const r = spawnSync('node', [CLI_ENTRY, 'init'], {
       encoding: 'utf8',
@@ -44,6 +44,6 @@ describe('ti CLI smoke (built artifact)', () => {
     });
     expect(r.status).toBe(0);
     expect(existsSync(join(root, 'ti.config.ts'))).toBe(true);
-    expect(existsSync(join(root, '.ti'))).toBe(true);
+    expect(existsSync(join(root, '.ti'))).toBe(false);
   });
 });

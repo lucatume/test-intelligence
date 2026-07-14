@@ -9,51 +9,37 @@ import { err, ok } from '../result.js';
 import { acquireLock, releaseLock } from '../store/lock.js';
 import { openStore } from '../store/open.js';
 import {
-  dropFactChangeTracker,
-  installFactChangeTracker,
-  readChangedFileIds,
-  snapshotFactAnchors,
-} from '../store/changed-files.js';
-import {
   upsertFile,
   insertFact,
   upsertAnchor,
   insertFactAnchor,
   insertTest,
   clearFactsForFile,
-  readFileExtractState,
   upsertWrapperIndexEntry,
   insertWrapperCallSite,
 } from '../store/writers.js';
 import { walk } from '../discover/walk.js';
-import { classifyFile } from '../discover/framework.js';
-import { matchesAny } from '../discover/glob.js';
 import { extractFile } from '../extract/index.js';
 import { CompilerOptionsResolver } from '../extract/ts/compiler.js';
 import { hasPhpAvailable, type PhpWorker } from '../extract/php/spawn.js';
 import { startPhpWorkerPool } from '../extract/php/pool.js';
 import { flushDeferredPhpFacts } from '../extract/php/extract.js';
 import { WP_PHP_PATTERNS } from '../extract/declarative/wp-php-patterns.js';
-import { parseProjectRelativePath } from '../paths.js';
 import { parseAnchor } from '../anchors/parse.js';
 import { derive } from '../derive/derive.js';
-import { computeDeriveScope } from '../derive/scope.js';
 import { resolveRestEndpoints } from './resolve-rest-endpoints.js';
 import { resolveEnqueueScripts } from './resolve-enqueue-scripts.js';
 import { resolveBlockJson } from './resolve-block-json.js';
 import { runJsResolve } from '../jsresolve/index.js';
 import { emitCoreAdminEntryPointFacts } from '../extract/php/wp-bootstrap.js';
-import { HOOK_STOP_LIST_BUILTINS, type ValidatedConfig } from '../config/parse.js';
+import { HOOK_STOP_LIST_BUILTINS } from '../config/parse.js';
 import type { BuildOptions, BuildSummary, BuildError, BuildTimings, SlowFile } from './types.js';
 import type { DiscoveredFile } from '../discover/types.js';
 import { contentHash } from './contentHash.js';
 
-// Files per BEGIN/COMMIT in the extract write loop. The store is opened in
-// WAL mode, so without batching every per-file statement (upsertFile,
-// clearFactsForFile DELETE, insertFact, …) is its own transaction with its
-// own fsync — a re-build over a populated store pays one fsync per delete.
-// Grouping ~500 files per COMMIT makes each file's DELETE ride the same
-// fsync as its inserts. Matches the design spec's "chunks of 500 files".
+// Files per transaction in the extract write loop. Batching keeps the
+// JS/native call overhead bounded without holding one transaction for the
+// entire repository.
 const EXTRACT_BATCH_SIZE = 500;
 
 export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary, BuildError>> {
@@ -67,25 +53,30 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
   let extractTsFiles = 0;
   let extractPhpFiles = 0;
 
-  const lockStart = opts.clock.nowMillis();
-  const sRes = openStore(opts.projectRoot);
-  if (sRes.kind === 'err') return err({ kind: 'BuildError', message: sRes.error.message });
-  const { db, close } = sRes.value;
+  let db: Database.Database;
+  let close = (): void => {};
+  let locked = false;
+  if (opts.db !== undefined) {
+    db = opts.db;
+  } else {
+    const sRes = openStore(opts.projectRoot);
+    if (sRes.kind === 'err') return err({ kind: 'BuildError', message: sRes.error.message });
+    db = sRes.value.db;
+    close = sRes.value.close;
 
-  const lockRes = acquireLock(opts.projectRoot, {
-    command: opts.onlyPaths !== undefined ? 'update' : 'build',
-    clock: opts.clock,
-  });
-  if (lockRes.kind === 'err') {
-    close();
-    return err({ kind: 'BuildError', message: `lock: ${lockRes.error.kind}` });
+    const lockRes = acquireLock(opts.projectRoot, {
+      command: 'build',
+      clock: opts.clock,
+    });
+    if (lockRes.kind === 'err') {
+      close();
+      return err({ kind: 'BuildError', message: `lock: ${lockRes.error.kind}` });
+    }
+    locked = true;
   }
-  const lockMs = opts.clock.nowMillis() - lockStart;
-
   try {
 
     let filesExtracted = 0;
-    let filesSkipped = 0;
     let factsInserted = 0;
     let testsFound = 0;
     let worker: PhpWorker | undefined;
@@ -100,36 +91,11 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       const wpPatternWrappers = opts.config.wpPatternWrappers;
       const compilerOptionsResolver = new CompilerOptionsResolver(opts.projectRoot);
 
-      // When updating a subset of paths, expand the set to include any caller
-      // file that holds a synthesized fact backed by a wrapper whose def_file
-      // is among the updated paths. Without this, the old synthesized facts for
-      // those callers persist even after the wrapper definition changes.
-      const effectiveOnlyPaths = opts.onlyPaths !== undefined
-        ? expandOnlyPathsForWrapperUpdates(db, opts.onlyPaths)
-        : undefined;
-      // Drop old wrapper_index rows for the def files being re-extracted.
-      // CASCADE deletes wrapper_call_site rows for the old synthesized facts.
-      // Use the ORIGINAL onlyPaths (not expanded) — only actual def files lose
-      // their index rows; the expanded caller files just get re-extracted.
-      if (opts.onlyPaths !== undefined && opts.onlyPaths.length > 0) {
-        const defPlaceholders = opts.onlyPaths.map(() => '?').join(',');
-        db.prepare(
-          `DELETE FROM wrapper_index WHERE def_file IN (${defPlaceholders})`
-        ).run(...opts.onlyPaths);
-      }
-
-      // Resolve the PHP worker pool size. For a subset update the .php file
-      // count is known up front, so the pool scales down (see resolvePhpWorkers).
-      // A full build's streaming walk has no cheap upfront count — base is used.
-      const phpFileCountHint = effectiveOnlyPaths !== undefined
-        ? effectiveOnlyPaths.filter((p) => p.endsWith('.php')).length
-        : undefined;
       const phpWorkers = resolvePhpWorkers({
         configured: opts.config.concurrency.phpWorkers,
         cpuCount: cpus().length,
-        phpFileCount: phpFileCountHint,
       });
-      if (mayHavePhp(opts) && hasPhpAvailable()) {
+      if (hasPhpAvailable()) {
         const wRes = startPhpWorkerPool({ repoRoot, size: phpWorkers, wpPatternWrappers });
         if (wRes.kind === 'ok') {
           worker = wRes.value;
@@ -141,25 +107,14 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
         }
       }
       const setupMs = opts.clock.nowMillis() - setupStart;
-      const isUpdate = opts.skipUnchanged === true;
-      if (isUpdate) {
-        snapshotFactAnchors(db);
-        installFactChangeTracker(db);
-      }
       const extractPhaseStart = opts.clock.nowMillis();
 
       // Two-phase needs the full file list before phase 2 starts, so we
       // materialize once. Memory is trivial (DiscoveredFile is ~6 fields,
       // even 34k files fit comfortably).
       const discoveredFiles: DiscoveredFile[] = [];
-      if (effectiveOnlyPaths !== undefined) {
-        for (const f of listFromPaths(effectiveOnlyPaths, opts.projectRoot, opts.config, opts.stderr, verbosity)) {
-          discoveredFiles.push(f);
-        }
-      } else {
-        for await (const f of walk(opts.projectRoot, opts.config)) {
-          discoveredFiles.push(f);
-        }
+      for await (const file of walk(opts.projectRoot, opts.config)) {
+        discoveredFiles.push(file);
       }
 
       // Two-phase build applies to full builds with a PHP worker.
@@ -171,10 +126,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       // live path (no per-worker partial knowledge, no denylist gate
       // dropping legitimate wrappers).
       //
-      // onlyPaths updates keep the single-pass path. The scatter that
-      // triggers the multi-worker drop does not arise at update scale, and
-      // adding two-phase + index-seeding for updates is scope creep.
-      const useTwoPhase = effectiveOnlyPaths === undefined && worker !== undefined;
+      const useTwoPhase = worker !== undefined;
 
       // The `worker !== undefined` check is already in useTwoPhase, but TS
       // control-flow narrowing does not carry through the boolean. Re-check
@@ -244,21 +196,6 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
               continue;
             }
             const hash = contentHash(text);
-            // Incremental skip: a file whose content hash matches the stored
-            // hash and that already has facts did not change — leave its
-            // facts/anchors/test rows untouched and do no extraction. A
-            // hash-matched file with zero facts (failed/partial prior
-            // extraction) still re-extracts. Deterministic: no clock read.
-            if (opts.skipUnchanged === true) {
-              const state = readFileExtractState(db, file.path);
-              if (state !== null && state.contentHash === hash && state.factCount > 0) {
-                filesSkipped++;
-                if (verbosity === 'verbose') {
-                  opts.stderr.write(`ti: skipped (unchanged) ${file.path}\n`);
-                }
-                continue;
-              }
-            }
             const compilerOptions = compilerOptionsResolver.forFile(
               join(opts.projectRoot, file.path),
             );
@@ -367,12 +304,8 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
         // Flush any cross-file deferred wrapper calls that couldn't be resolved
         // during per-file extraction (caller processed before wrapper-def file).
         if (worker !== undefined) {
-          // For onlyPaths updates (single-pass), each worker built only a
-          // partial wrapper index; this barrier unifies them so flush-deferred
-          // replay sees every wrapper. For full builds (two-phase) every
-          // worker already holds the complete index post-phase-1; this is a
-          // self round-trip whose only output is the dumpWrapperIndex payload
-          // that feeds wrapper_index row writes via flushDeferredPhpFacts.
+          // Every worker already holds the complete index post-phase-1. This
+          // round-trip also supplies the snapshot persisted below.
           const globalWrapperIndex = await worker.dumpWrapperIndex();
           await worker.mergeWrapperIndex(globalWrapperIndex);
           const flushResult = await flushDeferredPhpFacts({
@@ -385,9 +318,10 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
             // Locate the existing file row — the caller file was already extracted
             // in the lane loop above. Fall back to upsert only if somehow absent.
             let fileId: number;
-            const existing = readFileExtractState(db, f.location.file);
-            if (existing !== null) {
-              fileId = existing.fileId;
+            const existing = db.prepare('SELECT id FROM file WHERE path = ?')
+              .get(f.location.file) as { id: number } | undefined;
+            if (existing !== undefined) {
+              fileId = existing.id;
             } else {
               fileId = upsertFile(db, {
                 path: f.location.file,
@@ -517,13 +451,6 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       for (const h of opts.config.hooks.stopList.add) stopList.add(h);
       for (const h of opts.config.hooks.stopList.remove) stopList.delete(h);
 
-      let deriveScope: ReadonlySet<string> | undefined;
-      if (isUpdate) {
-        const scope = computeDeriveScope(db, readChangedFileIds(db));
-        if (scope.kind === 'scoped') deriveScope = scope.testIds;
-        dropFactChangeTracker(db);
-      }
-
       const derivePhaseStart = opts.clock.nowMillis();
       const deriveSummary = await derive({
         db,
@@ -536,7 +463,6 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
           maxWildcardMatchesPerAnchor: opts.config.traversal.maxWildcardMatchesPerAnchor,
         },
         workers: resolveDeriveWorkers(opts.config.concurrency.deriveWorkers),
-        ...(deriveScope === undefined ? {} : { scope: deriveScope }),
       });
       const derivePhaseMs = opts.clock.nowMillis() - derivePhaseStart;
 
@@ -547,7 +473,6 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
 
       const elapsedMillis = opts.clock.nowMillis() - startMs;
       const timings: BuildTimings = {
-        lockMs,
         setupMs,
         extractPhaseMs,
         extractTsMs,
@@ -564,11 +489,9 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       };
       const summary: BuildSummary = {
         filesExtracted,
-        filesSkipped,
         factsInserted,
         testsFound,
         edgesWritten: deriveSummary.edgesWritten,
-        deriveScopedTo: deriveScope?.size ?? null,
         evidenceCount,
         testsBounded: deriveSummary.testsBounded,
         elapsedMillis,
@@ -577,12 +500,10 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       if (verbosity !== 'quiet') {
         opts.stderr.write(
           `ti: build complete — ${String(filesExtracted)} files` +
-          (filesSkipped > 0 ? `, ${String(filesSkipped)} skipped` : '') +
           `, ${String(factsInserted)} facts, ` +
           `${String(testsFound)} tests, ${String(edgesTotal)} edges, ` +
           `${String(evidenceCount)} evidence` +
           (deriveSummary.testsBounded > 0 ? ` (${String(deriveSummary.testsBounded)} bounded)` : '') +
-          (deriveScope === undefined ? '' : `, derive scoped to ${String(deriveScope.size)} tests`) +
           ` in ${String(elapsedMillis)}ms\n`,
         );
         if (emitTiming) {
@@ -595,7 +516,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       close();
     }
   } finally {
-    releaseLock(opts.projectRoot);
+    if (locked) releaseLock(opts.projectRoot);
   }
 }
 
@@ -634,7 +555,7 @@ class SlowestTracker {
 }
 
 function formatTimings(t: BuildTimings): string {
-  let out = `ti: timings — lock ${String(t.lockMs)}ms, setup ${String(t.setupMs)}ms, ` +
+  let out = `ti: timings — setup ${String(t.setupMs)}ms, ` +
     `extract ${String(t.extractPhaseMs)}ms ` +
     `(ts ${String(t.extractTsMs)}ms/${String(t.extractTsFiles)} files, ` +
     `php ${String(t.extractPhpMs)}ms/${String(t.extractPhpFiles)} files), ` +
@@ -687,66 +608,6 @@ function resolveDeriveWorkers(configured: number | undefined): number {
     return Math.min(Math.max(cpus().length - 2, 0), 8);
   }
   return Math.max(configured, 0);
-}
-
-function* listFromPaths(
-  paths: readonly string[],
-  projectRoot: string,
-  config: ValidatedConfig,
-  stderr: { write(s: string): void },
-  verbosity: 'quiet' | 'normal' | 'verbose',
-): Iterable<DiscoveredFile> {
-  for (const raw of paths) {
-    const parsed = parseProjectRelativePath(raw, projectRoot, {
-      allowSymlinkTargets: config.allowSymlinkTargets,
-    });
-    if (parsed.kind === 'err') {
-      if (verbosity !== 'quiet') stderr.write(`ti: unknown path ${raw}\n`);
-      continue;
-    }
-    const rel = parsed.value;
-    const cls = classifyFile(rel, config);
-    if (cls === null) {
-      if (verbosity === 'verbose') stderr.write(`ti: skipped (unsupported) ${rel}\n`);
-      continue;
-    }
-    yield {
-      path: rel,
-      language: cls.language,
-      vendor: matchesAny(rel, config.vendor),
-      framework: cls.framework,
-      frameworkClass: cls.frameworkClass,
-    };
-  }
-}
-
-function mayHavePhp(opts: BuildOptions): boolean {
-  if (opts.onlyPaths !== undefined) {
-    return opts.onlyPaths.some((p) => p.endsWith('.php'));
-  }
-  return true;
-}
-
-// When onlyPaths targets a wrapper def file, expand the update set to include
-// every caller file that has a synthesized fact backed by that wrapper.
-// Returns a new array that is the union of onlyPaths plus any discovered caller paths.
-function expandOnlyPathsForWrapperUpdates(
-  db: Database.Database,
-  onlyPaths: ReadonlyArray<string>,
-): string[] {
-  const set = new Set(onlyPaths);
-  if (set.size === 0) return [...set];
-  const placeholders = [...set].map(() => '?').join(',');
-  const rows = db.prepare(`
-    SELECT DISTINCT fl.path
-    FROM wrapper_call_site wcs
-    JOIN wrapper_index wi ON wi.id = wcs.wrapper_id
-    JOIN fact f ON f.id = wcs.fact_id
-    JOIN file fl ON fl.id = f.file_id
-    WHERE wi.def_file IN (${placeholders})
-  `).all(...set) as Array<{ path: string }>;
-  for (const r of rows) set.add(r.path);
-  return [...set];
 }
 
 function resolveRepoRoot(): string {

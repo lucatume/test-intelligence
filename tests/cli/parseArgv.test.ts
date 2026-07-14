@@ -2,120 +2,47 @@ import { describe, expect, it } from 'vitest';
 import { parseArgv } from '../../src/cli/parseArgv.js';
 
 describe('parseArgv', () => {
-  it('--help', () => {
-    expect(parseArgv(['--help'])).toEqual({ kind: 'help' });
-    expect(parseArgv(['-h'])).toEqual({ kind: 'help' });
-  });
-  it('--version', () => {
-    expect(parseArgv(['--version'])).toEqual({ kind: 'version' });
-    expect(parseArgv(['-V'])).toEqual({ kind: 'version' });
-  });
-  it('no args -> help', () => {
+  it('parses help, version, init, and config', () => {
     expect(parseArgv([])).toEqual({ kind: 'help' });
-  });
-  it('init', () => {
+    expect(parseArgv(['--help'])).toEqual({ kind: 'help' });
+    expect(parseArgv(['--version'])).toEqual({ kind: 'version' });
     expect(parseArgv(['init'])).toEqual({ kind: 'init' });
-  });
-  it('config', () => {
     expect(parseArgv(['config'])).toEqual({ kind: 'config' });
   });
-  it('recognized-but-unimplemented verb', () => {
-    const r = parseArgv(['export']);
-    expect(r.kind).toBe('not-implemented');
-    if (r.kind === 'not-implemented') expect(r.verb).toBe('export');
-  });
-  it('unknown verb', () => {
-    const r = parseArgv(['frobnicate']);
-    expect(r.kind).toBe('unknown-command');
-    if (r.kind === 'unknown-command') expect(r.input).toBe('frobnicate');
-  });
-  it('resolve export defaults --limit to 50', () => {
-    const r = parseArgv(['resolve', 'export', '-o', 'out/prompt']);
-    expect(r.kind).toBe('resolve');
-    if (r.kind === 'resolve' && r.sub === 'export') {
-      expect(r.limit).toBe(50);
-      expect(r.out).toBe('out/prompt');
-    }
-  });
-  it('resolve export honors --limit override', () => {
-    const r = parseArgv(['resolve', 'export', '-o', 'out/prompt', '--limit=25']);
-    expect(r.kind).toBe('resolve');
-    if (r.kind === 'resolve' && r.sub === 'export') expect(r.limit).toBe(25);
-  });
-  it('build parses with default normal verbosity', () => {
-    expect(parseArgv(['build'])).toEqual({
-      kind: 'build',
-      verbosity: 'normal',
-      timing: { emit: false, topN: 0 },
+
+  it('parses a cold tests query with timing', () => {
+    expect(parseArgv([
+      'tests', '--from-sources', 'src/a.ts', 'src/b.ts',
+      '--framework=jest', '--strict', '--timing-top=5',
+    ])).toEqual({
+      kind: 'tests',
+      sources: ['src/a.ts', 'src/b.ts'],
+      framework: 'jest',
+      format: 'args',
+      minConfidence: 0,
+      strict: true,
+      timing: { emit: true, topN: 5 },
     });
   });
-  it('build --quiet and --verbose adjust verbosity', () => {
-    expect(parseArgv(['build', '--quiet'])).toEqual({
-      kind: 'build',
-      verbosity: 'quiet',
-      timing: { emit: false, topN: 0 },
+
+  it('parses a cold sources query with timing', () => {
+    expect(parseArgv([
+      'sources', '--from-tests', 'jest:tests/a.test.ts::works',
+      '--format=json', '--min-confidence=0.5', '--timing',
+    ])).toEqual({
+      kind: 'sources',
+      testIds: ['jest:tests/a.test.ts::works'],
+      format: 'json',
+      minConfidence: 0.5,
+      strict: false,
+      timing: { emit: true, topN: 0 },
     });
-    expect(parseArgv(['build', '-v'])).toEqual({
-      kind: 'build',
-      verbosity: 'verbose',
-      timing: { emit: false, topN: 0 },
-    });
-  });
-  it('build --timing enables phase emission', () => {
-    const r = parseArgv(['build', '--timing']);
-    expect(r.kind).toBe('build');
-    if (r.kind === 'build') {
-      expect(r.timing.emit).toBe(true);
-      expect(r.timing.topN).toBe(0);
-    }
-  });
-  it('build --timing-top=N enables emission and per-file collection', () => {
-    const r = parseArgv(['build', '--timing-top=10']);
-    expect(r.kind).toBe('build');
-    if (r.kind === 'build') {
-      expect(r.timing.emit).toBe(true);
-      expect(r.timing.topN).toBe(10);
-    }
-  });
-  it('update collects positional paths and ignores flags', () => {
-    const r = parseArgv(['update', 'src/a.ts', '-q', 'src/b.ts']);
-    expect(r.kind).toBe('update');
-    if (r.kind === 'update') {
-      expect(r.paths).toEqual(['src/a.ts', 'src/b.ts']);
-      expect(r.verbosity).toBe('quiet');
-      expect(r.timing).toEqual({ emit: false, topN: 0 });
-    }
-  });
-  it('update --timing enables phase emission', () => {
-    const r = parseArgv(['update', 'src/a.ts', '--timing']);
-    expect(r.kind).toBe('update');
-    if (r.kind === 'update') {
-      expect(r.timing.emit).toBe(true);
-    }
-  });
-  it('ignores positional args after the verb (deferred to dispatcher)', () => {
-    expect(parseArgv(['init', '--force'])).toEqual({ kind: 'init' });
   });
 
-  it('parses resolve export with a space-separated -o flag', () => {
-    const r = parseArgv(['resolve', 'export', '--kinds=hook-fire,hook-listener',
-      '--limit=20', '-o', '/tmp/b.json']);
-    expect(r.kind).toBe('resolve');
-    if (r.kind === 'resolve' && r.sub === 'export') {
-      expect(r.out).toBe('/tmp/b.json');
-      expect(r.limit).toBe(20);
-      expect(r.kinds).toEqual(['hook-fire', 'hook-listener']);
-    }
-  });
-
-  it('parses resolve import and status sub-verbs', () => {
-    const imp = parseArgv(['resolve', 'import', 'rx.json']);
-    expect(imp).toEqual({ kind: 'resolve', sub: 'import', input: 'rx.json' });
-    const st = parseArgv(['resolve', 'status']);
-    expect(st).toEqual({ kind: 'resolve', sub: 'status' });
-  });
-
-  it('rejects an unknown resolve sub-verb', () => {
-    expect(parseArgv(['resolve', 'frobnicate']).kind).toBe('unknown-command');
-  });
+  it.each(['build', 'update', 'clean', 'migrate', 'unlock', 'resolve', 'explain', 'export'])(
+    'treats removed stateful command %s as unknown',
+    (command) => {
+      expect(parseArgv([command])).toEqual({ kind: 'unknown-command', input: command });
+    },
+  );
 });

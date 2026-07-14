@@ -9,7 +9,7 @@ Red → green → refactor. Write the test, run it, **watch it fail for the expe
 ## Test pyramid
 
 - **Unit** (majority) — pure, fast, table-driven. Live beside the module under test at `tests/<same-path>.test.ts`.
-- **Integration** — hit the real filesystem inside a temp directory (see below). Storage round-trips, lock contention, gitignore rewrites belong here.
+- **Integration** — hit the real filesystem inside a temp directory (see below). CLI query tests must also assert that no `.ti/` state is created.
 - **e2e** — currently thin. Expands in Plans D–E when the CLI ships.
 
 ## Isolation

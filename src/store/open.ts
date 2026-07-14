@@ -20,6 +20,28 @@ export interface OpenStoreError {
   readonly message: string;
 }
 
+export function createMemoryStore(): Result<OpenStore, OpenStoreError> {
+  let db: Database.Database | undefined;
+  try {
+    db = new Database(':memory:');
+    db.pragma('foreign_keys = ON');
+    applyInitialSchema(db);
+  } catch (e) {
+    db?.close();
+    return err({
+      kind: 'OpenStoreError',
+      message: `failed to create in-memory store: ${(e as Error).message}`,
+    });
+  }
+
+  const store = db;
+  return ok({
+    db: store,
+    schemaVersion: CURRENT_SCHEMA_VERSION,
+    close: () => { store.close(); },
+  });
+}
+
 export function openStore(projectRoot: string): Result<OpenStore, OpenStoreError> {
   const tiDir = join(projectRoot, '.ti');
   try {

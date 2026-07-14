@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`ti` (test-intelligence) is a TypeScript CLI that maintains a durable, queryable map between source files, tests, and (later) runtime views. Authoritative design lives in `docs/superpowers/specs/2026-05-11-static-analysis-test-intelligence-design.md`.
+`ti` (test-intelligence) is a stateless TypeScript CLI that builds a queryable source-to-test map in memory for each command. Authoritative design history lives in `docs/superpowers/specs/2026-05-11-static-analysis-test-intelligence-design.md`.
 
 ## Status
 
-All planned scope (Plans A–G) is shipped. The CLI is feature-complete for v1: `ti init` → `ti build` → `ti tests --from-sources <paths> --framework=<name>`, plus `ti sources --from-tests`, `ti update`, `ti unlock`, `ti clean`, `ti migrate`, `ti explain`, `ti config`. Deferred to a 1.x cycle: ndjson streaming output, `ti export` JSON shards, `.ti/last-run.log`, two-hop `script-handle` bridge resolution, concurrent worker pools.
+The CLI exposes `ti init`, `ti config`, `ti tests --from-sources <paths> --framework=<name>`, and `ti sources --from-tests <ids>`. Each query performs a full cold extraction and derivation into a process-local in-memory store, emits the answer, and discards the store. There is no `.ti/` lifecycle or update path.
 
 ## How to run
 
@@ -24,13 +24,13 @@ Requires Node ≥ 20.
 
 - **Strict TDD.** No implementation file is created without a failing test for its first behaviour. Red → green → refactor.
 - **Parse, don't validate.** `unknown` becomes a typed value at exactly one boundary via a parser in `src/parse.ts`. Interior code handles only the parsed, branded types from `src/types.ts`; it never re-checks shape.
-- **`Result<T, E>` for every fallible operation** (from `src/result.ts`). `throw` is reserved for programmer errors (invariant violations). Do not throw for expected failure modes (I/O, user input, lock contention, corruption).
+- **`Result<T, E>` for every fallible operation** (from `src/result.ts`). `throw` is reserved for programmer errors (invariant violations). Do not throw for expected failure modes (I/O or user input).
 - **No ambient time or randomness.** `new Date()`, `Date.now()`, and `Math.random()` are forbidden outside `src/clock.ts` — the `no-restricted-globals` / `no-restricted-syntax` ESLint rules enforce this in both `src/` and `tests/`. Inject `Clock` / `Random` from `src/clock.ts`.
 - **No shell interpolation.** Subprocess invocation uses `{ bin, args }` arrays with `shell: false`. Never string-concatenate a command.
 
 ## Dependency policy
 
-Runtime dependencies: `jiti` (config loading), `better-sqlite3` (SQLite working store). `typescript` is runtime-relevant in Plans B+ when the TS Compiler API is used in-process for JS/TS extraction. Dev deps: TypeScript, vitest, ESLint + `eslint-plugin-boundaries` + `eslint-plugin-import`.
+Runtime dependencies: `jiti` (config loading), `better-sqlite3` (process-local in-memory working graph), and `typescript` (in-process JS/TS extraction). The CLI must never create a persistent SQLite file.
 
 Do **not** add Zod, neverthrow, fast-check, Stryker, dependency-cruiser, a logger, or a CLI-framework library without spec-level discussion first. In-repo replacements already exist:
 
@@ -43,7 +43,6 @@ Treat new runtime dependencies as spec changes.
 
 - `src/CLAUDE.md` — module DAG, file-by-file purposes, how to add a new unit.
 - `src/config/CLAUDE.md` — config resolution, loading, and parsing.
-- `src/store/CLAUDE.md` — on-disk layout, durable writes, lock protocol, gitignore.
 - `tests/CLAUDE.md` — TDD workflow, isolation helpers, fixture conventions.
 - `docs/CLAUDE.md` — signpost to the spec and plans.
 
