@@ -106,4 +106,32 @@ describe('extractImports', () => {
     expect(facts).toHaveLength(2);
     expect(facts.every((f) => f.resolved)).toBe(true);
   });
+
+  it('marks imports and re-exports with no runtime bindings as type-only', () => {
+    const root = getTmp();
+    write(root, 'src/types.ts', 'export interface Thing { id: string }\n');
+    write(root, 'src/runtime.ts', 'export const value = 1; export interface Shape {}\n');
+    write(
+      root,
+      'src/a.ts',
+      [
+        "import type { Thing } from './types';",
+        "import { type Thing as OtherThing } from './types';",
+        "export type { Thing } from './types';",
+        "export { type Thing as ExportedThing } from './types';",
+        "import { value, type Shape } from './runtime';",
+        "export { value, type Shape } from './runtime';",
+      ].join('\n'),
+    );
+
+    const facts = extractImports(
+      parseFile(root, 'src/a.ts'),
+      'src/a.ts',
+      root,
+      synthesizeCompilerOptions(root),
+    );
+
+    expect(facts.map((f) => (f.payload as { meta?: { typeOnly?: boolean } }).meta?.typeOnly ?? false))
+      .toEqual([true, true, true, true, false, false]);
+  });
 });

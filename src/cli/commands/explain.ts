@@ -6,6 +6,7 @@ interface RawEdge {
   source: string;
   confidence: number;
   partial: number;
+  evidence: string;
 }
 
 interface ProvenanceRow {
@@ -35,8 +36,8 @@ export function explainCommand(args: ExplainCommandArgs): number {
   try {
     const isTestId = args.target.includes(':');
     const edgesStmt = isTestId
-      ? s.value.db.prepare('SELECT test_id, source, confidence, partial FROM edge WHERE test_id = ? ORDER BY source')
-      : s.value.db.prepare('SELECT test_id, source, confidence, partial FROM edge WHERE source = ? ORDER BY test_id');
+      ? s.value.db.prepare('SELECT test_id, source, confidence, partial, evidence FROM edge WHERE test_id = ? ORDER BY source')
+      : s.value.db.prepare('SELECT test_id, source, confidence, partial, evidence FROM edge WHERE source = ? ORDER BY test_id');
     const rows = edgesStmt.all(args.target) as RawEdge[];
 
     if (rows.length === 0) {
@@ -78,6 +79,7 @@ export function explainCommand(args: ExplainCommandArgs): number {
           source: e.source,
           confidence: e.confidence,
           partial: e.partial !== 0,
+          evidenceKinds: evidenceKindsOf(e.evidence),
           evidence: (provByEdge.get(`${e.test_id}|${e.source}`) ?? []).map((p) => {
             const payload = tryParse(p.payload);
             const resolvedBy = resolvedByOf(payload);
@@ -98,8 +100,9 @@ export function explainCommand(args: ExplainCommandArgs): number {
     }
 
     for (const e of rows) {
+      const kinds = evidenceKindsOf(e.evidence);
       args.io.stdout.write(
-        `${e.test_id} <- ${e.source}  confidence=${e.confidence.toFixed(2)}${e.partial !== 0 ? ' (partial)' : ''}\n`,
+        `${e.test_id} <- ${e.source}  confidence=${e.confidence.toFixed(2)}${e.partial !== 0 ? ' (partial)' : ''}${kinds.length > 0 ? ` evidence=${kinds.join(',')}` : ''}\n`,
       );
       const ev = provByEdge.get(`${e.test_id}|${e.source}`) ?? [];
       for (const p of ev) {
@@ -115,6 +118,16 @@ export function explainCommand(args: ExplainCommandArgs): number {
   } finally {
     s.value.close();
   }
+}
+
+function evidenceKindsOf(raw: string): string[] {
+  const parsed = tryParse(raw);
+  if (!Array.isArray(parsed)) return [];
+  return parsed.flatMap((item) => {
+    if (typeof item !== 'object' || item === null) return [];
+    const kind = (item as Record<string, unknown>)['kind'];
+    return typeof kind === 'string' ? [kind] : [];
+  });
 }
 
 function tryParse(s: string): unknown {

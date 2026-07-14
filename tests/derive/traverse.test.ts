@@ -314,6 +314,44 @@ describe('traverseTest', () => {
     expect(adminEdge?.confidence).toBeGreaterThanOrEqual(0.8);
   });
 
+  it('does not traverse through a bridge partner from another framework', () => {
+    const g = adminPageGraph();
+    const files = new Map(g.files);
+    const incompatible = files.get(2);
+    if (!incompatible) throw new Error('fixture');
+    files.set(2, { ...incompatible, framework: 'phpunit', frameworkClass: 'unit' });
+    files.set(3, {
+      id: 3, path: 'assets/admin.js', language: 'js', vendor: false,
+      framework: null, frameworkClass: null,
+    });
+    const enqueue: FactRow = {
+      id: 301, fileId: 2, kind: 'enqueue-script', resolved: true,
+      startLine: 140, endLine: 140, payload: { kind: 'enqueue-script' },
+    };
+    const jsFact: FactRow = {
+      id: 400, fileId: 3, kind: 'symbol-def', resolved: true,
+      startLine: 1, endLine: 1, payload: { kind: 'symbol-def', symbol: 'admin' },
+    };
+    const facts = new Map(g.facts).set(301, enqueue).set(400, jsFact);
+    const factsByFile = new Map(g.factsByFile);
+    factsByFile.set(2, [...(factsByFile.get(2) ?? []), enqueue]);
+    factsByFile.set(3, [jsFact]);
+    const g2: Graph = {
+      ...g, files, facts, factsByFile,
+      anchorLinks: [
+        ...g.anchorLinks,
+        { factId: 301, anchorKey: k('js-module:assets/admin.js'), role: 'target' },
+      ],
+    };
+    const r = traverseTest(g2, buildAnchorIndex(g2), 100, 't1', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+
+    expect(r.edges.some((e) => e.source === 'assets/admin.js')).toBe(false);
+  });
+
   it('reaches imported and hook-listener files', () => {
     const g = tinyGraph();
     const idx = buildAnchorIndex(g);
@@ -434,6 +472,30 @@ describe('traverseTest', () => {
     expect(aEdge?.confidence).toBeCloseTo(0.95);
   });
 
+  it('does not traverse a type-only import edge', () => {
+    const base = tinyGraph();
+    const importFact = base.facts.get(101);
+    const testFact = base.facts.get(100);
+    if (!importFact || !testFact) throw new Error('fixture');
+    const typeOnlyImport: FactRow = {
+      ...importFact,
+      payload: {
+        kind: 'import-edge', specifier: './a', resolved: true,
+        resolvedPath: 'a.php', meta: { typeOnly: true },
+      },
+    };
+    const facts = new Map(base.facts).set(101, typeOnlyImport);
+    const factsByFile = new Map(base.factsByFile).set(1, [testFact, typeOnlyImport]);
+    const g: Graph = { ...base, facts, factsByFile };
+    const r = traverseTest(g, buildAnchorIndex(g), 100, 't1', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+
+    expect(r.edges).toEqual([]);
+  });
+
   it('rest-endpoint resolved flag does not change the REST edge kind', () => {
     // Regression lock for Item 1: flipping a route-param rest-endpoint fact's
     // `resolved` false→true must NOT upgrade the edge. The REST edge kind is
@@ -474,6 +536,7 @@ describe('traverseTest', () => {
     expect(kindsOf(rResolved)).toEqual(kindsOf(rUnresolved));
     // The bridging rest-call-js is resolved → the kind is rest-mediated.
     expect(kindsOf(rResolved)).toContain('rest-mediated');
+    expect(rResolved.edges[0]?.partial).toBe(false);
   });
 
   it('e2e tests still bridge ajax-call-js to ajax-listener (characterization — must not regress)', () => {
@@ -645,6 +708,114 @@ describe('traverseTest — confidence tiering', () => {
     // depth 2. rest-mediated 0.85 * wildcardBroad 0.25 * 0.92**2 (0.8464).
     expect(broadEdge?.confidence).toBeCloseTo(0.17985);
     expect(broadEdge?.confidence).toBeLessThan(0.4);
+    expect(broadEdge?.evidence.some((ev) => ev.kind === 'rest-mediated-broad-fallback-partial')).toBe(true);
+    expect(broadEdge?.partial).toBe(true);
+  });
+
+  it('does not emit a test fixture from another framework as a source', () => {
+    const g = broadWildcardGraph();
+    const files = new Map(g.files);
+    files.set(2, {
+      id: 2,
+      path: 'app.ts',
+      language: 'ts',
+      vendor: false,
+      framework: 'jest',
+      frameworkClass: 'unit',
+    });
+    files.set(3, {
+      id: 3,
+      path: 'tests/RestApiCacheTest.php',
+      language: 'php',
+      vendor: false,
+      framework: 'phpunit',
+      frameworkClass: 'unit',
+    });
+    const g2: Graph = { ...g, files };
+    const r = traverseTest(g2, buildAnchorIndex(g2), 100, 't1', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+
+    expect(r.edges.some((e) => e.source === 'tests/RestApiCacheTest.php')).toBe(false);
+    expect(r.edges.some((e) => e.source === 'app.ts')).toBe(true);
+  });
+
+  it('keeps unresolved broad REST pricing while marking the fallback', () => {
+    const g = broadWildcardGraph();
+    const restCall = g.facts.get(200);
+    if (!restCall) throw new Error('fixture');
+    const facts = new Map(g.facts).set(200, { ...restCall, resolved: false });
+    const factsByFile = new Map(g.factsByFile);
+    factsByFile.set(2, (factsByFile.get(2) ?? []).map((f) => facts.get(f.id) ?? f));
+    const g2: Graph = { ...g, facts, factsByFile };
+
+    const r = traverseTest(g2, buildAnchorIndex(g2), 100, 't1', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    const edge = r.edges.find((e) => e.source === 'broad.php');
+    expect(edge?.evidence.some(
+      (ev) => ev.kind === 'rest-mediated-broad-fallback-unresolved-partial',
+    )).toBe(true);
+    expect(edge?.confidence).toBeCloseTo(0.1058);
+    expect(edge?.partial).toBe(true);
+  });
+
+  it('does not emit an imported test file from another framework as a source', () => {
+    const g = broadWildcardGraph();
+    const files = new Map(g.files);
+    files.set(2, {
+      id: 2,
+      path: 'app.ts',
+      language: 'ts',
+      vendor: false,
+      framework: 'phpunit',
+      frameworkClass: 'unit',
+    });
+    const g2: Graph = { ...g, files };
+    const r = traverseTest(g2, buildAnchorIndex(g2), 100, 't1', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+
+    expect(r.edges.some((e) => e.source === 'app.ts')).toBe(false);
+  });
+
+  it('does not traverse through an imported test file from another framework', () => {
+    const g = broadWildcardGraph();
+    const files = new Map(g.files);
+    const incompatible = files.get(2);
+    if (!incompatible) throw new Error('fixture');
+    files.set(2, { ...incompatible, framework: 'phpunit', frameworkClass: 'unit' });
+    files.set(4, {
+      id: 4, path: 'downstream.ts', language: 'ts', vendor: false,
+      framework: null, frameworkClass: null,
+    });
+    const importDownstream: FactRow = {
+      id: 201, fileId: 2, kind: 'import-edge', resolved: true,
+      startLine: 2, endLine: 2,
+      payload: { kind: 'import-edge', resolvedPath: 'downstream.ts' },
+    };
+    const downstreamFact: FactRow = {
+      id: 400, fileId: 4, kind: 'symbol-def', resolved: true,
+      startLine: 1, endLine: 1, payload: { kind: 'symbol-def', symbol: 'downstream' },
+    };
+    const facts = new Map(g.facts).set(201, importDownstream).set(400, downstreamFact);
+    const factsByFile = new Map(g.factsByFile);
+    factsByFile.set(2, [...(factsByFile.get(2) ?? []), importDownstream]);
+    factsByFile.set(4, [downstreamFact]);
+    const g2: Graph = { ...g, files, facts, factsByFile };
+    const r = traverseTest(g2, buildAnchorIndex(g2), 100, 't1', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+
+    expect(r.edges.some((e) => e.source === 'downstream.ts')).toBe(false);
   });
 
   it('prices an exact REST bridge high', () => {
@@ -665,6 +836,8 @@ describe('traverseTest — confidence tiering', () => {
     // rest-mediated 0.85 * exact 1 * 0.92**2 (0.8464) = 0.71944.
     expect(edge?.confidence).toBeCloseTo(0.71944);
     expect(edge?.confidence).toBeGreaterThan(0.7);
+    expect(edge?.evidence.some((ev) => ev.kind === 'rest-mediated')).toBe(true);
+    expect(edge?.partial).toBe(false);
   });
 
   it('unit tests walk REST edges through an imported apiFetch caller', () => {
@@ -861,6 +1034,8 @@ describe('traverseTest — wildcard bridge', () => {
     const js = r.edges.find((e) => e.source === 'assets/js/admin/inline-edit.js');
     expect(js).toBeDefined();
     expect(js?.evidence.some((ev) => ev.kind === 'enqueue-mediated')).toBe(true);
+    expect(js?.evidence.some((ev) => ev.kind === 'enqueue-mediated-sibling-fallback-partial')).toBe(false);
+    expect(js?.partial).toBe(false);
   });
 
   it('the bridge carries on into the enqueued file’s ajax-mediated edge', () => {
@@ -909,7 +1084,8 @@ describe('traverseTest — wildcard bridge', () => {
     });
     const js = r.edges.find((e) => e.source === 'assets/js/admin/x.js');
     expect(js).toBeDefined();
-    expect(js?.evidence.some((ev) => ev.kind === 'enqueue-mediated')).toBe(true);
+    expect(js?.evidence.some((ev) => ev.kind === 'enqueue-mediated-sibling-fallback-partial')).toBe(true);
+    expect(js?.partial).toBe(true);
   });
 
   it('enqueue-mediated edges attenuate with traversal distance', () => {

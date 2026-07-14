@@ -41,6 +41,7 @@ interface SpecifierRef {
   readonly startLine: number;
   readonly endLine: number;
   readonly pos: number;
+  readonly typeOnly: boolean;
 }
 
 export function extractImports(
@@ -75,6 +76,7 @@ export function extractImports(
     const metaFlags: Record<string, unknown> = {};
     if (builtin) metaFlags['builtin'] = true;
     if (asset) metaFlags['asset'] = true;
+    if (ref.typeOnly) metaFlags['typeOnly'] = true;
     const payload: ImportEdgePayload = {
       kind: 'import-edge',
       specifier: ref.specifier,
@@ -103,33 +105,49 @@ export function extractImports(
 function collectSpecifiers(sf: ts.SourceFile, visit: (r: SpecifierRef) => void): void {
   const walk = (n: ts.Node): void => {
     if (ts.isImportDeclaration(n) && ts.isStringLiteral(n.moduleSpecifier)) {
-      visit(refFor(n.moduleSpecifier, sf));
+      visit(refFor(n.moduleSpecifier, sf, isTypeOnlyImport(n)));
     } else if (ts.isExportDeclaration(n) && n.moduleSpecifier && ts.isStringLiteral(n.moduleSpecifier)) {
-      visit(refFor(n.moduleSpecifier, sf));
+      visit(refFor(n.moduleSpecifier, sf, isTypeOnlyExport(n)));
     } else if (
       ts.isCallExpression(n) &&
       n.expression.kind === ts.SyntaxKind.ImportKeyword
     ) {
       const arg = n.arguments[0];
-      if (arg && ts.isStringLiteral(arg)) visit(refFor(arg, sf));
+      if (arg && ts.isStringLiteral(arg)) visit(refFor(arg, sf, false));
     } else if (
       ts.isCallExpression(n) &&
       ts.isIdentifier(n.expression) &&
       n.expression.text === 'require'
     ) {
       const arg = n.arguments[0];
-      if (arg && ts.isStringLiteral(arg)) visit(refFor(arg, sf));
+      if (arg && ts.isStringLiteral(arg)) visit(refFor(arg, sf, false));
     }
     ts.forEachChild(n, walk);
   };
   walk(sf);
 }
 
-function refFor(node: ts.StringLiteral, sf: ts.SourceFile): SpecifierRef {
+function isTypeOnlyImport(node: ts.ImportDeclaration): boolean {
+  const clause = node.importClause;
+  if (!clause) return false;
+  if (clause.phaseModifier === ts.SyntaxKind.TypeKeyword) return true;
+  if (clause.name || !clause.namedBindings || !ts.isNamedImports(clause.namedBindings)) return false;
+  return clause.namedBindings.elements.length > 0 &&
+    clause.namedBindings.elements.every((element) => element.isTypeOnly);
+}
+
+function isTypeOnlyExport(node: ts.ExportDeclaration): boolean {
+  if (node.isTypeOnly) return true;
+  if (!node.exportClause || !ts.isNamedExports(node.exportClause)) return false;
+  return node.exportClause.elements.length > 0 &&
+    node.exportClause.elements.every((element) => element.isTypeOnly);
+}
+
+function refFor(node: ts.StringLiteral, sf: ts.SourceFile, typeOnly: boolean): SpecifierRef {
   const pos = node.getStart(sf);
   const start = sf.getLineAndCharacterOfPosition(pos).line + 1;
   const end = sf.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
-  return { specifier: node.text, startLine: start, endLine: end, pos };
+  return { specifier: node.text, startLine: start, endLine: end, pos, typeOnly };
 }
 
 function toPosix(p: string): string {

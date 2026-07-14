@@ -10,7 +10,7 @@ import { makeIo } from '../_helpers/makeIo.js';
 describe('explainCommand', () => {
   const getTmp = useTmpDir('ti-explain-');
 
-  function seed(root: string) {
+  function seed(root: string, evidence: unknown = []) {
     const s = openStore(root);
     if (s.kind === 'err') throw new Error(s.error.message);
     const { db, close } = s.value;
@@ -36,7 +36,7 @@ describe('explainCommand', () => {
     });
     insertEdge(db, {
       testId: 'jest:tests/cart.test.ts::adds', source: 'src/cart.ts',
-      confidence: 0.9, partial: false, evidence: [], derivedAt: 't',
+      confidence: 0.9, partial: false, evidence, derivedAt: 't',
       provenance: [sFact],
     });
     close();
@@ -70,6 +70,24 @@ describe('explainCommand', () => {
     expect(code).toBe(0);
     const parsed = JSON.parse(t.out) as { edges: { evidence: { factKind: string }[] }[] };
     expect(parsed.edges[0]?.evidence[0]?.factKind).toBe('symbol-def');
+  });
+
+  it('shows stored fallback evidence kinds', () => {
+    const root = getTmp();
+    seed(root, [{ kind: 'rest-mediated-broad-fallback-partial', factIds: [1] }]);
+
+    const json = makeIo();
+    expect(explainCommand({
+      projectRoot: root, io: json.io, target: 'src/cart.ts', format: 'json',
+    })).toBe(0);
+    const parsed = JSON.parse(json.out) as { edges: { evidenceKinds: string[] }[] };
+    expect(parsed.edges[0]?.evidenceKinds).toEqual(['rest-mediated-broad-fallback-partial']);
+
+    const text = makeIo();
+    expect(explainCommand({
+      projectRoot: root, io: text.io, target: 'src/cart.ts', format: 'args',
+    })).toBe(0);
+    expect(text.out).toContain('evidence=rest-mediated-broad-fallback-partial');
   });
 
   it('shows resolvedBy llm-pass on an LLM-resolved fact', () => {

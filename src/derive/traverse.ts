@@ -1,6 +1,6 @@
-import type { AnchorKey, FactKind } from '../types.js';
+import type { AnchorKey, FactKind, FrameworkName } from '../types.js';
 import type { AnchorRole } from '../facts/types.js';
-import type { Edge, EdgeKind, FactRow, Graph } from './types.js';
+import type { Edge, EdgeKind, FactRow, FileRow, Graph } from './types.js';
 import { wildcardKeyToRegex, wildcardBreadth, type AnchorIndex, type WildcardAnchorEntry } from './anchor-index.js';
 import { combineConfidence, evidenceConfidence, type MatchPrecision } from './confidence.js';
 
@@ -37,6 +37,7 @@ interface QueueItem {
   readonly arrivalPrecision: keyof MatchPrecision;
   // True iff `arrivalKind` is a bridge kind (distance decay applies).
   readonly arrivalIsBridge: boolean;
+  readonly enqueueSiblingFallback?: boolean;
 }
 
 /** A partner fact found by the anchor join, tagged with how precise the match was. */
@@ -73,6 +74,7 @@ export function traverseTest(
 
   const testFact = graph.facts.get(testFactId);
   if (!testFact) return { edges: [], bounded: false };
+  const testFramework = graph.files.get(testFact.fileId)?.framework ?? null;
 
   // Seed: every fact in the test's file at depth 0. Test-file facts never
   // contribute edges (the test file is not a "source"). Mark them
@@ -101,12 +103,12 @@ export function traverseTest(
 
     const file = graph.files.get(cur.fact.fileId);
 
-    // Record an edge if this fact lives in a non-test, non-vendor file AND
-    // we reached it via some traversal kind (not the seed depth-0 facts).
+    // Record an edge if this fact lives in a framework-compatible, non-vendor
+    // file AND we reached it via some traversal kind (not the seed facts).
     if (
       file &&
       file.id !== testFact.fileId &&
-      !file.vendor &&
+      isSourceForFramework(file, testFramework) &&
       cur.arrivalKind !== null &&
       cur.arrivalFactId !== null
     ) {
@@ -124,7 +126,10 @@ export function traverseTest(
     }
 
     // Walk outward through this fact's relations.
-    enqueueDownstream(graph, index, cur.fact, cur.depth, queue, enqueued, options, evidence, testFact.fileId);
+    enqueueDownstream(
+      graph, index, cur.fact, cur.depth, queue, enqueued, options, evidence,
+      testFact.fileId, testFramework, cur.enqueueSiblingFallback === true,
+    );
   }
 
   const edges: Edge[] = [];
@@ -161,13 +166,17 @@ function enqueueDownstream(
   options: TraversalOptions,
   evidence: Map<number, EvidenceAgg>,
   testFileId: number,
+  testFramework: FrameworkName | null,
+  enqueueSiblingFallback: boolean,
 ): void {
   // 1. import-edge / php-include: resolve directly to target file.
   if (fact.kind === 'import-edge') {
+    const meta = fact.payload['meta'] as { readonly typeOnly?: unknown } | undefined;
+    if (meta?.typeOnly === true) return;
     const resolvedPath = (fact.payload as { resolvedPath?: unknown }).resolvedPath;
     if (typeof resolvedPath === 'string') {
       const target = index.filesByPath.get(resolvedPath);
-      if (target) {
+      if (target && isFrameworkCompatible(target, testFramework)) {
         const kind: EdgeKind = 'js-import';
         for (const f of graph.factsByFile.get(target.id) ?? []) {
           if (enqueued.has(f.id)) continue;
@@ -185,7 +194,7 @@ function enqueueDownstream(
     const target = (fact.payload as { target?: unknown }).target;
     if (typeof target === 'string') {
       const file = index.filesByPath.get(target);
-      if (file) {
+      if (file && isFrameworkCompatible(file, testFramework)) {
         const kind: EdgeKind = 'php-include';
         for (const f of graph.factsByFile.get(file.id) ?? []) {
           if (enqueued.has(f.id)) continue;
@@ -209,8 +218,10 @@ function enqueueDownstream(
       if (link.role !== 'target' || !link.anchorKey.startsWith('js-module:')) continue;
       const modPath = link.anchorKey.slice('js-module:'.length);
       const target = index.filesByPath.get(modPath);
-      if (!target) continue;
-      const kind: EdgeKind = 'enqueue-mediated';
+      if (!target || !isFrameworkCompatible(target, testFramework)) continue;
+      const kind: EdgeKind = enqueueSiblingFallback
+        ? 'enqueue-mediated-sibling-fallback-partial'
+        : 'enqueue-mediated';
       for (const f of graph.factsByFile.get(target.id) ?? []) {
         if (enqueued.has(f.id)) continue;
         enqueued.add(f.id);
@@ -238,14 +249,20 @@ function enqueueDownstream(
       const partnerDepth = depth + 1;
       // Attenuate: precision tier from the match, distance from BFS depth,
       // and LLM_RESOLUTION when the initiating fact is llm-pass sourced.
-      const c = evidenceConfidence(bridgeKind, partner.precision, partnerDepth, true, llmSourced);
+      const evidenceKind = broadFallbackKind(bridgeKind, partner.precision);
+      const c = evidenceConfidence(evidenceKind, partner.precision, partnerDepth, true, llmSourced);
       // Record bridge evidence for the partner's file even when the partner is
       // already enqueued via another path. Without this, evidence kinds emitted
       // via the bridge (hook-mediated, shortcode-render, …) are lost whenever a
       // shorter-arrival kind (e.g. php-include) reaches the partner first.
       const partnerFile = graph.files.get(partner.fact.fileId);
-      if (partnerFile && partnerFile.id !== testFileId && !partnerFile.vendor) {
-        recordEvidence(evidence, partnerFile.id, bridgeKind, fact.id, partner.fact.id, c);
+      if (partnerFile && !isFrameworkCompatible(partnerFile, testFramework)) continue;
+      if (
+        partnerFile &&
+        partnerFile.id !== testFileId &&
+        isSourceForFramework(partnerFile, testFramework)
+      ) {
+        recordEvidence(evidence, partnerFile.id, evidenceKind, fact.id, partner.fact.id, c);
       }
       // Expose the partner file's enqueue-script siblings (program Phase 3):
       // WP enqueues sit inside hook callbacks, so a PHP file reached via a hook
@@ -261,13 +278,21 @@ function enqueueDownstream(
       queue.push({
         fact: partner.fact,
         depth: partnerDepth,
-        arrivalKind: bridgeKind,
+        arrivalKind: evidenceKind,
         arrivalFactId: fact.id,
         arrivalPrecision: partner.precision,
         arrivalIsBridge: true,
       });
     }
   }
+}
+
+function isSourceForFramework(file: FileRow, testFramework: FrameworkName | null): boolean {
+  return !file.vendor && isFrameworkCompatible(file, testFramework);
+}
+
+function isFrameworkCompatible(file: FileRow, testFramework: FrameworkName | null): boolean {
+  return file.framework === null || file.framework === testFramework;
 }
 
 /**
@@ -293,6 +318,7 @@ function enqueueEnqueueSiblings(
     queue.push({
       fact: f, depth, arrivalKind: null, arrivalFactId: null,
       arrivalPrecision: 'exact', arrivalIsBridge: false,
+      enqueueSiblingFallback: true,
     });
   }
 }
@@ -324,6 +350,18 @@ function enqueueAdminPageCallbackSiblings(
       arrivalPrecision: 'exact', arrivalIsBridge: false,
     });
   }
+}
+
+function broadFallbackKind(
+  kind: EdgeKind,
+  precision: keyof MatchPrecision,
+): EdgeKind {
+  if (precision !== 'wildcardBroad') return kind;
+  if (kind === 'rest-mediated') return 'rest-mediated-broad-fallback-partial';
+  if (kind === 'rest-mediated-partial') {
+    return 'rest-mediated-broad-fallback-unresolved-partial';
+  }
+  return kind;
 }
 
 // True when the fact's payload carries `meta.resolvedBy === 'llm-pass'` — the
