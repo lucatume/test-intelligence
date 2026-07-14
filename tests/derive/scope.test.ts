@@ -130,4 +130,17 @@ describe('computeDeriveScope', () => {
     expect(s.kind).toBe('full');
     close();
   });
+
+  it('handles unknown file ids and recreates its TEMP tables on repeated calls', () => {
+    const { db, close, fA } = buildStore(getTmp());
+    snapshotFactAnchors(db);
+
+    expect(computeDeriveScope(db, new Set([999_999]))).toEqual({
+      kind: 'scoped', testIds: new Set(),
+    });
+    expect(computeDeriveScope(db, new Set([fA]))).toEqual({
+      kind: 'scoped', testIds: new Set(['ti_deletemeelephant_t1']),
+    });
+    close();
+  });
 });
