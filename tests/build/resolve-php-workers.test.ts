@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolvePhpWorkers } from '../../src/build/run.js';
+import { resolveDeriveWorkers, resolvePhpWorkers } from '../../src/build/run.js';
 
 describe('resolvePhpWorkers', () => {
   it('defaults to cpus-2 clamped to [1,8]', () => {
@@ -27,5 +27,19 @@ describe('resolvePhpWorkers', () => {
 
   it('does not scale down on a full build (no count)', () => {
     expect(resolvePhpWorkers({ configured: undefined, cpuCount: 16, phpFileCount: undefined })).toBe(8);
+  });
+});
+
+describe('resolveDeriveWorkers', () => {
+  it('defaults to cpus-2 capped at 2', () => {
+    expect(resolveDeriveWorkers({ configured: undefined, cpuCount: 2 })).toBe(0);
+    expect(resolveDeriveWorkers({ configured: undefined, cpuCount: 4 })).toBe(2);
+    expect(resolveDeriveWorkers({ configured: undefined, cpuCount: 64 })).toBe(2);
+  });
+
+  it('honors explicit values without the automatic cap', () => {
+    expect(resolveDeriveWorkers({ configured: 0, cpuCount: 64 })).toBe(0);
+    expect(resolveDeriveWorkers({ configured: 2, cpuCount: 64 })).toBe(2);
+    expect(resolveDeriveWorkers({ configured: 8, cpuCount: 64 })).toBe(8);
   });
 });

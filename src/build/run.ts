@@ -388,6 +388,10 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
           try { db.exec('ROLLBACK'); } catch { /* nothing to roll back */ }
         }
       }
+      if (worker !== undefined) {
+        await worker.shutdown();
+        worker = undefined;
+      }
       const extractPhaseMs = opts.clock.nowMillis() - extractPhaseStart;
 
       // Cross-file pass: fill rest-endpoint facts whose namespace is an
@@ -462,7 +466,10 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
           hookStopList: stopList,
           maxWildcardMatchesPerAnchor: opts.config.traversal.maxWildcardMatchesPerAnchor,
         },
-        workers: resolveDeriveWorkers(opts.config.concurrency.deriveWorkers),
+        workers: resolveDeriveWorkers({
+          configured: opts.config.concurrency.deriveWorkers,
+          cpuCount: cpus().length,
+        }),
       });
       const derivePhaseMs = opts.clock.nowMillis() - derivePhaseStart;
 
@@ -600,14 +607,17 @@ export function resolvePhpWorkers(opts: {
 }
 
 // Resolve the derive worker_threads pool size. Default: cpus-2 clamped to
-// [0,8]. 0 disables workers and runs traversal in-process — that is the right
+// [0,2]. 0 disables workers and runs traversal in-process — that is the right
 // default for tiny projects where worker startup + structured-clone of the
 // graph dominates BFS time.
-function resolveDeriveWorkers(configured: number | undefined): number {
-  if (configured === undefined) {
-    return Math.min(Math.max(cpus().length - 2, 0), 8);
+export function resolveDeriveWorkers(opts: {
+  configured: number | undefined;
+  cpuCount: number;
+}): number {
+  if (opts.configured === undefined) {
+    return Math.min(Math.max(opts.cpuCount - 2, 0), 2);
   }
-  return Math.max(configured, 0);
+  return Math.max(opts.configured, 0);
 }
 
 function resolveRepoRoot(): string {
