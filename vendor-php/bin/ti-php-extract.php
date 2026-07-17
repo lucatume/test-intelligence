@@ -365,11 +365,12 @@ final class Visitor extends NodeVisitorAbstract
                 $def['payload']['meta'] = ['props' => $props];
             }
             $this->facts[] = $def;
+            $this->emitCoversUses($node, $node->getDocComment()?->getText() ?? '');
             return;
         }
         if ($node instanceof Node\Stmt\Function_) {
             $name = $this->namespace ? $this->namespace . '\\' . $node->name->name : $node->name->name;
-            $this->facts[] = $this->factSymbolDef($node, $name, true);
+            $this->facts[] = $this->factSymbolDef($node, $name, true, true);
             $scopeKey = $node->name->name . '@' . ($node->getStartLine() ?: 0);
             $this->scopeStack[] = $scopeKey;
             // If the prePass indexed this function as a called wrapper, suppress
@@ -382,10 +383,12 @@ final class Visitor extends NodeVisitorAbstract
         if ($node instanceof Node\Stmt\ClassMethod && !empty($this->classStack)) {
             $class = end($this->classStack);
             $fqn = $class . '::' . $node->name->name;
-            $this->facts[] = $this->factSymbolDef($node, $fqn, false);
+            $this->facts[] = $this->factSymbolDef($node, $fqn, false, true);
             if ($this->classIsPhpUnit && $this->isPhpUnitTestMethod($node)) {
                 $this->facts[] = $this->factTestDef($node, $class, $node->name->name);
+                $this->emitDataProviderUses($node, $class);
             }
+            $this->emitCoversUses($node, $node->getDocComment()?->getText() ?? '');
             $scopeKey = $node->name->name . '@' . ($node->getStartLine() ?: 0);
             $this->scopeStack[] = $scopeKey;
             // If the prePass indexed this class method as a wrapper, suppress
@@ -546,6 +549,9 @@ final class Visitor extends NodeVisitorAbstract
                 $lookupClass = $isThis ? end($this->classStack) : null;
                 $callKind = $isThis ? 'method-this' : 'method-instance';
                 $this->trySynthesizeMethodWrapper($name, $node->args, $node, $lookupClass, $callKind, $inWrapperBody);
+                if ($this->classIsPhpUnit && $isThis && is_string($lookupClass)) {
+                    $this->emitMethodUse($node, $lookupClass . '::' . $name);
+                }
             }
             return;
         }
@@ -571,12 +577,16 @@ final class Visitor extends NodeVisitorAbstract
                     if (isset($this->wrapperScopes[$frame])) { $inWrapperBody = true; break; }
                 }
                 $this->trySynthesizeMethodWrapper($name, $node->args, $node, $lookupClass, 'static-method', $inWrapperBody);
+                if ($this->classIsPhpUnit && is_string($lookupClass)) {
+                    $this->emitMethodUse($node, $lookupClass . '::' . $name);
+                }
             }
             return;
         }
         if ($node instanceof Node\Expr\New_) {
             if ($node->class instanceof Node\Name) {
                 $this->emitClassUse($node, $node->class);
+                $this->tryEmitDeclarative('new-expression', $node, $node->class->getLast(), null);
             }
             return;
         }
@@ -605,7 +615,7 @@ final class Visitor extends NodeVisitorAbstract
     public function leaveNode(Node $node): void
     {
         if ($node instanceof Node\Stmt\Namespace_) $this->namespace = null;
-        if ($node instanceof Node\Stmt\ClassLike) {
+        if ($node instanceof Node\Stmt\ClassLike && $node->name !== null) {
             array_pop($this->classStack);
             $this->classIsPhpUnit = false;
         }
@@ -727,7 +737,7 @@ final class Visitor extends NodeVisitorAbstract
     }
 
     /** @return array<string, mixed> */
-    private function factSymbolDef(Node $n, string $name, bool $exported): array
+    private function factSymbolDef(Node $n, string $name, bool $exported, bool $callable = false): array
     {
         // role: 'target' — definitions are the destination of references.
         // symbol-use facts at role 'subject' bridge here via the anchor index.
@@ -736,8 +746,56 @@ final class Visitor extends NodeVisitorAbstract
             'resolved' => true,
             'location' => $this->loc($n),
             'anchors' => [['key' => 'php-symbol:' . $name, 'role' => 'target']],
-            'payload' => ['kind' => 'symbol-def', 'name' => $name, 'exported' => $exported],
+            'payload' => array_filter([
+                'kind' => 'symbol-def',
+                'name' => $name,
+                'exported' => $exported,
+                'meta' => $callable ? ['callable' => true] : null,
+            ], static fn($value) => $value !== null),
         ];
+    }
+
+    private function emitMethodUse(Node $node, string $name, ?array $meta = null): void
+    {
+        $payload = ['kind' => 'symbol-use', 'name' => $name];
+        if ($meta !== null) $payload['meta'] = $meta;
+        $this->facts[] = [
+            'kind' => 'symbol-use',
+            'resolved' => true,
+            'location' => $this->loc($node),
+            'anchors' => [['key' => 'php-symbol:' . $name, 'role' => 'subject']],
+            'payload' => $payload,
+        ];
+    }
+
+    private function emitDataProviderUses(Node\Stmt\ClassMethod $method, string $class): void
+    {
+        $doc = $method->getDocComment()?->getText() ?? '';
+        if (preg_match_all('/@dataProvider\s+([^\s*]+)/', $doc, $matches)) {
+            foreach ($matches[1] as $provider) {
+                $this->emitMethodUse($method, $class . '::' . rtrim((string)$provider, '()'), ['provider' => true]);
+            }
+        }
+        foreach ($method->attrGroups as $group) {
+            foreach ($group->attrs as $attr) {
+                $short = $attr->name->getLast();
+                if ($short === 'DataProvider') {
+                    $arg = $attr->args[0]->value ?? null;
+                    if ($arg instanceof Node\Scalar\String_) {
+                        $this->emitMethodUse($method, $class . '::' . $arg->value, ['provider' => true]);
+                    }
+                } elseif ($short === 'DataProviderExternal') {
+                    $classArg = $attr->args[0]->value ?? null;
+                    $methodArg = $attr->args[1]->value ?? null;
+                    if ($classArg instanceof Node\Expr\ClassConstFetch
+                        && $classArg->class instanceof Node\Name
+                        && $methodArg instanceof Node\Scalar\String_) {
+                        $providerClass = $this->resolveClassName($classArg->class);
+                        $this->emitMethodUse($method, $providerClass . '::' . $methodArg->value, ['provider' => true]);
+                    }
+                }
+            }
+        }
     }
 
     /** @return array<string, mixed> */
@@ -750,6 +808,50 @@ final class Visitor extends NodeVisitorAbstract
             'location' => $this->loc($n),
             'anchors' => [['key' => 'test:' . $id, 'role' => 'subject']],
             'payload' => ['kind' => 'test-def', 'framework' => 'phpunit', 'testId' => $id, 'title' => $class . '::' . $method],
+        ];
+    }
+
+    private function emitCoversUses(Node $node, string $doc): void
+    {
+        if ($doc === '' || !preg_match_all('/@covers\s+([^\s*]+)/', $doc, $matches)) return;
+        foreach ($matches[1] as $raw) {
+            $raw = rtrim((string)$raw, '()');
+            if ($raw === '') continue;
+            if (str_starts_with($raw, '::')) {
+                $name = $this->resolveName(substr($raw, 2));
+            } elseif (str_contains($raw, '::')) {
+                [$class, $method] = explode('::', $raw, 2);
+                $name = $this->resolveClassName(new Node\Name($class)) . '::' . rtrim($method, '()');
+            } else {
+                $name = $this->resolveClassName(new Node\Name($raw));
+            }
+            $this->facts[] = [
+                'kind' => 'symbol-use',
+                'resolved' => true,
+                'location' => $this->loc($node),
+                'anchors' => [['key' => 'php-symbol:' . $name, 'role' => 'subject']],
+                'payload' => ['kind' => 'symbol-use', 'name' => $name, 'meta' => ['covers' => true]],
+            ];
+        }
+    }
+
+    private function emitPhpBinaryScript(Node $node): void
+    {
+        $args = $this->extractArgs($node);
+        $command = $args[0] ?? null;
+        if (!$command instanceof Node\Expr\Array_ || count($command->items) < 2) return;
+        $binary = $command->items[0]?->value;
+        if (!$binary instanceof Node\Expr\ConstFetch || strtoupper($binary->name->toString()) !== 'PHP_BINARY') return;
+        $raw = $this->readStringSkeleton($command->items[1]?->value);
+        if ($raw === null || $raw === '' || str_contains($raw, '{*}')) return;
+        $target = $this->normalizeIncludePath($raw);
+        if ($target === '' || !str_ends_with(strtolower($target), '.php')) return;
+        $this->facts[] = [
+            'kind' => 'php-include',
+            'resolved' => true,
+            'location' => $this->loc($node),
+            'anchors' => [['key' => 'php-file:' . $target, 'role' => 'target']],
+            'payload' => ['kind' => 'php-include', 'target' => $target],
         ];
     }
 
@@ -882,6 +984,23 @@ final class Visitor extends NodeVisitorAbstract
                 $this->emitLocalizeFact($n, $payload);
                 return;
             }
+            if (($p['transform'] ?? null) === 'wp-ajax-callback') {
+                $action = $payload['action'] ?? null;
+                if (!is_string($action) || $action === '' || str_contains($action, '{*}')) return;
+                $symbol = 'wp_ajax_' . str_replace('-', '_', $action);
+                $this->facts[] = [
+                    'kind' => 'symbol-use',
+                    'resolved' => true,
+                    'location' => $this->loc($n),
+                    'anchors' => [['key' => 'php-symbol:' . $symbol, 'role' => 'subject']],
+                    'payload' => ['kind' => 'symbol-use', 'name' => $symbol],
+                ];
+                return;
+            }
+            if (($p['transform'] ?? null) === 'php-binary-script') {
+                $this->emitPhpBinaryScript($n);
+                return;
+            }
             // Fan-out (PHP dynamic-registration unrolling): inside an
             // enclosing foreach loop or in_array(...) membership guard that
             // enumerates an array literal, a string-typed bound field whose
@@ -932,6 +1051,12 @@ final class Visitor extends NodeVisitorAbstract
                 $key = $this->renderAnchorKey($anchorRule['template'] ?? '', $payload);
                 if ($key !== null) $anchors[] = ['key' => $key, 'role' => $anchorRule['role'] ?? 'subject'];
                 else $resolved = false;
+            }
+            if (($p['emit'] ?? null) === 'php-include') {
+                $scope = $this->currentScope();
+                if ($scope !== '(file)') {
+                    $anchors[] = ['key' => 'php-symbol:' . $scope, 'role' => 'target'];
+                }
             }
             // Phase 0: stamp the partial-fact resolution context onto an
             // unresolved fact. Additive metadata only.
@@ -1513,7 +1638,7 @@ final class Visitor extends NodeVisitorAbstract
     /** @return array<int, Node> */
     private function extractArgs(Node $n): array
     {
-        if ($n instanceof Node\Expr\FuncCall || $n instanceof Node\Expr\MethodCall || $n instanceof Node\Expr\StaticCall) {
+        if ($n instanceof Node\Expr\FuncCall || $n instanceof Node\Expr\MethodCall || $n instanceof Node\Expr\StaticCall || $n instanceof Node\Expr\New_) {
             $out = [];
             foreach ($n->args as $a) {
                 if ($a instanceof Node\Arg) $out[] = $a->value;
@@ -1566,6 +1691,17 @@ final class Visitor extends NodeVisitorAbstract
         }
         if ($node instanceof Node\Scalar\MagicConst\File) {
             return $this->relFile;
+        }
+        if ($node instanceof Node\Expr\FuncCall
+            && $node->name instanceof Node\Name
+            && strtolower($node->name->toString()) === 'dirname') {
+            $base = $this->readStringSkeleton($node->args[0]->value ?? null);
+            if ($base === null || str_contains($base, '{*}')) return null;
+            $levelsNode = $node->args[1]->value ?? null;
+            $levels = $levelsNode instanceof Node\Scalar\LNumber ? $levelsNode->value : 1;
+            if ($levels < 1) return null;
+            while ($levels-- > 0) $base = dirname($base);
+            return $base === '.' ? '' : $base;
         }
         if ($node instanceof Node\Scalar\MagicConst\Function_) {
             // PHP `__FUNCTION__` is the enclosing function/method name (empty
@@ -1982,7 +2118,7 @@ final class Visitor extends NodeVisitorAbstract
             public function leaveNode(Node $node): void
             {
                 if ($node instanceof Node\Stmt\Namespace_) $this->ns = null;
-                if ($node instanceof Node\Stmt\ClassLike) array_pop($this->stack);
+                if ($node instanceof Node\Stmt\ClassLike && $node->name !== null) array_pop($this->stack);
                 if ($node instanceof Node\Stmt\ClassMethod || $node instanceof Node\Stmt\Function_) {
                     $this->inMethod = false;
                     $this->nesting = 0;

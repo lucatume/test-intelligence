@@ -28,6 +28,11 @@ describe('parseTestId — well-formed ids', () => {
       expect(r.value.filter).toBeUndefined();
     }
   });
+
+  it('parses qunit ids', () => {
+    const r = parseTestId('qunit:tests/Shop/CartTest.php::module > test', tmpRoot);
+    expect(r).toMatchObject({ kind: 'ok', value: { framework: 'qunit' } });
+  });
 });
 
 describe('parseTestId — malformed', () => {

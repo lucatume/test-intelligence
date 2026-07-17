@@ -15,6 +15,7 @@ describe('parseConfig — empty object', () => {
       '**/*.test.{ts,tsx,js,jsx}',
       '**/*.spec.{ts,tsx,js,jsx}',
     ]);
+    expect(c.tests.qunit.fileGlobs).toEqual([]);
     expect(c.hooks.stopList.add).toEqual([]);
     expect(c.hooks.stopList.remove).toEqual([]);
     expect(c.extractors).toEqual([]);
@@ -118,6 +119,12 @@ describe('parseConfig — wpPatternWrappers', () => {
 });
 
 describe('parseConfig — overrides', () => {
+  it('honours QUnit file globs', () => {
+    const r = parseConfig({ tests: { qunit: { fileGlobs: ['tests/qunit/**/*.js'] } } });
+    expect(r.kind).toBe('ok');
+    if (r.kind === 'ok') expect(r.value.tests.qunit.fileGlobs).toEqual(['tests/qunit/**/*.js']);
+  });
+
   it('honours tests.classes path globs', () => {
     const r = parseConfig({
       tests: {
@@ -138,6 +145,19 @@ describe('parseConfig — overrides', () => {
     if (r.kind !== 'ok') return;
     expect(r.value.hooks.stopList.add).toEqual(['custom']);
     expect(r.value.hooks.stopList.remove).toEqual(['template_redirect']);
+  });
+
+  it('strictly parses declarative extractors', () => {
+    const pattern = {
+      match: { lang: 'php', nodeKind: 'function-call', name: 'load_it' },
+      bind: { target: { arg: 0, type: 'path-literal' } },
+      emit: 'php-include',
+      anchor: { template: 'php-file:src/{target}', role: 'target' },
+    } as const;
+    const valid = parseConfig({ extractors: [pattern] });
+    expect(valid.kind).toBe('ok');
+    if (valid.kind === 'ok') expect(valid.value.extractors).toEqual([pattern]);
+    expect(parseConfig({ extractors: [{ ...pattern, nope: true }] }).kind).toBe('err');
   });
 
   it('rejects confidence threshold outside [0, 1]', () => {

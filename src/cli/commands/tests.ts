@@ -9,7 +9,7 @@ import { systemClock } from '../../clock.js';
 import type { TimingFlags } from '../parseArgv.js';
 import { loadEffectiveConfig } from './loadConfig.js';
 
-const FRAMEWORKS: ReadonlySet<string> = new Set(['phpunit', 'jest', 'playwright']);
+const FRAMEWORKS: ReadonlySet<string> = new Set(['phpunit', 'jest', 'playwright', 'qunit']);
 
 export interface TestsCommandArgs {
   readonly projectRoot: string;
@@ -24,7 +24,7 @@ export interface TestsCommandArgs {
 
 export async function testsCommand(args: TestsCommandArgs): Promise<number> {
   if (args.framework === null || !FRAMEWORKS.has(args.framework)) {
-    args.io.stderr.write('ti: --framework=<phpunit|jest|playwright> is required for `ti tests`\n');
+    args.io.stderr.write('ti: --framework=<phpunit|jest|playwright|qunit> is required for `ti tests`\n');
     return 1;
   }
   let inputs = args.sources;

@@ -57,6 +57,18 @@ describe('classifyFile', () => {
     expect(c?.framework).toBe('playwright');
     expect(c?.frameworkClass).toBe('e2e');
   });
+  it('classifies QUnit after Playwright and before Jest', () => {
+    const parsed = parseConfig({
+      tests: {
+        playwright: { fileGlobs: ['tests/qunit/e2e.js'] },
+        qunit: { fileGlobs: ['tests/qunit/**/*.js'] },
+        jest: { fileGlobs: ['tests/**/*.js'] },
+      },
+    });
+    if (parsed.kind === 'err') throw new Error('config must parse');
+    expect(classifyFile('tests/qunit/wp-admin/js/x.js', parsed.value)?.framework).toBe('qunit');
+    expect(classifyFile('tests/qunit/e2e.js', parsed.value)?.framework).toBe('playwright');
+  });
   it('PHPUnit by path heuristic', () => {
     const c = classifyFile('tests/CartTest.php', cfg);
     expect(c?.framework).toBe('phpunit');

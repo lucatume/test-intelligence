@@ -64,7 +64,7 @@ const importEdgePayload = P.object(
   { strict: true },
 );
 const testDefPayload = P.object(
-  { kind: P.literal('test-def'), framework: P.enumOf(['phpunit', 'jest', 'playwright'] as const), testId: P.string, title: P.optional(P.string), meta: P.optional(P.record(P.unknown)) },
+  { kind: P.literal('test-def'), framework: P.enumOf(['phpunit', 'jest', 'playwright', 'qunit'] as const), testId: P.string, title: P.optional(P.string), meta: P.optional(P.record(P.unknown)) },
   { strict: true },
 );
 const parseErrorPayload = P.object(

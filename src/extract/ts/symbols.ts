@@ -1,7 +1,7 @@
 import { relative, sep } from 'node:path';
 import ts from 'typescript';
 import type { Fact, FactLocation, SymbolDefPayload, SymbolUsePayload } from '../../facts/types.js';
-import type { AnchorKey } from '../../types.js';
+import type { AnchorKey, FrameworkName } from '../../types.js';
 
 interface SymbolEntry {
   readonly name: string;
@@ -87,6 +87,119 @@ export function extractSymbols(sf: ts.SourceFile, relPath: string): Fact[] {
     });
   }
   return facts;
+}
+
+export function extractWpGlobalSymbols(
+  sf: ts.SourceFile,
+  relPath: string,
+  framework?: FrameworkName | null,
+): Fact[] {
+  const emitted = new Map<string, Fact>();
+  const directNamespaces = new Set<string>();
+  const localMembers = new Map<string, Set<string>>();
+  const collectNamespaces = (node: ts.Node): void => {
+    if (ts.isPropertyAccessExpression(node)) {
+      const chain = wpChain(node);
+      const parentExtendsChain = ts.isPropertyAccessExpression(node.parent) && node.parent.expression === node;
+      const assigned = ts.isBinaryExpression(node.parent) && node.parent.left === node
+        && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+      if (chain?.length === 2 && !parentExtendsChain && !assigned) directNamespaces.add(chain.join('.'));
+    }
+    ts.forEachChild(node, collectNamespaces);
+  };
+  collectNamespaces(sf);
+  const collectLocalMembers = (node: ts.Node): void => {
+    if (
+      ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      && ts.isPropertyAccessExpression(node.left)
+    ) {
+      const chain = localChain(node.left);
+      if (chain !== null && chain.length > 1 && chain[0] !== 'wp' && chain[0] !== 'window') {
+        const bucket = localMembers.get(chain[0] ?? '') ?? new Set<string>();
+        bucket.add(chain.slice(1).join('.'));
+        localMembers.set(chain[0] ?? '', bucket);
+      }
+    }
+    ts.forEachChild(node, collectLocalMembers);
+  };
+  collectLocalMembers(sf);
+  const emit = (kind: 'symbol-def' | 'symbol-use', name: string, node: ts.Node): void => {
+    const role = kind === 'symbol-def' ? 'target' : 'subject';
+    const key = `${kind}:${name}`;
+    if (emitted.has(key)) return;
+    const startLine = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
+    const endLine = sf.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
+    emitted.set(key, {
+      kind,
+      resolved: true,
+      location: { file: relPath as FactLocation['file'], startLine, endLine },
+      anchors: [{ key: `js-global:${name}` as AnchorKey, role }],
+      payload: kind === 'symbol-def'
+        ? { kind, name, exported: true }
+        : { kind, name },
+    });
+  };
+
+  const walk = (node: ts.Node, functionDepth = 0): void => {
+    const nextDepth = functionDepth + (ts.isFunctionLike(node) ? 1 : 0);
+    if (ts.isPropertyAccessExpression(node)) {
+      const chain = wpChain(node);
+      const parentExtendsChain = ts.isPropertyAccessExpression(node.parent) && node.parent.expression === node;
+      if (chain !== null && !parentExtendsChain) {
+        const assigned = ts.isBinaryExpression(node.parent)
+          && node.parent.left === node
+          && node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+        const prefixes = chain.slice(1).map((_, i) => chain.slice(0, i + 2).join('.'));
+        if (assigned && framework !== 'qunit' && functionDepth <= 1) {
+          for (const name of prefixes) emit('symbol-def', name, node);
+          const assignment = node.parent;
+          const root = chain.join('.');
+          if (ts.isObjectLiteralExpression(assignment.right)) {
+            for (const property of assignment.right.properties) {
+              if (property.name && (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name))) {
+                emit('symbol-def', `${root}.${property.name.text}`, property);
+              }
+            }
+          } else if (ts.isIdentifier(assignment.right)) {
+            for (const member of localMembers.get(assignment.right.text) ?? []) {
+              emit('symbol-def', `${root}.${member}`, node);
+            }
+          }
+        } else if (!assigned && (framework === undefined || framework === 'qunit')) {
+          const root = chain.slice(0, 2).join('.');
+          for (const name of prefixes.slice(Math.max(0, prefixes.length - 2))) {
+            if (name !== root || chain.length === 2 || directNamespaces.has(root)) emit('symbol-use', name, node);
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, (child) => { walk(child, nextDepth); });
+  };
+  walk(sf);
+  return [...emitted.values()];
+}
+
+function localChain(node: ts.PropertyAccessExpression): readonly string[] | null {
+  const parts: string[] = [];
+  let current: ts.Expression = node;
+  while (ts.isPropertyAccessExpression(current)) {
+    parts.unshift(current.name.text);
+    current = current.expression;
+  }
+  if (!ts.isIdentifier(current)) return null;
+  return [current.text, ...parts];
+}
+
+function wpChain(node: ts.PropertyAccessExpression): readonly string[] | null {
+  const parts: string[] = [];
+  let current: ts.Expression = node;
+  while (ts.isPropertyAccessExpression(current)) {
+    parts.unshift(current.name.text);
+    current = current.expression;
+  }
+  if (ts.isIdentifier(current) && current.text === 'wp') return ['wp', ...parts];
+  if (ts.isIdentifier(current) && current.text === 'window' && parts[0] === 'wp') return parts;
+  return null;
 }
 
 interface ResolvedImport {

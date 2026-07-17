@@ -166,7 +166,7 @@ export interface BlockRenderPayload {
 
 export interface TestDefPayload {
   readonly kind: 'test-def';
-  readonly framework: 'phpunit' | 'jest' | 'playwright';
+  readonly framework: 'phpunit' | 'jest' | 'playwright' | 'qunit';
   readonly testId: string;
   readonly title?: string;
   readonly meta?: Readonly<Record<string, unknown>>;

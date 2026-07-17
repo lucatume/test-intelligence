@@ -62,4 +62,22 @@ describe('extractTsFile', () => {
     });
     expect(facts.some((f) => f.kind === 'test-def')).toBe(true);
   });
+
+  it('marks resolved jest.mock module facts', async () => {
+    const root = getTmp();
+    write(root, 'src/cart.ts', 'export const cart = true;\n');
+    write(root, 'tests/cart.test.ts', "jest.mock('../src/cart');\n");
+    const facts = await extractTsFile({
+      projectRoot: root,
+      relPath: 'tests/cart.test.ts',
+      language: 'ts',
+      framework: 'jest',
+      compilerOptions: synthesizeCompilerOptions(root),
+      patterns: [],
+    });
+    const mocked = facts.find((f) =>
+      f.kind === 'import-edge' && ((f.payload as { meta?: { mocked?: boolean } }).meta?.mocked ?? false),
+    );
+    expect((mocked?.payload as { resolvedPath?: string } | undefined)?.resolvedPath).toBe('src/cart.ts');
+  });
 });

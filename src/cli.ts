@@ -44,6 +44,16 @@ export async function run(argv: readonly string[], io: Io): Promise<number> {
         strict: cmd.strict,
         timing: cmd.timing,
       });
+    case 'dependencies':
+      return (await import('./cli/commands/dependencies.js')).dependenciesCommand({
+        projectRoot: process.cwd(),
+        io,
+        sources: cmd.sources,
+        format: cmd.format,
+        minConfidence: cmd.minConfidence,
+        strict: cmd.strict,
+        timing: cmd.timing,
+      });
     case 'unknown-command':
       io.stderr.write(`ti: unknown command "${cmd.input}" - see \`ti --help\`\n`);
       return 1;

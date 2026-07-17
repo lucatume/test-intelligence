@@ -265,6 +265,45 @@ function blockGraph(): Graph {
 }
 
 describe('traverseTest', () => {
+  it('scopes PHPUnit seeds to the selected test, lifecycle, and reached helpers', () => {
+    const testFile: FileRow = { id: 1, path: 'tests/ScopedTest.php', language: 'php', vendor: false, framework: 'phpunit', frameworkClass: 'unit' };
+    const source = (id: number, path: string): FileRow => ({ id, path, language: 'php', vendor: false, framework: null, frameworkClass: null });
+    const fact = (id: number, kind: FactRow['kind'], startLine: number, endLine: number, payload: FactRow['payload']): FactRow =>
+      ({ id, fileId: 1, kind, resolved: true, startLine, endLine, payload });
+    const selectedDef = fact(10, 'symbol-def', 3, 5, { kind: 'symbol-def', name: 'ScopedTest::testSelected', exported: false, meta: { callable: true } });
+    const selectedTest = fact(11, 'test-def', 3, 5, { kind: 'test-def', framework: 'phpunit', testId: 'selected' });
+    const helperUse = fact(12, 'symbol-use', 4, 4, { kind: 'symbol-use', name: 'ScopedTest::helper' });
+    const siblingDef = fact(20, 'symbol-def', 7, 9, { kind: 'symbol-def', name: 'ScopedTest::testSibling', exported: false, meta: { callable: true } });
+    const siblingTest = fact(21, 'test-def', 7, 9, { kind: 'test-def', framework: 'phpunit', testId: 'sibling' });
+    const siblingImport = fact(22, 'php-include', 8, 8, { kind: 'php-include', target: 'bad.php' });
+    const helperDef = fact(30, 'symbol-def', 11, 13, { kind: 'symbol-def', name: 'ScopedTest::helper', exported: false, meta: { callable: true } });
+    const helperImport = fact(31, 'php-include', 12, 12, { kind: 'php-include', target: 'good.php' });
+    const setupDef = fact(40, 'symbol-def', 15, 17, { kind: 'symbol-def', name: 'ScopedTest::setUp', exported: false, meta: { callable: true } });
+    const setupImport = fact(41, 'php-include', 16, 16, { kind: 'php-include', target: 'lifecycle.php' });
+    const classDef = fact(1, 'symbol-def', 1, 30, { kind: 'symbol-def', name: 'ScopedTest', exported: true });
+    const targetFact = (id: number, fileId: number): FactRow => ({ id, fileId, kind: 'symbol-def', resolved: true, startLine: 1, endLine: 1, payload: { kind: 'symbol-def', name: `s${String(id)}`, exported: true } });
+    const good = targetFact(101, 2); const bad = targetFact(102, 3); const lifecycle = targetFact(103, 4);
+    const testFacts = [classDef, selectedDef, selectedTest, helperUse, siblingDef, siblingTest, siblingImport, helperDef, helperImport, setupDef, setupImport];
+    const graph: Graph = {
+      files: new Map([[1, testFile], [2, source(2, 'good.php')], [3, source(3, 'bad.php')], [4, source(4, 'lifecycle.php')]]),
+      facts: new Map([...testFacts, good, bad, lifecycle].map((f) => [f.id, f])),
+      factsByFile: new Map([[1, testFacts], [2, [good]], [3, [bad]], [4, [lifecycle]]]),
+      anchorLinks: [
+        { factId: 12, anchorKey: k('php-symbol:ScopedTest::helper'), role: 'subject' },
+        { factId: 30, anchorKey: k('php-symbol:ScopedTest::helper'), role: 'target' },
+      ],
+      tests: [
+        { testId: 'selected', fileId: 1, framework: 'phpunit', frameworkClass: 'unit', factId: 11 },
+        { testId: 'sibling', fileId: 1, framework: 'phpunit', frameworkClass: 'unit', factId: 21 },
+      ],
+    };
+    const result = traverseTest(graph, buildAnchorIndex(graph), 11, 'selected', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32,
+    });
+    expect(result.edges.map((edge) => edge.source).sort()).toEqual(['good.php', 'lifecycle.php']);
+  });
+
   it('a unit test bridges a JS block-render to the PHP that registers the block', () => {
     const g = blockGraph();
     const idx = buildAnchorIndex(g);
@@ -314,7 +353,7 @@ describe('traverseTest', () => {
     expect(adminEdge?.confidence).toBeGreaterThanOrEqual(0.8);
   });
 
-  it('does not traverse through a bridge partner from another framework', () => {
+  it('traverses through a bridge partner test helper without emitting it', () => {
     const g = adminPageGraph();
     const files = new Map(g.files);
     const incompatible = files.get(2);
@@ -349,7 +388,8 @@ describe('traverseTest', () => {
       maxWildcardMatchesPerAnchor: 32,
     });
 
-    expect(r.edges.some((e) => e.source === 'assets/admin.js')).toBe(false);
+    expect(r.edges.some((e) => e.source === 'includes/admin/class-wc-admin-menus.php')).toBe(false);
+    expect(r.edges.some((e) => e.source === 'assets/admin.js')).toBe(true);
   });
 
   it('reaches imported and hook-listener files', () => {
@@ -363,6 +403,54 @@ describe('traverseTest', () => {
     const sources = r.edges.map((e) => e.source).sort();
     expect(sources).toEqual(['a.php', 'b.php']);
     expect(r.bounded).toBe(false);
+  });
+
+  it('stops direct and transitive imports at jest.mock boundaries', () => {
+    const g = tinyGraph();
+    const mocked: FactRow = {
+      ...(g.facts.get(101) as FactRow),
+      payload: {
+        kind: 'import-edge', specifier: './a', resolved: true, resolvedPath: 'a.php',
+        meta: { mocked: true },
+      },
+    };
+    const symbolUse: FactRow = {
+      id: 102, fileId: 1, kind: 'symbol-use', resolved: true, startLine: 2, endLine: 2,
+      payload: { kind: 'symbol-use', name: 'x' },
+    };
+    const symbolDef: FactRow = {
+      id: 201, fileId: 2, kind: 'symbol-def', resolved: true, startLine: 1, endLine: 1,
+      payload: { kind: 'symbol-def', name: 'x' },
+    };
+    const facts = new Map(g.facts).set(101, mocked).set(102, symbolUse).set(201, symbolDef);
+    const factsByFile = new Map(g.factsByFile)
+      .set(1, [g.facts.get(100) as FactRow, mocked, symbolUse])
+      .set(2, [...(g.factsByFile.get(2) ?? []), symbolDef]);
+    const graph = {
+      ...g, facts, factsByFile,
+      anchorLinks: [
+        ...g.anchorLinks,
+        { factId: 102, anchorKey: k('js-symbol:a.php:x'), role: 'subject' as const },
+        { factId: 201, anchorKey: k('js-symbol:a.php:x'), role: 'target' as const },
+      ],
+    };
+    const r = traverseTest(graph, buildAnchorIndex(graph), 100, 't1', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32,
+    });
+    expect(r.edges).toEqual([]);
+  });
+
+  it('traverses through test helpers without returning them as sources', () => {
+    const g = tinyGraph();
+    const files = new Map(g.files);
+    files.set(2, { ...(files.get(2) as FileRow), framework: 'jest', frameworkClass: 'unit' });
+    const graph = { ...g, files };
+    const r = traverseTest(graph, buildAnchorIndex(graph), 100, 't1', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32,
+    });
+    expect(r.edges.map((e) => e.source)).toEqual(['b.php']);
   });
 
   it('respects hook stop-list', () => {
@@ -739,7 +827,7 @@ describe('traverseTest — confidence tiering', () => {
     });
 
     expect(r.edges.some((e) => e.source === 'tests/RestApiCacheTest.php')).toBe(false);
-    expect(r.edges.some((e) => e.source === 'app.ts')).toBe(true);
+    expect(r.edges.some((e) => e.source === 'app.ts')).toBe(false);
   });
 
   it('keeps unresolved broad REST pricing while marking the fallback', () => {
@@ -785,7 +873,7 @@ describe('traverseTest — confidence tiering', () => {
     expect(r.edges.some((e) => e.source === 'app.ts')).toBe(false);
   });
 
-  it('does not traverse through an imported test file from another framework', () => {
+  it('traverses through an imported test file from another framework', () => {
     const g = broadWildcardGraph();
     const files = new Map(g.files);
     const incompatible = files.get(2);
@@ -815,7 +903,7 @@ describe('traverseTest — confidence tiering', () => {
       maxWildcardMatchesPerAnchor: 32,
     });
 
-    expect(r.edges.some((e) => e.source === 'downstream.ts')).toBe(false);
+    expect(r.edges.some((e) => e.source === 'downstream.ts')).toBe(true);
   });
 
   it('prices an exact REST bridge high', () => {

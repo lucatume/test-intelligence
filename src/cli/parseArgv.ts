@@ -25,6 +25,14 @@ export type ParsedCommand =
       strict: boolean;
       timing: TimingFlags;
     }
+  | {
+      kind: 'dependencies';
+      sources: readonly string[];
+      format: 'args' | 'json';
+      minConfidence: number;
+      strict: boolean;
+      timing: TimingFlags;
+    }
   | { kind: 'unknown-command'; input: string };
 
 export function parseArgv(argv: readonly string[]): ParsedCommand {
@@ -35,7 +43,28 @@ export function parseArgv(argv: readonly string[]): ParsedCommand {
   if (first === 'config') return { kind: 'config' };
   if (first === 'tests') return parseTestsCmd(rest);
   if (first === 'sources') return parseSourcesCmd(rest);
+  if (first === 'dependencies') return parseDependenciesCmd(rest);
   return { kind: 'unknown-command', input: first };
+}
+
+function parseDependenciesCmd(rest: readonly string[]): ParsedCommand {
+  const fromSourcesIdx = rest.indexOf('--from-sources');
+  const sources = fromSourcesIdx === -1 ? rest.filter((arg) => !arg.startsWith('-')) : [];
+  if (fromSourcesIdx !== -1) {
+    for (let i = fromSourcesIdx + 1; i < rest.length; i++) {
+      const value = rest[i];
+      if (value === undefined || value.startsWith('-')) break;
+      sources.push(value);
+    }
+  }
+  return {
+    kind: 'dependencies',
+    sources,
+    format: pickFormat(rest),
+    minConfidence: pickMinConfidence(rest),
+    strict: rest.includes('--strict'),
+    timing: pickTiming(rest),
+  };
 }
 
 function parseTestsCmd(rest: readonly string[]): ParsedCommand {

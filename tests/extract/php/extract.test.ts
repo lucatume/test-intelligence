@@ -83,6 +83,95 @@ class CartTest extends TestCase {
     expect((test?.payload as { framework: string }).framework).toBe('phpunit');
   });
 
+  it('emits exact symbol uses for PHPUnit @covers annotations', async () => {
+    const root = getTmp();
+    write(root, 'tests/CoversTest.php', `<?php
+namespace App\\Tests;
+use App\\Service;
+/** @covers Service */
+class CoversTest extends \\PHPUnit\\Framework\\TestCase {
+  /** @covers Service::run @covers ::helper() */
+  public function testIt(): void {}
+}`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'tests/CoversTest.php', worker });
+    const covered = facts.filter((f) =>
+      f.kind === 'symbol-use' && ((f.payload as { meta?: { covers?: boolean } }).meta?.covers ?? false),
+    ).map((f) => (f.payload as { name?: string }).name);
+    expect(covered).toEqual(expect.arrayContaining(['App\\Service', 'App\\Service::run', 'helper']));
+  });
+
+  it('marks callables and links PHPUnit helpers and providers exactly', async () => {
+    const root = getTmp();
+    write(root, 'tests/ScopedTest.php', `<?php
+use PHPUnit\\Framework\\Attributes\\DataProvider;
+use PHPUnit\\Framework\\Attributes\\DataProviderExternal;
+class ExternalProviders { public static function rows() { return [[1]]; } }
+class ScopedTest extends PHPUnit\\Framework\\TestCase {
+  /** @dataProvider localRows */
+  #[DataProvider('attributeRows')]
+  #[DataProviderExternal(ExternalProviders::class, 'rows')]
+  public function testSelected($value): void { $this->helper(); self::staticHelper(); }
+  public function helper(): void {}
+  public static function staticHelper(): void {}
+  public static function localRows(): array { return [[1]]; }
+  public static function attributeRows(): array { return [[1]]; }
+}`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'tests/ScopedTest.php', worker });
+    const defs = facts.filter((f) => f.kind === 'symbol-def');
+    const helper = defs.find((f) => (f.payload as { name?: string }).name === 'ScopedTest::helper');
+    expect((helper?.payload as { meta?: unknown } | undefined)?.meta).toMatchObject({ callable: true });
+    const uses = facts.filter((f) => f.kind === 'symbol-use').map((f) => (f.payload as { name?: string }).name);
+    expect(uses).toEqual(expect.arrayContaining([
+      'ScopedTest::helper',
+      'ScopedTest::staticHelper',
+      'ScopedTest::localRows',
+      'ScopedTest::attributeRows',
+      'ExternalProviders::rows',
+    ]));
+  });
+
+  it('runs configured new-expression, ajax callback, and PHP binary patterns', async () => {
+    await worker.registerPatterns([
+      {
+        match: { lang: 'php', nodeKind: 'new-expression', name: 'WP_REST_Request' },
+        bind: { method: { arg: 0, type: 'string' }, route: { arg: 1, type: 'string' } },
+        emit: 'rest-call-js',
+        anchor: { template: 'rest:{method} {route}', role: 'target' },
+      },
+      {
+        match: { lang: 'php', nodeKind: 'method-call', name: '_handleAjax' },
+        bind: { action: { arg: 0, type: 'string' } },
+        emit: 'symbol-use',
+        transform: 'wp-ajax-callback',
+      },
+      {
+        match: { lang: 'php', nodeKind: 'function-call', name: 'proc_open' },
+        bind: {}, emit: 'php-include', transform: 'php-binary-script',
+      },
+      {
+        match: { lang: 'php', nodeKind: 'function-call', name: 'wc_get_template' },
+        bind: { target: { arg: 0, type: 'path-literal' } },
+        emit: 'php-include',
+        anchor: { template: 'php-file:templates/{target}', role: 'target' },
+      },
+    ]);
+    const root = getTmp();
+    write(root, 'tests/ExactTest.php', `<?php
+new WP_REST_Request('POST', '/wp/v2/posts');
+$this->_handleAjax('add-meta');
+proc_open([PHP_BINARY, 'bin/worker.php'], [], $pipes);
+proc_open(['php', $dynamic], [], $pipes);
+function render_it() { wc_get_template('global/item.php'); }
+`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'tests/ExactTest.php', worker });
+    expect(facts.some((f) => f.anchors.some((a) => a.key === 'rest:POST /wp/v2/posts'))).toBe(true);
+    expect(facts.some((f) => f.anchors.some((a) => a.key === 'php-symbol:wp_ajax_add_meta'))).toBe(true);
+    const includes = facts.filter((f) => f.kind === 'php-include');
+    expect(includes).toHaveLength(2);
+    expect(includes.some((f) => (f.payload as { target?: string }).target === 'bin/worker.php')).toBe(true);
+    expect(includes.some((f) => f.anchors.some((a) => a.key === 'php-symbol:render_it'))).toBe(true);
+  });
+
   it('emits symbol-use for new / extends / static-call / class-const using use-aliased names', async () => {
     // Without symbol-use facts, PHP tests have nothing to bridge from —
     // all phpunit tests dangle. The use-alias case dominates real codebases.
@@ -239,6 +328,24 @@ class WC_Cart_Test extends WC_Unit_Test_Case {
     });
     expect(factsA.find((f) => f.kind === 'test-def')).toBeDefined();
     expect(factsB.find((f) => f.kind === 'test-def')).toBeDefined();
+  });
+
+  it('keeps the PHPUnit class scope after an anonymous class', async () => {
+    const root = getTmp();
+    write(root, 'tests/ConfiguredTest.php', `<?php
+class ConfiguredTest extends ProjectTestBase {
+  public function helper(): void { $value = new class {}; }
+  public function test_after_anonymous_class(): void {}
+}`);
+    const facts = await extractPhpFile({
+      projectRoot: root,
+      relPath: 'tests/ConfiguredTest.php',
+      worker,
+      phpUnitBaseClasses: ['ProjectTestBase'],
+    });
+    expect(facts.find((f) => f.kind === 'test-def')?.payload).toMatchObject({
+      testId: 'phpunit:tests/ConfiguredTest.php::ConfiguredTest::test_after_anonymous_class',
+    });
   });
 
   it('flattens concatenated hook names into a {*} skeleton', async () => {

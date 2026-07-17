@@ -1,7 +1,7 @@
 import * as P from '../parse.js';
 import type { ParseResult, ValidationError } from '../parse.js';
 import { ok, err } from '../result.js';
-import type { ArgSpec, WpPatternWrapper } from '../types.js';
+import type { ArgSpec, UserPattern, WpPatternWrapper } from '../types.js';
 import { WP_PHP_PATTERN_NAMES } from '../types.js';
 
 export type FrameworkClass = 'unit' | 'e2e';
@@ -25,10 +25,15 @@ export interface PlaywrightConfig {
   readonly fileGlobs?: readonly string[];
 }
 
+export interface QUnitConfig {
+  readonly fileGlobs: readonly string[];
+}
+
 export interface TestsConfig {
   readonly phpunit: PhpUnitConfig;
   readonly jest: JestConfig;
   readonly playwright: PlaywrightConfig;
+  readonly qunit: QUnitConfig;
   readonly classes: readonly TestClassRule[];
   readonly defaultClass: FrameworkClass;
 }
@@ -79,13 +84,10 @@ export interface IgnoreDefaultsConfig {
   readonly minified: boolean;
 }
 
-// Extractor entries are kept as opaque values in Plan A; Plan C tightens the schema.
-export type ExtractorEntry = unknown;
-
 export interface ValidatedConfig {
   readonly tests: TestsConfig;
   readonly hooks: HooksConfig;
-  readonly extractors: readonly ExtractorEntry[];
+  readonly extractors: readonly UserPattern[];
   readonly confidence: ConfidenceConfig;
   readonly traversal: TraversalConfig;
   readonly concurrency: ConcurrencyConfig;
@@ -103,7 +105,7 @@ export interface ValidatedConfig {
 export type UserConfig = Partial<{
   tests: unknown;
   hooks: unknown;
-  extractors: readonly unknown[];
+  extractors: readonly UserPattern[];
   confidence: unknown;
   traversal: unknown;
   concurrency: unknown;
@@ -121,6 +123,7 @@ const DEFAULT_JEST_FILE_GLOBS: readonly string[] = [
   '**/*.test.{ts,tsx,js,jsx}',
   '**/*.spec.{ts,tsx,js,jsx}',
 ];
+const DEFAULT_QUNIT_FILE_GLOBS: readonly string[] = [];
 // Patterns are doubled (`**/X` + `**/X/**`) so the walker prunes the directory
 // entry itself (no recursion) and also filters any descendant that slips through.
 // Monorepos (pnpm/Yarn workspaces) put dependency / build dirs under every
@@ -233,10 +236,47 @@ export const HOOK_STOP_LIST_BUILTINS: readonly string[] = [
   'admin_enqueue_scripts',
 ];
 
-// Opaque schema for extractor entries. Plan C will tighten this to a discriminated union.
-const anyValue: P.Schema<unknown> = {
+const rawUserPatternSchema = P.object(
+  {
+    match: P.object(
+      {
+        lang: P.enumOf(['php', 'js', 'ts'] as const),
+        nodeKind: P.enumOf(['function-call', 'method-call', 'static-call', 'new-expression', 'jsx-element'] as const),
+        name: P.string,
+        receiver: P.optional(P.string),
+      },
+      { strict: true },
+    ),
+    bind: P.record(P.object(
+      {
+        arg: P.refine(P.number, (n) => (Number.isInteger(n) && n >= 0 ? null : 'must be a non-negative integer')),
+        type: P.enumOf(['string', 'int', 'bool', 'callable', 'object', 'array', 'path-literal', 'regex-literal'] as const),
+        default: P.optional(P.unknown),
+        optional: P.optional(P.boolean),
+      },
+      { strict: true },
+    )),
+    emit: P.enumOf([
+      'symbol-def', 'symbol-use', 'import-edge', 'php-include', 'hook-listener', 'hook-fire',
+      'rest-endpoint', 'rest-call-js', 'ajax-listener', 'ajax-call-js', 'enqueue-script',
+      'admin-page-nav', 'admin-page-register', 'store-register', 'store-access', 'script-localize',
+      'script-localize-inline', 'shortcode', 'block-render', 'test-def', 'parse-error',
+    ] as const),
+    anchor: P.optional(P.object(
+      { template: P.string, role: P.enumOf(['subject', 'target', 'callback', 'module'] as const) },
+      { strict: true },
+    )),
+    transform: P.optional(P.enumOf([
+      'rest-route', 'enqueue-src', 'ajax-action-from-url', 'admin-page-slug-from-url',
+      'admin-page-slug-from-url-or-slug', 'admin-page-slug', 'block-render', 'localize-data',
+      'rest-url-normalise', 'wp-frontend-or-admin-url', 'wp-ajax-callback', 'php-binary-script',
+    ] as const)),
+  },
+  { strict: true },
+);
+const userPatternSchema: P.Schema<UserPattern> = {
   parse(input) {
-    return ok(input);
+    return rawUserPatternSchema.parse(input) as ParseResult<UserPattern>;
   },
 };
 
@@ -265,6 +305,12 @@ const testsSchema = P.object(
       { strict: true },
     )),
     playwright: P.optional(P.object(
+      {
+        fileGlobs: P.optional(P.array(P.string)),
+      },
+      { strict: true },
+    )),
+    qunit: P.optional(P.object(
       {
         fileGlobs: P.optional(P.array(P.string)),
       },
@@ -435,7 +481,7 @@ const rootSchema = P.object(
   {
     tests: P.optional(testsSchema),
     hooks: P.optional(hooksSchema),
-    extractors: P.optional(P.array(anyValue)),
+    extractors: P.optional(P.array(userPatternSchema)),
     confidence: P.optional(confidenceSchema),
     traversal: P.optional(traversalSchema),
     concurrency: P.optional(concurrencySchema),
@@ -492,6 +538,9 @@ export function parseConfig(raw: unknown): ParseResult<ValidatedConfig> {
         fileGlobs: r.tests?.jest?.fileGlobs ?? DEFAULT_JEST_FILE_GLOBS,
       },
       playwright,
+      qunit: {
+        fileGlobs: r.tests?.qunit?.fileGlobs ?? DEFAULT_QUNIT_FILE_GLOBS,
+      },
       classes,
       defaultClass: r.tests?.defaultClass ?? 'unit',
     },

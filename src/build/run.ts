@@ -99,7 +99,7 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
         const wRes = startPhpWorkerPool({ repoRoot, size: phpWorkers, wpPatternWrappers });
         if (wRes.kind === 'ok') {
           worker = wRes.value;
-          await worker.registerPatterns(WP_PHP_PATTERNS);
+          await worker.registerPatterns([...WP_PHP_PATTERNS, ...opts.config.extractors]);
         } else if (verbosity !== 'quiet') {
           opts.stderr.write(
             `ti: php worker unavailable (${wRes.error.message}) — PHP files will be skipped\n`,
@@ -206,7 +206,8 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
               language: file.language,
               framework: file.framework,
               compilerOptions,
-              patterns: [],
+              patterns: opts.config.extractors,
+              phpUnitBaseClasses: opts.config.tests.phpunit.baseClasses,
               ...(worker !== undefined ? { phpWorker: worker } : {}),
               ...(useTwoPhase && file.language === 'php' ? { wrapperIndexComplete: true } : {}),
             });

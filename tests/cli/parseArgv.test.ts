@@ -39,6 +39,20 @@ describe('parseArgv', () => {
     });
   });
 
+  it('parses a direct dependency query', () => {
+    expect(parseArgv([
+      'dependencies', '--from-sources', 'src/a.ts', 'src/b.php',
+      '--format=json', '--min-confidence=0.7', '--strict',
+    ])).toEqual({
+      kind: 'dependencies',
+      sources: ['src/a.ts', 'src/b.php'],
+      format: 'json',
+      minConfidence: 0.7,
+      strict: true,
+      timing: { emit: false, topN: 0 },
+    });
+  });
+
   it.each(['build', 'update', 'clean', 'migrate', 'unlock', 'resolve', 'explain', 'export'])(
     'treats removed stateful command %s as unknown',
     (command) => {

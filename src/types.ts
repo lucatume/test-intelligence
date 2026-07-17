@@ -14,7 +14,7 @@ export type TestFilePath        = ProjectRelativePath & { readonly __kind: 'Test
 
 export type Confidence = number & { readonly __brand: 'Confidence' }; // 0..1
 
-export type FrameworkName = 'phpunit' | 'jest' | 'playwright';
+export type FrameworkName = 'phpunit' | 'jest' | 'playwright' | 'qunit';
 
 export type ISODate = string & { readonly __brand: 'ISODate' };
 
@@ -57,6 +57,7 @@ export type AnchorType =
   | 'php-symbol'
   | 'js-symbol'
   | 'js-module'
+  | 'js-global'
   | 'php-file'
   | 'hook'
   | 'rest'
@@ -76,10 +77,48 @@ export type Language = 'php' | 'ts' | 'tsx' | 'js' | 'jsx' | 'mjs' | 'cjs';
 
 export const ALL_LANGUAGES: readonly Language[] = ['php', 'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs'];
 
+export type PatternLang = 'php' | 'js' | 'ts';
+export type PatternNodeKind = 'function-call' | 'method-call' | 'static-call' | 'new-expression' | 'jsx-element';
+export type PatternBindType = 'string' | 'int' | 'bool' | 'callable' | 'object' | 'array' | 'path-literal' | 'regex-literal';
+
+export interface UserPattern {
+  readonly match: {
+    readonly lang: PatternLang;
+    readonly nodeKind: PatternNodeKind;
+    readonly name: string;
+    readonly receiver?: string;
+  };
+  readonly bind: Readonly<Record<string, {
+    readonly arg: number;
+    readonly type: PatternBindType;
+    readonly default?: unknown;
+    readonly optional?: boolean;
+  }>>;
+  readonly emit: FactKind;
+  readonly anchor?: {
+    readonly template: string;
+    readonly role: 'subject' | 'target' | 'callback' | 'module';
+  };
+  readonly transform?:
+    | 'rest-route'
+    | 'enqueue-src'
+    | 'ajax-action-from-url'
+    | 'admin-page-slug-from-url'
+    | 'admin-page-slug-from-url-or-slug'
+    | 'admin-page-slug'
+    | 'block-render'
+    | 'localize-data'
+    | 'rest-url-normalise'
+    | 'wp-frontend-or-admin-url'
+    | 'wp-ajax-callback'
+    | 'php-binary-script';
+}
+
 export const ALL_ANCHOR_TYPES = [
   'php-symbol',
   'js-symbol',
   'js-module',
+  'js-global',
   'php-file',
   'hook',
   'rest',

@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ts from 'typescript';
-import { extractSymbols, extractSymbolUses } from '../../../src/extract/ts/symbols.js';
+import { extractSymbols, extractSymbolUses, extractWpGlobalSymbols } from '../../../src/extract/ts/symbols.js';
 
 function parse(rel: string, src: string): ts.SourceFile {
   return ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
@@ -245,5 +245,35 @@ describe('extractSymbolUses', () => {
   it('does not emit for member access on an arbitrary local variable', () => {
     const facts = uses('function make() { return {}; }\nconst obj = make();\nobj.foo();');
     expect(facts.map((f) => f.anchors[0]?.key)).not.toContain('js-symbol:a.ts:foo');
+  });
+});
+
+describe('extractWpGlobalSymbols', () => {
+  it('normalizes window.wp and connects assignments to member reads', () => {
+    const sf = parse('x.js', `
+      window.wp.mediaWidgets = {};
+      void wp.mediaWidgets;
+      new wp.mediaWidgets.MediaWidgetControl();
+    `);
+    const facts = extractWpGlobalSymbols(sf, 'x.js');
+    expect(facts.map((f) => [f.kind, f.anchors[0]?.key, f.anchors[0]?.role])).toEqual([
+      ['symbol-def', 'js-global:wp.mediaWidgets', 'target'],
+      ['symbol-use', 'js-global:wp.mediaWidgets', 'subject'],
+      ['symbol-use', 'js-global:wp.mediaWidgets.MediaWidgetControl', 'subject'],
+    ]);
+  });
+
+  it('ignores globals other than wp', () => {
+    const sf = parse('x.js', 'window.foo.bar = {}; foo.bar();');
+    expect(extractWpGlobalSymbols(sf, 'x.js')).toEqual([]);
+  });
+
+  it('does not fan deep member reads out to the global namespace root', () => {
+    const sf = parse('x.js', 'wp.mediaWidgets.controlConstructors.gallery();');
+    const keys = extractWpGlobalSymbols(sf, 'x.js', 'qunit').map((f) => f.anchors[0]?.key);
+    expect(keys).toEqual([
+      'js-global:wp.mediaWidgets.controlConstructors',
+      'js-global:wp.mediaWidgets.controlConstructors.gallery',
+    ]);
   });
 });

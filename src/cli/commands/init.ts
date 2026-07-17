@@ -25,6 +25,7 @@ interface Detected {
   readonly jest: boolean;
   readonly vitest: boolean;
   readonly playwright: boolean;
+  readonly qunit: boolean;
   // Project-relative POSIX directories that contain a playwright.config.*
   readonly playwrightConfigDirs: readonly string[];
 }
@@ -54,6 +55,7 @@ function detect(projectRoot: string): Detected {
   let jest = false;
   let vitest = false;
   let playwright = false;
+  let qunit = false;
   const playwrightConfigDirs: string[] = [];
 
   for (const found of findRelevantFiles(projectRoot, MAX_DETECT_DEPTH)) {
@@ -77,7 +79,9 @@ function detect(projectRoot: string): Detected {
     }
   }
 
-  return { phpunit, jest, vitest, playwright, playwrightConfigDirs };
+  if (existsSync(join(projectRoot, 'tests/qunit'))) qunit = true;
+
+  return { phpunit, jest, vitest, playwright, qunit, playwrightConfigDirs };
 }
 
 type FoundKind = 'package' | 'composer' | 'playwright';
@@ -198,6 +202,11 @@ function renderStarterConfig(d: Detected): string {
   if (d.playwright) {
     blocks.push(`    playwright: {
       fileGlobs: ${formatPlaywrightGlobs(d.playwrightConfigDirs)},
+    },`);
+  }
+  if (d.qunit) {
+    blocks.push(`    qunit: {
+      fileGlobs: ['tests/qunit/wp-admin/js/**/*.js', 'tests/qunit/wp-includes/js/**/*.js'],
     },`);
   }
   const testsBlock =

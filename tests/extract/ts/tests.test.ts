@@ -61,4 +61,30 @@ describe('extractTestDefs', () => {
     const facts = extractTestDefs(sf, 'src/x.ts', null);
     expect(facts).toEqual([]);
   });
+
+  it('extracts sequential and callback QUnit module scopes', () => {
+    const sf = parse('tests/qunit/x.js', `
+      QUnit.module('sequential');
+      QUnit.test('first', function () {});
+      QUnit.module('callback', function () {
+        QUnit.module('nested');
+        QUnit.test('second', () => {});
+      });
+    `);
+    const ids = extractTestDefs(sf, 'tests/qunit/x.js', 'qunit')
+      .map((f) => (f.payload as { testId: string }).testId);
+    expect(ids).toEqual([
+      'qunit:tests/qunit/x.js::sequential > first',
+      'qunit:tests/qunit/x.js::callback > nested > second',
+    ]);
+  });
+
+  it('extracts QUnit tests inside a classic IIFE', () => {
+    const sf = parse('tests/qunit/x.js', `( function( QUnit ) {
+      QUnit.module('scope');
+      QUnit.test('works', function () {});
+    } )( window.QUnit );`);
+    expect(extractTestDefs(sf, 'tests/qunit/x.js', 'qunit').map((f) => (f.payload as { testId?: string }).testId))
+      .toEqual(['qunit:tests/qunit/x.js::scope > works']);
+  });
 });

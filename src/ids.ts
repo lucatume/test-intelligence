@@ -15,7 +15,7 @@ export type IdParseError =
   | { readonly reason: 'unknown-framework'; readonly input: string; readonly found: string }
   | { readonly reason: 'path-invalid'; readonly input: string; readonly cause: PathParseError };
 
-const KNOWN: readonly FrameworkName[] = ['phpunit', 'jest', 'playwright'];
+const KNOWN: readonly FrameworkName[] = ['phpunit', 'jest', 'playwright', 'qunit'];
 
 export function parseTestId(
   raw: string,

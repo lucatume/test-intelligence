@@ -41,6 +41,42 @@ export function extractTestDefs(
     });
   };
 
+  if (framework === 'qunit') {
+    const processStatements = (statements: readonly ts.Statement[], inherited: readonly string[]): void => {
+      let scope = [...inherited];
+      for (const statement of statements) {
+        if (ts.isExpressionStatement(statement) && ts.isCallExpression(statement.expression)) {
+          const call = statement.expression;
+          const name = getQUnitName(call);
+          if (name === 'module') {
+            const title = getTitle(call) ?? '<dynamic>';
+            const cb = call.arguments[1];
+            if (cb && (ts.isArrowFunction(cb) || ts.isFunctionExpression(cb)) && ts.isBlock(cb.body)) {
+              processStatements(cb.body.statements, [...inherited, title]);
+            } else {
+              scope = [...inherited, title];
+            }
+            continue;
+          }
+          if (name === 'test') {
+            emitFact(call, scope);
+            continue;
+          }
+        }
+        const visitNested = (node: ts.Node): void => {
+          if (ts.isBlock(node)) {
+            processStatements(node.statements, scope);
+            return;
+          }
+          ts.forEachChild(node, visitNested);
+        };
+        ts.forEachChild(statement, visitNested);
+      }
+    };
+    processStatements(sf.statements, []);
+    return out;
+  }
+
   const walk = (node: ts.Node, scope: readonly string[]): void => {
     ts.forEachChild(node, (child) => {
       if (ts.isCallExpression(child)) {
@@ -64,6 +100,18 @@ export function extractTestDefs(
   };
   walk(sf, []);
   return out;
+}
+
+function getQUnitName(call: ts.CallExpression): 'module' | 'test' | null {
+  if (
+    ts.isPropertyAccessExpression(call.expression) &&
+    ts.isIdentifier(call.expression.expression) &&
+    call.expression.expression.text === 'QUnit'
+  ) {
+    const name = call.expression.name.text;
+    return name === 'module' || name === 'test' ? name : null;
+  }
+  return null;
 }
 
 function getCalleeName(call: ts.CallExpression): string | null {

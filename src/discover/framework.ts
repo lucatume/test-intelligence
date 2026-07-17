@@ -56,6 +56,8 @@ function detectFramework(
   const pwGlobs = config.tests.playwright.fileGlobs ?? [];
   if (pwGlobs.length > 0 && matchesAny(relPath, pwGlobs)) return 'playwright';
 
+  if (matchesAny(relPath, config.tests.qunit.fileGlobs)) return 'qunit';
+
   if (language === 'php') {
     return PHPUNIT_PATH_RE.test(relPath) ? 'phpunit' : null;
   }

@@ -69,3 +69,11 @@ export interface Edge {
   readonly partial: boolean;
   readonly evidence: ReadonlyArray<{ kind: EdgeKind; factIds: readonly number[] }>;
 }
+
+export interface DependencyEdge {
+  readonly source: string;
+  readonly target: string;
+  readonly confidence: number;
+  readonly partial: boolean;
+  readonly kinds: readonly EdgeKind[];
+}

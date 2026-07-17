@@ -1,6 +1,8 @@
 import * as P from '../../parse.js';
 import type { ParseResult } from '../../parse.js';
-import type { FactKind } from '../../types.js';
+import type { FactKind, UserPattern } from '../../types.js';
+
+export type { UserPattern } from '../../types.js';
 
 export type PatternLang = 'php' | 'js' | 'ts';
 export type NodeKind = 'function-call' | 'method-call' | 'static-call' | 'new-expression' | 'jsx-element';
@@ -18,29 +20,6 @@ export type AnchorRoleLit = 'subject' | 'target' | 'callback' | 'module';
 export interface PatternAnchor {
   readonly template: string;
   readonly role: AnchorRoleLit;
-}
-
-export interface UserPattern {
-  readonly match: {
-    readonly lang: PatternLang;
-    readonly nodeKind: NodeKind;
-    readonly name: string;
-    readonly receiver?: string;
-  };
-  readonly bind: Readonly<Record<string, Binding>>;
-  readonly emit: FactKind;
-  readonly anchor?: PatternAnchor;
-  readonly transform?:
-    | 'rest-route'
-    | 'enqueue-src'
-    | 'ajax-action-from-url'
-    | 'admin-page-slug-from-url'
-    | 'admin-page-slug-from-url-or-slug'
-    | 'admin-page-slug'
-    | 'block-render'
-    | 'localize-data'
-    | 'rest-url-normalise'
-    | 'wp-frontend-or-admin-url';
 }
 
 const ALL_FACT_KINDS: readonly FactKind[] = [
@@ -97,6 +76,8 @@ const patternSchema = P.object(
         'block-render',
         'rest-url-normalise',
         'wp-frontend-or-admin-url',
+        'wp-ajax-callback',
+        'php-binary-script',
       ] as const),
     ),
   },

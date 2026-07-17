@@ -38,7 +38,7 @@ describe('branded primitive types', () => {
   });
 
   it('FrameworkName is a narrow union', () => {
-    expectTypeOf<FrameworkName>().toEqualTypeOf<'phpunit' | 'jest' | 'playwright'>();
+    expectTypeOf<FrameworkName>().toEqualTypeOf<'phpunit' | 'jest' | 'playwright' | 'qunit'>();
   });
 
   it('ISODate is a tagged string', () => {
@@ -70,7 +70,7 @@ describe('branded type identities', () => {
     const _f: FromArray extends AnchorType ? true : false = true;
     const _g: AnchorType extends FromArray ? true : false = true;
     void _f; void _g;
-    expect(ALL_ANCHOR_TYPES.length).toBe(14);
+    expect(ALL_ANCHOR_TYPES.length).toBe(15);
   });
 
   it('FactKind has the sealed v1 set', () => {

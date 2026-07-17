@@ -1,6 +1,6 @@
-import type { AnchorKey, FactKind, FrameworkName } from '../types.js';
+import type { AnchorKey, FactKind } from '../types.js';
 import type { AnchorRole } from '../facts/types.js';
-import type { Edge, EdgeKind, FactRow, FileRow, Graph } from './types.js';
+import type { DependencyEdge, Edge, EdgeKind, FactRow, FileRow, Graph } from './types.js';
 import { wildcardKeyToRegex, wildcardBreadth, type AnchorIndex, type WildcardAnchorEntry } from './anchor-index.js';
 import { combineConfidence, evidenceConfidence, type MatchPrecision } from './confidence.js';
 
@@ -16,6 +16,11 @@ export interface TraversalOptions {
 export interface TraversalResult {
   readonly edges: readonly Edge[];
   readonly bounded: boolean;
+}
+
+export interface DependencyTraversalResult {
+  readonly rows: readonly DependencyEdge[];
+  readonly unknownPaths: readonly string[];
 }
 
 interface EvidenceAgg {
@@ -74,12 +79,22 @@ export function traverseTest(
 
   const testFact = graph.facts.get(testFactId);
   if (!testFact) return { edges: [], bounded: false };
-  const testFramework = graph.files.get(testFact.fileId)?.framework ?? null;
 
   // Seed: every fact in the test's file at depth 0. Test-file facts never
   // contribute edges (the test file is not a "source"). Mark them
   // enqueued so anchor-link cycles can't push them back in.
-  const testFileFacts = graph.factsByFile.get(testFact.fileId) ?? [];
+  const allTestFileFacts = graph.factsByFile.get(testFact.fileId) ?? [];
+  const testFile = graph.files.get(testFact.fileId);
+  const testFileFacts = testFile?.framework === 'phpunit'
+    ? phpUnitSeedFacts(allTestFileFacts, testFact)
+    : allTestFileFacts;
+  const mockedPaths = new Set<string>();
+  for (const f of allTestFileFacts) {
+    if (f.kind !== 'import-edge') continue;
+    const meta = f.payload['meta'] as { readonly mocked?: unknown } | undefined;
+    const path = f.payload['resolvedPath'];
+    if (meta?.mocked === true && typeof path === 'string') mockedPaths.add(path);
+  }
   for (const f of testFileFacts) {
     if (enqueued.has(f.id)) continue;
     enqueued.add(f.id);
@@ -108,7 +123,7 @@ export function traverseTest(
     if (
       file &&
       file.id !== testFact.fileId &&
-      isSourceForFramework(file, testFramework) &&
+      isSource(file) &&
       cur.arrivalKind !== null &&
       cur.arrivalFactId !== null
     ) {
@@ -128,7 +143,7 @@ export function traverseTest(
     // Walk outward through this fact's relations.
     enqueueDownstream(
       graph, index, cur.fact, cur.depth, queue, enqueued, options, evidence,
-      testFact.fileId, testFramework, cur.enqueueSiblingFallback === true,
+      testFact.fileId, cur.enqueueSiblingFallback === true, mockedPaths,
     );
   }
 
@@ -156,6 +171,60 @@ export function traverseTest(
   return { edges, bounded };
 }
 
+export function directDependenciesFromSources(
+  graph: Graph,
+  index: AnchorIndex,
+  sources: readonly string[],
+  options: TraversalOptions,
+): DependencyTraversalResult {
+  const rows: DependencyEdge[] = [];
+  const unknownPaths: string[] = [];
+  for (const source of new Set(sources)) {
+    const sourceFile = index.filesByPath.get(source);
+    if (!sourceFile || !isSource(sourceFile)) {
+      unknownPaths.push(source);
+      continue;
+    }
+    const evidence = new Map<number, EvidenceAgg>();
+    for (const seed of graph.factsByFile.get(sourceFile.id) ?? []) {
+      const queue: QueueItem[] = [];
+      enqueueDownstream(
+        graph, index, seed, 0, queue, new Set([seed.id]), options, evidence,
+        sourceFile.id, false, new Set(),
+      );
+      for (const item of queue) {
+        const target = graph.files.get(item.fact.fileId);
+        if (!target || target.id === sourceFile.id || !isSource(target)) continue;
+        if (item.arrivalKind === null || item.arrivalFactId === null) continue;
+        recordEvidence(
+          evidence,
+          target.id,
+          item.arrivalKind,
+          item.arrivalFactId,
+          item.fact.id,
+          evidenceConfidence(item.arrivalKind, item.arrivalPrecision, 1, item.arrivalIsBridge),
+        );
+      }
+    }
+    for (const [targetId, agg] of evidence) {
+      const target = graph.files.get(targetId);
+      if (!target) continue;
+      const kinds = [...agg.kinds.keys()].sort();
+      const confidence = combineConfidence([...agg.kinds.values()].flatMap((slot) => slot.values));
+      if (confidence < options.threshold) continue;
+      rows.push({
+        source,
+        target: target.path,
+        confidence,
+        partial: kinds.some((kind) => kind.endsWith('-partial') || kind.endsWith('-uncertain')),
+        kinds,
+      });
+    }
+  }
+  rows.sort((a, b) => a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
+  return { rows, unknownPaths };
+}
+
 function enqueueDownstream(
   graph: Graph,
   index: AnchorIndex,
@@ -166,17 +235,21 @@ function enqueueDownstream(
   options: TraversalOptions,
   evidence: Map<number, EvidenceAgg>,
   testFileId: number,
-  testFramework: FrameworkName | null,
   enqueueSiblingFallback: boolean,
+  mockedPaths: ReadonlySet<string>,
 ): void {
+  if (isCallableDef(fact)) {
+    enqueueCallableBody(graph, fact, depth, queue, enqueued);
+  }
+
   // 1. import-edge / php-include: resolve directly to target file.
   if (fact.kind === 'import-edge') {
-    const meta = fact.payload['meta'] as { readonly typeOnly?: unknown } | undefined;
-    if (meta?.typeOnly === true) return;
+    const meta = fact.payload['meta'] as { readonly typeOnly?: unknown; readonly mocked?: unknown } | undefined;
+    if (meta?.typeOnly === true || meta?.mocked === true) return;
     const resolvedPath = (fact.payload as { resolvedPath?: unknown }).resolvedPath;
-    if (typeof resolvedPath === 'string') {
+    if (typeof resolvedPath === 'string' && !mockedPaths.has(resolvedPath)) {
       const target = index.filesByPath.get(resolvedPath);
-      if (target && isFrameworkCompatible(target, testFramework)) {
+      if (target) {
         const kind: EdgeKind = 'js-import';
         for (const f of graph.factsByFile.get(target.id) ?? []) {
           if (enqueued.has(f.id)) continue;
@@ -191,10 +264,13 @@ function enqueueDownstream(
     return;
   }
   if (fact.kind === 'php-include') {
-    const target = (fact.payload as { target?: unknown }).target;
+    const explicitTarget = (index.linksByFact.get(fact.id) ?? [])
+      .find((link) => link.role === 'target' && link.anchorKey.startsWith('php-file:'))
+      ?.anchorKey.slice('php-file:'.length);
+    const target = explicitTarget ?? (fact.payload as { target?: unknown }).target;
     if (typeof target === 'string') {
       const file = index.filesByPath.get(target);
-      if (file && isFrameworkCompatible(file, testFramework)) {
+      if (file) {
         const kind: EdgeKind = 'php-include';
         for (const f of graph.factsByFile.get(file.id) ?? []) {
           if (enqueued.has(f.id)) continue;
@@ -218,7 +294,7 @@ function enqueueDownstream(
       if (link.role !== 'target' || !link.anchorKey.startsWith('js-module:')) continue;
       const modPath = link.anchorKey.slice('js-module:'.length);
       const target = index.filesByPath.get(modPath);
-      if (!target || !isFrameworkCompatible(target, testFramework)) continue;
+      if (!target) continue;
       const kind: EdgeKind = enqueueSiblingFallback
         ? 'enqueue-mediated-sibling-fallback-partial'
         : 'enqueue-mediated';
@@ -235,6 +311,12 @@ function enqueueDownstream(
   }
 
   // 2. Cross-language / hook bridges: follow anchor to complementary facts.
+  if (fact.kind === 'symbol-use') {
+    const links = index.linksByFact.get(fact.id) ?? [];
+    if ([...mockedPaths].some((path) =>
+      links.some((link) => link.anchorKey.startsWith(`js-symbol:${path}:`)),
+    )) return;
+  }
   const bridgeKind = bridgeKindFor(fact.kind, fact.resolved, fact.payload, options.hookStopList);
   if (bridgeKind === null) return;
 
@@ -256,11 +338,10 @@ function enqueueDownstream(
       // via the bridge (hook-mediated, shortcode-render, …) are lost whenever a
       // shorter-arrival kind (e.g. php-include) reaches the partner first.
       const partnerFile = graph.files.get(partner.fact.fileId);
-      if (partnerFile && !isFrameworkCompatible(partnerFile, testFramework)) continue;
       if (
         partnerFile &&
         partnerFile.id !== testFileId &&
-        isSourceForFramework(partnerFile, testFramework)
+        isSource(partnerFile)
       ) {
         recordEvidence(evidence, partnerFile.id, evidenceKind, fact.id, partner.fact.id, c);
       }
@@ -287,12 +368,64 @@ function enqueueDownstream(
   }
 }
 
-function isSourceForFramework(file: FileRow, testFramework: FrameworkName | null): boolean {
-  return !file.vendor && isFrameworkCompatible(file, testFramework);
+const PHPUNIT_LIFECYCLE = new Set([
+  'setUp', 'tearDown', 'set_up', 'tear_down',
+  'setUpBeforeClass', 'tearDownAfterClass',
+  'wpSetUpBeforeClass', 'wpTearDownAfterClass',
+]);
+
+function phpUnitSeedFacts(facts: readonly FactRow[], testFact: FactRow): readonly FactRow[] {
+  const callables = facts.filter(isCallableDef);
+  const selected = callables.find((f) => containsLine(f, testFact.startLine));
+  const seededRanges = callables.filter((f) => f === selected || PHPUNIT_LIFECYCLE.has(callableMethodName(f)));
+  return facts.filter((fact) => {
+    if (isCallableDef(fact)) return seededRanges.includes(fact);
+    const owner = callables.find((callable) => callable !== fact && containsFact(callable, fact));
+    return owner === undefined || seededRanges.includes(owner);
+  });
 }
 
-function isFrameworkCompatible(file: FileRow, testFramework: FrameworkName | null): boolean {
-  return file.framework === null || file.framework === testFramework;
+function enqueueCallableBody(
+  graph: Graph,
+  callable: FactRow,
+  depth: number,
+  queue: QueueItem[],
+  enqueued: Set<number>,
+): void {
+  for (const fact of graph.factsByFile.get(callable.fileId) ?? []) {
+    if (fact.id === callable.id || !containsFact(callable, fact) || enqueued.has(fact.id)) continue;
+    enqueued.add(fact.id);
+    queue.push({
+      fact, depth, arrivalKind: null, arrivalFactId: null,
+      arrivalPrecision: 'exact', arrivalIsBridge: false,
+    });
+  }
+}
+
+function isCallableDef(fact: FactRow): boolean {
+  if (fact.kind !== 'symbol-def') return false;
+  const meta = fact.payload['meta'];
+  return typeof meta === 'object' && meta !== null
+    && (meta as Readonly<Record<string, unknown>>)['callable'] === true;
+}
+
+function containsFact(container: FactRow, fact: FactRow): boolean {
+  return fact.startLine >= container.startLine && fact.endLine <= container.endLine;
+}
+
+function containsLine(container: FactRow, line: number): boolean {
+  return line >= container.startLine && line <= container.endLine;
+}
+
+function callableMethodName(fact: FactRow): string {
+  const name = fact.payload['name'];
+  if (typeof name !== 'string') return '';
+  const pos = name.lastIndexOf('::');
+  return pos === -1 ? name : name.slice(pos + 2);
+}
+
+function isSource(file: FileRow): boolean {
+  return !file.vendor && file.framework === null;
 }
 
 /**
