@@ -353,7 +353,15 @@ function enqueueDownstream(
       const partnerDepth = depth + 1;
       // Attenuate: precision tier from the match, distance from BFS depth,
       // and LLM_RESOLUTION when the initiating fact is llm-pass sourced.
-      const evidenceKind = broadFallbackKind(bridgeKind, partner.precision);
+      const scopedHookListener =
+        bridgeKind === 'hook-mediated' &&
+        partner.fact.kind === 'hook-listener' &&
+        (graph.factsByFile.get(partner.fact.fileId) ?? []).some(
+          (candidate) => isCallableDef(candidate) && containsFact(candidate, partner.fact),
+        );
+      const evidenceKind = scopedHookListener
+        ? 'hook-mediated-uncertain'
+        : broadFallbackKind(bridgeKind, partner.precision);
       const c = evidenceConfidence(evidenceKind, partner.precision, partnerDepth, true, llmSourced);
       // Record bridge evidence for the partner's file even when the partner is
       // already enqueued via another path. Without this, evidence kinds emitted

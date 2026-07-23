@@ -265,6 +265,41 @@ function blockGraph(): Graph {
 }
 
 describe('traverseTest', () => {
+  it('marks callable-scoped hook listeners as uncertain', () => {
+    const graph = tinyGraph();
+    const originalListener = graph.facts.get(300);
+    if (originalListener === undefined) throw new Error('missing listener fixture');
+    const listener = { ...originalListener, startLine: 5, endLine: 5 };
+    const callable: FactRow = {
+      id: 301,
+      fileId: 3,
+      kind: 'symbol-def',
+      resolved: true,
+      startLine: 1,
+      endLine: 10,
+      payload: { kind: 'symbol-def', name: 'register', meta: { callable: true } },
+    };
+    const facts = new Map(graph.facts);
+    facts.set(300, listener);
+    facts.set(301, callable);
+    const factsByFile = new Map(graph.factsByFile);
+    factsByFile.set(3, [callable, listener]);
+    const scopedGraph = { ...graph, facts, factsByFile };
+
+    const result = traverseTest(scopedGraph, buildAnchorIndex(scopedGraph), 100, 't1', {
+      maxDepth: 25,
+      maxMillisPerTest: 5000,
+      threshold: 0,
+      hookStopList: new Set(),
+      now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+
+    const listenerEdge = result.edges.find((edge) => edge.source === 'b.php');
+    expect(listenerEdge?.evidence.map((evidence) => evidence.kind)).toContain('hook-mediated-uncertain');
+    expect(listenerEdge?.partial).toBe(true);
+  });
+
   it('scopes PHPUnit seeds to the selected test, lifecycle, and reached helpers', () => {
     const testFile: FileRow = { id: 1, path: 'tests/ScopedTest.php', language: 'php', vendor: false, framework: 'phpunit', frameworkClass: 'unit' };
     const source = (id: number, path: string): FileRow => ({ id, path, language: 'php', vendor: false, framework: null, frameworkClass: null });
