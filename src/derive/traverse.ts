@@ -87,7 +87,9 @@ export function traverseTest(
   const testFile = graph.files.get(testFact.fileId);
   const testFileFacts = testFile?.framework === 'phpunit'
     ? phpUnitSeedFacts(allTestFileFacts, testFact)
-    : allTestFileFacts;
+    : testFile?.framework !== null && testFile?.framework !== undefined
+      ? jsTestSeedFacts(allTestFileFacts, testFact)
+      : allTestFileFacts;
   const mockedPaths = new Set<string>();
   for (const f of allTestFileFacts) {
     if (f.kind !== 'import-edge') continue;
@@ -244,8 +246,16 @@ function enqueueDownstream(
 
   // 1. import-edge / php-include: resolve directly to target file.
   if (fact.kind === 'import-edge') {
-    const meta = fact.payload['meta'] as { readonly typeOnly?: unknown; readonly mocked?: unknown } | undefined;
-    if (meta?.typeOnly === true || meta?.mocked === true) return;
+    const meta = fact.payload['meta'] as {
+      readonly typeOnly?: unknown;
+      readonly mocked?: unknown;
+      readonly dynamic?: unknown;
+    } | undefined;
+    if (
+      meta?.typeOnly === true ||
+      meta?.mocked === true ||
+      (meta?.dynamic === true && fact.fileId !== testFileId)
+    ) return;
     const resolvedPath = (fact.payload as { resolvedPath?: unknown }).resolvedPath;
     if (typeof resolvedPath === 'string' && !mockedPaths.has(resolvedPath)) {
       const target = index.filesByPath.get(resolvedPath);
@@ -272,11 +282,23 @@ function enqueueDownstream(
       const file = index.filesByPath.get(target);
       if (file) {
         const kind: EdgeKind = 'php-include';
-        for (const f of graph.factsByFile.get(file.id) ?? []) {
+        const targetFacts = graph.factsByFile.get(file.id) ?? [];
+        const destination = targetFacts[0] ?? fact;
+        if (file.id !== testFileId && isSource(file)) {
+          recordEvidence(
+            evidence,
+            file.id,
+            kind,
+            fact.id,
+            destination.id,
+            evidenceConfidence(kind, 'exact', depth + 1, false),
+          );
+        }
+        for (const f of fileScopeFacts(targetFacts)) {
           if (enqueued.has(f.id)) continue;
           enqueued.add(f.id);
           queue.push({
-            fact: f, depth: depth + 1, arrivalKind: kind, arrivalFactId: fact.id,
+            fact: f, depth: depth + 1, arrivalKind: null, arrivalFactId: null,
             arrivalPrecision: 'exact', arrivalIsBridge: false,
           });
         }
@@ -385,6 +407,42 @@ function phpUnitSeedFacts(facts: readonly FactRow[], testFact: FactRow): readonl
   });
 }
 
+function jsTestSeedFacts(facts: readonly FactRow[], testFact: FactRow): readonly FactRow[] {
+  const siblings = facts.filter((fact) => fact.kind === 'test-def' && fact.id !== testFact.id);
+  const selectedScopes = jsScopeRanges(testFact);
+  const selectedScopeKeys = new Set(selectedScopes.map(scopeKey));
+  const allScopes = facts.flatMap((fact) => fact.kind === 'test-def' ? jsScopeRanges(fact) : []);
+  return facts.filter((fact) =>
+    !siblings.some((sibling) => containsFact(sibling, fact))
+    && allScopes.every((scope) => !containsScope(scope, fact) || selectedScopeKeys.has(scopeKey(scope))),
+  );
+}
+
+interface JsScopeRange {
+  readonly startLine: number;
+  readonly endLine: number;
+}
+
+function jsScopeRanges(fact: FactRow): readonly JsScopeRange[] {
+  const meta = fact.payload['meta'];
+  if (typeof meta !== 'object' || meta === null) return [];
+  const ranges = (meta as Readonly<Record<string, unknown>>)['scopeRanges'];
+  if (!Array.isArray(ranges)) return [];
+  return ranges.filter((range): range is JsScopeRange =>
+    typeof range === 'object' && range !== null
+    && typeof (range as Readonly<Record<string, unknown>>)['startLine'] === 'number'
+    && typeof (range as Readonly<Record<string, unknown>>)['endLine'] === 'number',
+  );
+}
+
+function containsScope(scope: JsScopeRange, fact: FactRow): boolean {
+  return fact.startLine >= scope.startLine && fact.endLine <= scope.endLine;
+}
+
+function scopeKey(scope: JsScopeRange): string {
+  return `${String(scope.startLine)}:${String(scope.endLine)}`;
+}
+
 function enqueueCallableBody(
   graph: Graph,
   callable: FactRow,
@@ -407,6 +465,13 @@ function isCallableDef(fact: FactRow): boolean {
   const meta = fact.payload['meta'];
   return typeof meta === 'object' && meta !== null
     && (meta as Readonly<Record<string, unknown>>)['callable'] === true;
+}
+
+function fileScopeFacts(facts: readonly FactRow[]): readonly FactRow[] {
+  const callables = facts.filter(isCallableDef);
+  return facts.filter((fact) =>
+    !isCallableDef(fact) && !callables.some((callable) => containsFact(callable, fact)),
+  );
 }
 
 function containsFact(container: FactRow, fact: FactRow): boolean {
@@ -517,6 +582,7 @@ function bridgeKindFor(
     case 'hook-fire': {
       const hook = (payload as { hook?: unknown }).hook;
       if (typeof hook !== 'string') return null;
+      if (!/[A-Za-z0-9]/.test(hook.replaceAll('{*}', ''))) return null;
       if (stopList.has(hook)) return null;
       return resolved ? 'hook-mediated' : 'hook-mediated-uncertain';
     }
@@ -691,8 +757,14 @@ function complementaryFactsForRole(
     }
     return out;
   } else {
-    // Wildcard incoming key: scan the exact map's keys via regex. Precision is
-    // this incoming key's own breadth.
+    // Prefer the identical normalized wildcard shape. A dynamic caller such as
+    // /orders/{*} must bind the route-param endpoint, not a literal sibling
+    // such as /orders/batch.
+    const exactWildcard = wildList.find((entry) => entry.originalKey === key);
+    if (exactWildcard) {
+      return exactWildcard.facts.map((fact) => ({ fact, precision: 'exact' }));
+    }
+    // Otherwise scan literal keys as a lower-confidence wildcard fallback.
     const incomingBreadth = wildcardBreadth(key);
     const regex = wildcardKeyToRegex(key);
     const out: MatchedPartner[] = [];

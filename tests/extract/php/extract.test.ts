@@ -690,6 +690,18 @@ ti_deletemeelephant_helper();
     expect(keys).toEqual(['rest:GET /wc/v3/items', 'rest:POST /wc/v3/items']);
   });
 
+  it('collects methods from multiple route definitions', async () => {
+    const root = getTmp();
+    write(root, 'plugin.php', `<?php register_rest_route('wc/v3', '/items', [
+      ['methods' => WP_REST_Server::READABLE],
+      ['methods' => WP_REST_Server::CREATABLE],
+      'args' => ['methods' => ['type' => 'string']],
+    ]);`);
+    const facts = await extractPhpFile({ projectRoot: root, relPath: 'plugin.php', worker });
+    const keys = facts.filter((f) => f.kind === 'rest-endpoint').map((f) => f.anchors[0]?.key).sort();
+    expect(keys).toEqual(['rest:GET /wc/v3/items', 'rest:POST /wc/v3/items']);
+  });
+
   it('defaults to GET when methods is an unknown class constant', async () => {
     const root = getTmp();
     write(root, 'plugin.php', "<?php register_rest_route('wc/v3', '/items', ['methods' => Some_Other_Class::UNKNOWN]);");

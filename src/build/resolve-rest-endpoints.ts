@@ -12,7 +12,13 @@
 // vendor-php/bin/ti-php-extract.php — kept in parity by the fixture tests.
 
 import type Database from 'better-sqlite3';
-import { updateFactResolvedPayload, repointFactAnchor, upsertAnchor } from '../store/writers.js';
+import {
+  insertFact,
+  insertFactAnchor,
+  updateFactResolvedPayload,
+  repointFactAnchor,
+  upsertAnchor,
+} from '../store/writers.js';
 
 const MAX_INHERITANCE_DEPTH = 64;
 
@@ -98,6 +104,8 @@ export interface ResolveRestSummary {
   readonly resolved: number;
   /** annotated rest-endpoint facts examined. */
   readonly examined: number;
+  /** inherited endpoint facts materialized on routing-property overrides. */
+  readonly materialized: number;
 }
 
 interface PayloadRow {
@@ -116,6 +124,21 @@ interface IdPayloadRow {
 
 interface AnchorIdRow {
   readonly anchorId: number;
+}
+
+interface ClassDef {
+  readonly fileId: number;
+  readonly startLine: number;
+  readonly endLine: number;
+}
+
+interface ClassDefRow extends FilePayloadRow {
+  readonly startLine: number;
+  readonly endLine: number;
+}
+
+interface RestEndpointRow extends ClassDefRow {
+  readonly resolved: number;
 }
 
 // Resolve every annotated rest-endpoint fact in the store. Mutates fact rows
@@ -143,13 +166,22 @@ export function resolveRestEndpoints(db: Database.Database): ResolveRestSummary 
   //    are one class per file. When a file declares several classes the pairing
   //    is ambiguous — skip it (leave the fact unresolved) rather than guess.
   const classesByFile = new Map<number, string[]>();
-  for (const r of db.prepare(`SELECT file_id AS fileId, payload FROM fact WHERE kind = 'symbol-def'`).all() as FilePayloadRow[]) {
+  const classDefByName = new Map<string, ClassDef>();
+  for (const r of db.prepare(`
+    SELECT file_id AS fileId, start_line AS startLine, end_line AS endLine, payload
+    FROM fact WHERE kind = 'symbol-def'
+  `).all() as ClassDefRow[]) {
     const p = safeParse(r.payload);
     const name = p?.['name'];
     if (typeof name === 'string' && !name.includes('::')) {
       const list = classesByFile.get(r.fileId) ?? [];
       list.push(name);
       classesByFile.set(r.fileId, list);
+      classDefByName.set(name, {
+        fileId: r.fileId,
+        startLine: r.startLine,
+        endLine: r.endLine,
+      });
     }
   }
   const parentOf = new Map<string, string>();
@@ -223,7 +255,132 @@ export function resolveRestEndpoints(db: Database.Database): ResolveRestSummary 
     resolved++;
   }
 
-  return { resolved, examined };
+  const materialized = materializeInheritedEndpoints(
+    db,
+    propsByClass,
+    parentOf,
+    classesByFile,
+    classDefByName,
+  );
+
+  return { resolved, examined, materialized };
+}
+
+function materializeInheritedEndpoints(
+  db: Database.Database,
+  propsByClass: ReadonlyMap<string, Record<string, string>>,
+  parentOf: ReadonlyMap<string, string>,
+  classesByFile: ReadonlyMap<number, readonly string[]>,
+  classDefByName: ReadonlyMap<string, ClassDef>,
+): number {
+  const endpointsByClass = new Map<string, RestEndpointRow[]>();
+  for (const row of db.prepare(`
+    SELECT file_id AS fileId, resolved, start_line AS startLine,
+           end_line AS endLine, payload
+    FROM fact WHERE kind = 'rest-endpoint'
+  `).all() as RestEndpointRow[]) {
+    const classes = classesByFile.get(row.fileId) ?? [];
+    const owner = classes.length === 1 ? classes[0] : undefined;
+    if (owner === undefined) continue;
+    const endpoints = endpointsByClass.get(owner) ?? [];
+    endpoints.push(row);
+    endpointsByClass.set(owner, endpoints);
+  }
+
+  let materialized = 0;
+  for (const [cls, directProps] of propsByClass) {
+    if (
+      (directProps['namespace'] === undefined && directProps['rest_base'] === undefined)
+    ) continue;
+
+    const inherited = findInheritedEndpoints(cls, parentOf, endpointsByClass);
+    const classDef = classDefByName.get(cls);
+    if (inherited === null || classDef === undefined) continue;
+
+    const namespace = resolveInheritedProps(cls, ['namespace'], propsByClass, parentOf)?.['namespace'];
+    if (namespace === undefined) continue;
+    const childBase = resolveInheritedProps(cls, ['rest_base'], propsByClass, parentOf)?.['rest_base'];
+    const parentBase = resolveInheritedProps(
+      inherited.owner,
+      ['rest_base'],
+      propsByClass,
+      parentOf,
+    )?.['rest_base'];
+
+    for (const endpoint of inherited.endpoints) {
+      const payload = safeParse(endpoint.payload);
+      if (payload?.['unresolved'] !== undefined) continue;
+      const method = payload?.['method'];
+      const oldNamespace = payload?.['namespace'];
+      const oldRoute = payload?.['route'];
+      if (
+        typeof method !== 'string' ||
+        typeof oldNamespace !== 'string' ||
+        typeof oldRoute !== 'string'
+      ) continue;
+
+      let route = oldRoute;
+      if (childBase !== undefined && parentBase !== undefined && childBase !== parentBase) {
+        const rebased = rebaseRestRoute(route, parentBase, childBase);
+        if (rebased === null) continue;
+        route = rebased;
+      }
+      if (namespace === oldNamespace && route === oldRoute) continue;
+
+      const anchorBody = collapseRouteParams(joinRestRoute(namespace, route));
+      const routeParam = anchorBody.includes('{*}');
+      const nextPayload: Record<string, unknown> = {
+        ...payload,
+        namespace,
+        route,
+        inheritedFrom: inherited.owner,
+      };
+      if (routeParam) nextPayload['routeParam'] = true;
+      else delete nextPayload['routeParam'];
+
+      const factId = insertFact(db, {
+        fileId: classDef.fileId,
+        kind: 'rest-endpoint',
+        resolved: !routeParam,
+        startLine: classDef.startLine,
+        endLine: classDef.endLine,
+        payload: nextPayload,
+      });
+      const anchorId = upsertAnchor(db, {
+        key: `rest:${method} ${anchorBody}`,
+        type: 'rest',
+      });
+      insertFactAnchor(db, { factId, anchorId, role: 'subject' });
+      materialized++;
+    }
+  }
+  return materialized;
+}
+
+function findInheritedEndpoints(
+  cls: string,
+  parentOf: ReadonlyMap<string, string>,
+  endpointsByClass: ReadonlyMap<string, readonly RestEndpointRow[]>,
+): { owner: string; endpoints: readonly RestEndpointRow[] } | null {
+  const seen = new Set<string>();
+  let parent = parentOf.get(cls);
+  let depth = 0;
+  while (parent !== undefined && depth < MAX_INHERITANCE_DEPTH) {
+    if (seen.has(parent)) return null;
+    seen.add(parent);
+    const endpoints = endpointsByClass.get(parent);
+    if (endpoints !== undefined) return { owner: parent, endpoints };
+    parent = parentOf.get(parent);
+    depth++;
+  }
+  return null;
+}
+
+function rebaseRestRoute(route: string, oldBase: string, newBase: string): string | null {
+  const oldPrefix = `/${oldBase.replace(/^\/+|\/+$/g, '')}`;
+  if (route !== oldPrefix && !route.startsWith(`${oldPrefix}/`)) return null;
+  const newPrefix = `/${newBase.replace(/^\/+|\/+$/g, '')}`;
+  return newPrefix + route.slice(oldPrefix.length);
 }
 
 /** The nearest class up the chain (incl. start) that declares `field`. */

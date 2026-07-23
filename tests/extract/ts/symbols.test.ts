@@ -276,4 +276,14 @@ describe('extractWpGlobalSymbols', () => {
       'js-global:wp.mediaWidgets.controlConstructors.gallery',
     ]);
   });
+
+  it('keeps repeated global uses in separate tests', () => {
+    const sf = parse('x.js', `
+      QUnit.test('first', () => wp.apiRequest.buildAjaxOptions({}));
+      QUnit.test('second', () => wp.apiRequest.buildAjaxOptions({}));
+    `);
+    const facts = extractWpGlobalSymbols(sf, 'x.js', 'qunit')
+      .filter((f) => f.anchors[0]?.key === 'js-global:wp.apiRequest.buildAjaxOptions');
+    expect(facts.map((f) => f.location.startLine)).toEqual([2, 3]);
+  });
 });

@@ -304,6 +304,44 @@ describe('traverseTest', () => {
     expect(result.edges.map((edge) => edge.source).sort()).toEqual(['good.php', 'lifecycle.php']);
   });
 
+  it('scopes JS describe hooks to tests in the same suite', () => {
+    const testFile: FileRow = { id: 1, path: 'tests/orders.test.ts', language: 'ts', vendor: false, framework: 'playwright', frameworkClass: 'e2e' };
+    const sourceFile: FileRow = { id: 2, path: 'orders.php', language: 'php', vendor: false, framework: null, frameworkClass: null };
+    const firstTest: FactRow = {
+      id: 10, fileId: 1, kind: 'test-def', resolved: true, startLine: 3, endLine: 4,
+      payload: { kind: 'test-def', framework: 'playwright', testId: 'first', meta: { scopeRanges: [{ startLine: 1, endLine: 10 }] } },
+    };
+    const secondTest: FactRow = {
+      id: 11, fileId: 1, kind: 'test-def', resolved: true, startLine: 13, endLine: 14,
+      payload: { kind: 'test-def', framework: 'playwright', testId: 'second', meta: { scopeRanges: [{ startLine: 11, endLine: 20 }] } },
+    };
+    const firstSuiteHook: FactRow = {
+      id: 12, fileId: 1, kind: 'rest-call-js', resolved: true, startLine: 8, endLine: 8,
+      payload: { kind: 'rest-call-js', url: '/wc/v3/orders' },
+    };
+    const endpoint: FactRow = {
+      id: 20, fileId: 2, kind: 'rest-endpoint', resolved: true, startLine: 1, endLine: 1,
+      payload: { kind: 'rest-endpoint', method: 'POST', route: '/orders' },
+    };
+    const graph: Graph = {
+      files: new Map([[1, testFile], [2, sourceFile]]),
+      facts: new Map([[10, firstTest], [11, secondTest], [12, firstSuiteHook], [20, endpoint]]),
+      factsByFile: new Map([[1, [firstTest, secondTest, firstSuiteHook]], [2, [endpoint]]]),
+      anchorLinks: [
+        { factId: 12, anchorKey: k('rest:POST /wc/v3/orders'), role: 'target' },
+        { factId: 20, anchorKey: k('rest:POST /wc/v3/orders'), role: 'subject' },
+      ],
+      tests: [],
+    };
+    const options = {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set<string>(), now: () => 0, maxWildcardMatchesPerAnchor: 32,
+    };
+    expect(traverseTest(graph, buildAnchorIndex(graph), 10, 'first', options).edges.map((edge) => edge.source))
+      .toEqual(['orders.php']);
+    expect(traverseTest(graph, buildAnchorIndex(graph), 11, 'second', options).edges).toEqual([]);
+  });
+
   it('a unit test bridges a JS block-render to the PHP that registers the block', () => {
     const g = blockGraph();
     const idx = buildAnchorIndex(g);
@@ -439,6 +477,55 @@ describe('traverseTest', () => {
       hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32,
     });
     expect(r.edges).toEqual([]);
+  });
+
+  it('does not expand dynamic imports reached through source files', () => {
+    const g = tinyGraph();
+    const dynamicImport: FactRow = {
+      id: 200, fileId: 2, kind: 'import-edge', resolved: true, startLine: 1, endLine: 1,
+      payload: {
+        kind: 'import-edge', specifier: './lazy', resolved: true, resolvedPath: 'b.php',
+        meta: { dynamic: true },
+      },
+    };
+    const facts = new Map(g.facts).set(200, dynamicImport);
+    const factsByFile = new Map(g.factsByFile).set(2, [dynamicImport]);
+    const graph = { ...g, facts, factsByFile, anchorLinks: g.anchorLinks.slice(0, 1) };
+    const r = traverseTest(graph, buildAnchorIndex(graph), 100, 't1', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32,
+    });
+    expect(r.edges.map((e) => e.source)).toEqual(['a.php']);
+  });
+
+  it('does not execute callable bodies merely because their file is included', () => {
+    const g = tinyGraph();
+    const includeToA: FactRow = {
+      ...(g.facts.get(101) as FactRow),
+      kind: 'php-include',
+      payload: { kind: 'php-include', target: 'a.php' },
+    };
+    const callable: FactRow = {
+      id: 200, fileId: 2, kind: 'symbol-def', resolved: true, startLine: 1, endLine: 3,
+      payload: { kind: 'symbol-def', name: 'lazy', exported: true, meta: { callable: true } },
+    };
+    const nestedInclude: FactRow = {
+      id: 201, fileId: 2, kind: 'php-include', resolved: true, startLine: 2, endLine: 2,
+      payload: { kind: 'php-include', target: 'b.php' },
+    };
+    const facts = new Map(g.facts)
+      .set(101, includeToA)
+      .set(200, callable)
+      .set(201, nestedInclude);
+    const factsByFile = new Map(g.factsByFile)
+      .set(1, [g.facts.get(100) as FactRow, includeToA])
+      .set(2, [callable, nestedInclude]);
+    const graph = { ...g, facts, factsByFile, anchorLinks: [] };
+    const r = traverseTest(graph, buildAnchorIndex(graph), 100, 't1', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0, maxWildcardMatchesPerAnchor: 32,
+    });
+    expect(r.edges.map((e) => e.source)).toEqual(['a.php']);
   });
 
   it('traverses through test helpers without returning them as sources', () => {
@@ -1042,6 +1129,33 @@ describe('traverseTest — wildcard bridge', () => {
     expect(r.edges[0]?.partial).toBe(true);
   });
 
+  it('does not bridge a hook with no known name fragment', () => {
+    const wildFire: FactRow = {
+      id: 100, fileId: 1, kind: 'hook-fire', resolved: false,
+      startLine: 1, endLine: 1, payload: { kind: 'hook-fire', hook: '{*}_{*}' },
+    };
+    const literalListener: FactRow = {
+      id: 101, fileId: 2, kind: 'hook-listener', resolved: true,
+      startLine: 1, endLine: 1, payload: { kind: 'hook-listener', hook: 'wp_ajax_save' },
+    };
+    const graph: Graph = {
+      files: new Map([[1, testFile], [2, sourceFile]]),
+      facts: new Map([[100, wildFire], [101, literalListener]]),
+      factsByFile: new Map([[1, [wildFire]], [2, [literalListener]]]),
+      anchorLinks: [
+        { factId: 100, anchorKey: k('hook:{*}_{*}'), role: 'target' },
+        { factId: 101, anchorKey: k('hook:wp_ajax_save'), role: 'subject' },
+      ],
+      tests: [],
+    };
+    const r = traverseTest(graph, buildAnchorIndex(graph), 100, 'phpunit:tests/x.php::Foo::testIt', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    expect(r.edges).toEqual([]);
+  });
+
   it('emits hook-mediated-uncertain via literal fact → wildcard listener', () => {
     const literalFire: FactRow = {
       id: 200, fileId: 1, kind: 'hook-fire', resolved: true,
@@ -1068,6 +1182,47 @@ describe('traverseTest — wildcard bridge', () => {
       maxWildcardMatchesPerAnchor: 32,
     });
     expect(r.edges.map((e) => e.source)).toEqual(['src/listener.php']);
+  });
+
+  it('prefers the same REST wildcard shape over a literal sibling route', () => {
+    const testDef: FactRow = {
+      id: 300, fileId: 1, kind: 'test-def', resolved: true,
+      startLine: 1, endLine: 10, payload: { kind: 'test-def', framework: 'playwright', testId: 't1' },
+    };
+    const restCall: FactRow = {
+      id: 301, fileId: 1, kind: 'rest-call-js', resolved: false,
+      startLine: 5, endLine: 5, payload: { kind: 'rest-call-js', url: '/wc/v3/orders/{*}' },
+    };
+    const itemEndpoint: FactRow = {
+      id: 302, fileId: 2, kind: 'rest-endpoint', resolved: true,
+      startLine: 1, endLine: 1, payload: { kind: 'rest-endpoint', method: 'PUT', route: '/orders/{*}' },
+    };
+    const batchEndpoint: FactRow = {
+      id: 303, fileId: 3, kind: 'rest-endpoint', resolved: true,
+      startLine: 1, endLine: 1, payload: { kind: 'rest-endpoint', method: 'PUT', route: '/orders/batch' },
+    };
+    const graph: Graph = {
+      files: new Map([
+        [1, { id: 1, path: 'tests/orders.test.ts', language: 'ts', vendor: false, framework: 'playwright', frameworkClass: 'e2e' }],
+        [2, { id: 2, path: 'src/item.php', language: 'php', vendor: false, framework: null, frameworkClass: null }],
+        [3, { id: 3, path: 'src/batch.php', language: 'php', vendor: false, framework: null, frameworkClass: null }],
+      ]),
+      facts: new Map([[300, testDef], [301, restCall], [302, itemEndpoint], [303, batchEndpoint]]),
+      factsByFile: new Map([[1, [testDef, restCall]], [2, [itemEndpoint]], [3, [batchEndpoint]]]),
+      anchorLinks: [
+        { factId: 301, anchorKey: k('rest:PUT /wc/v3/orders/{*}'), role: 'target' },
+        { factId: 302, anchorKey: k('rest:PUT /wc/v3/orders/{*}'), role: 'subject' },
+        { factId: 303, anchorKey: k('rest:PUT /wc/v3/orders/batch'), role: 'subject' },
+      ],
+      tests: [],
+    };
+    const r = traverseTest(graph, buildAnchorIndex(graph), 300, 't1', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    expect(r.edges.map((e) => e.source)).toEqual(['src/item.php']);
+    expect(r.edges[0]?.evidence.map((e) => e.kind)).toEqual(['rest-mediated-partial']);
   });
 
   it('caps wildcard matches at maxWildcardMatchesPerAnchor', () => {

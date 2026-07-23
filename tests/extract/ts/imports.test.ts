@@ -105,6 +105,8 @@ describe('extractImports', () => {
     const facts = extractImports(sf, 'src/dyn.ts', root, opts);
     expect(facts).toHaveLength(2);
     expect(facts.every((f) => f.resolved)).toBe(true);
+    expect((facts[0]?.payload as { meta?: { dynamic?: boolean } }).meta?.dynamic).toBe(true);
+    expect((facts[1]?.payload as { meta?: { dynamic?: boolean } }).meta?.dynamic).toBeUndefined();
   });
 
   it('marks imports and re-exports with no runtime bindings as type-only', () => {

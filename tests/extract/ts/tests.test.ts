@@ -34,6 +34,28 @@ describe('extractTestDefs', () => {
     expect((first.payload as { testId: string }).testId).toBe(
       'jest:tests/cart.test.ts::Cart > items > adds',
     );
+    expect((first.payload as { meta?: { scopeRanges?: unknown } }).meta?.scopeRanges).toEqual([
+      { startLine: 2, endLine: 6 },
+      { startLine: 3, endLine: 5 },
+    ]);
+  });
+
+  it('handles Playwright describe and test modifiers without emitting hooks or steps', () => {
+    const sf = parse('e2e/orders.spec.ts', `
+      test.describe.serial('Orders', () => {
+        test.beforeAll(async () => {});
+        test.skip('skipped', async () => {});
+        test('works', async () => {
+          await test.step('inside', async () => {});
+        });
+      });
+    `);
+    const ids = extractTestDefs(sf, 'e2e/orders.spec.ts', 'playwright')
+      .map((f) => (f.payload as { testId: string }).testId);
+    expect(ids).toEqual([
+      'playwright:e2e/orders.spec.ts::Orders > skipped',
+      'playwright:e2e/orders.spec.ts::Orders > works',
+    ]);
   });
 
   it('marks framework playwright', () => {

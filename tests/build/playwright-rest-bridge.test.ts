@@ -63,4 +63,65 @@ test('list items', async ({ request }) => {
       expect(rows.map((r) => r.source)).toContain('plugin.php');
     } finally { s.value.close(); }
   });
+
+  it('reaches a subclass that overrides inherited REST routing properties', async () => {
+    const root = getTmp();
+    write(root, 'parent.php', `<?php
+class Ti_REST_V1_Controller {
+  protected $namespace = 'ti/v1';
+  protected $rest_base = 'items';
+  public function register_routes() {
+    register_rest_route($this->namespace, '/' . $this->rest_base, ['methods' => 'GET']);
+    register_rest_route($this->namespace, '/' . $this->missing_base, ['methods' => 'GET']);
+  }
+}
+`);
+    write(root, 'child.php', `<?php
+class Ti_REST_V3_Controller extends Ti_REST_V1_Controller {
+  protected $namespace = 'ti/v3';
+  protected $rest_base = 'reports';
+  public function register_routes() {
+    parent::register_routes();
+    register_rest_route($this->namespace, '/' . $this->rest_base . '/summary', ['methods' => 'GET']);
+  }
+}
+`);
+    write(root, 'tests/e2e/reports.spec.ts', `
+import { test } from '@playwright/test';
+test('list reports', async ({ request }) => {
+  await request.get('./wp-json/ti/v3/reports');
+});
+test('other route', async ({ request }) => {
+  await request.get('./wp-json/ti/v3/other');
+});
+`);
+    const cfg = parseConfig({
+      confidence: { threshold: 0 },
+      tests: { playwright: { fileGlobs: ['tests/e2e/**/*.spec.ts'] } },
+    });
+    if (cfg.kind === 'err') throw new Error('cfg');
+    const r = await runBuild({
+      projectRoot: root, config: cfg.value, clock: systemClock,
+      stderr: { write: () => {} }, repoRoot,
+    });
+    if (r.kind !== 'ok') throw new Error('build failed');
+
+    const s = openStore(root);
+    if (s.kind !== 'ok') throw new Error('store');
+    try {
+      const edge = s.value.db.prepare(`
+        SELECT evidence FROM edge
+        WHERE source = 'child.php' AND test_id LIKE 'playwright:%list reports'
+      `).get() as { evidence: string } | undefined;
+      expect(edge).toBeDefined();
+      expect(JSON.parse(edge?.evidence ?? '[]')).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: 'rest-mediated' }),
+      ]));
+      const unrelated = s.value.db.prepare(`
+        SELECT 1 FROM edge
+        WHERE source = 'child.php' AND test_id LIKE 'playwright:%other route'
+      `).get();
+      expect(unrelated).toBeUndefined();
+    } finally { s.value.close(); }
+  });
 });

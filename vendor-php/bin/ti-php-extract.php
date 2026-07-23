@@ -1578,13 +1578,22 @@ final class Visitor extends NodeVisitorAbstract
         $args = $this->extractArgs($n);
         $argsNode = $args[2] ?? null;
         if (!$argsNode instanceof Node\Expr\Array_) return [];
+        $methods = [];
         foreach ($argsNode->items as $item) {
             if (!$item instanceof Node\ArrayItem) continue;
-            if (!$item->key instanceof Node\Scalar\String_) continue;
-            if (strtolower($item->key->value) !== 'methods') continue;
-            return $this->restMethodsFromValue($item->value);
+            if ($item->key instanceof Node\Scalar\String_ && strtolower($item->key->value) === 'methods') {
+                $methods = array_merge($methods, $this->restMethodsFromValue($item->value));
+                continue;
+            }
+            if (($item->key !== null && !$item->key instanceof Node\Scalar\Int_) || !$item->value instanceof Node\Expr\Array_) continue;
+            foreach ($item->value->items as $option) {
+                if (!$option instanceof Node\ArrayItem) continue;
+                if (!$option->key instanceof Node\Scalar\String_) continue;
+                if (strtolower($option->key->value) !== 'methods') continue;
+                $methods = array_merge($methods, $this->restMethodsFromValue($option->value));
+            }
         }
-        return [];
+        return array_values(array_unique($methods));
     }
 
     /** @return list<string> */

@@ -402,7 +402,8 @@ export async function runBuild(opts: BuildOptions): Promise<Result<BuildSummary,
       // the graph.
       db.exec('BEGIN');
       try {
-        resolveRestEndpoints(db);
+        const restResolution = resolveRestEndpoints(db);
+        factsInserted += restResolution.materialized;
         resolveEnqueueScripts(db, {
           outputDirs: opts.config.build.outputDirs,
           projectRoot: opts.projectRoot,

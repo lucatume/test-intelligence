@@ -125,7 +125,9 @@ export function extractWpGlobalSymbols(
   collectLocalMembers(sf);
   const emit = (kind: 'symbol-def' | 'symbol-use', name: string, node: ts.Node): void => {
     const role = kind === 'symbol-def' ? 'target' : 'subject';
-    const key = `${kind}:${name}`;
+    const key = kind === 'symbol-use' && framework != null
+      ? `${kind}:${name}:${String(node.getStart(sf))}`
+      : `${kind}:${name}`;
     if (emitted.has(key)) return;
     const startLine = sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1;
     const endLine = sf.getLineAndCharacterOfPosition(node.getEnd()).line + 1;

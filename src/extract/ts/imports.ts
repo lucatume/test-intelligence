@@ -43,6 +43,7 @@ interface SpecifierRef {
   readonly pos: number;
   readonly typeOnly: boolean;
   readonly mocked: boolean;
+  readonly dynamic: boolean;
 }
 
 export function extractImports(
@@ -79,6 +80,7 @@ export function extractImports(
     if (asset) metaFlags['asset'] = true;
     if (ref.typeOnly) metaFlags['typeOnly'] = true;
     if (ref.mocked) metaFlags['mocked'] = true;
+    if (ref.dynamic) metaFlags['dynamic'] = true;
     const payload: ImportEdgePayload = {
       kind: 'import-edge',
       specifier: ref.specifier,
@@ -107,22 +109,22 @@ export function extractImports(
 function collectSpecifiers(sf: ts.SourceFile, visit: (r: SpecifierRef) => void): void {
   const walk = (n: ts.Node): void => {
     if (ts.isImportDeclaration(n) && ts.isStringLiteral(n.moduleSpecifier)) {
-      visit(refFor(n.moduleSpecifier, sf, isTypeOnlyImport(n), false));
+      visit(refFor(n.moduleSpecifier, sf, isTypeOnlyImport(n), false, false));
     } else if (ts.isExportDeclaration(n) && n.moduleSpecifier && ts.isStringLiteral(n.moduleSpecifier)) {
-      visit(refFor(n.moduleSpecifier, sf, isTypeOnlyExport(n), false));
+      visit(refFor(n.moduleSpecifier, sf, isTypeOnlyExport(n), false, false));
     } else if (
       ts.isCallExpression(n) &&
       n.expression.kind === ts.SyntaxKind.ImportKeyword
     ) {
       const arg = n.arguments[0];
-      if (arg && ts.isStringLiteral(arg)) visit(refFor(arg, sf, false, false));
+      if (arg && ts.isStringLiteral(arg)) visit(refFor(arg, sf, false, false, true));
     } else if (
       ts.isCallExpression(n) &&
       ts.isIdentifier(n.expression) &&
       n.expression.text === 'require'
     ) {
       const arg = n.arguments[0];
-      if (arg && ts.isStringLiteral(arg)) visit(refFor(arg, sf, false, false));
+      if (arg && ts.isStringLiteral(arg)) visit(refFor(arg, sf, false, false, false));
     } else if (
       ts.isCallExpression(n) &&
       ts.isPropertyAccessExpression(n.expression) &&
@@ -131,7 +133,7 @@ function collectSpecifiers(sf: ts.SourceFile, visit: (r: SpecifierRef) => void):
       n.expression.name.text === 'mock'
     ) {
       const arg = n.arguments[0];
-      if (arg && ts.isStringLiteral(arg)) visit(refFor(arg, sf, false, true));
+      if (arg && ts.isStringLiteral(arg)) visit(refFor(arg, sf, false, true, false));
     }
     ts.forEachChild(n, walk);
   };
@@ -154,11 +156,17 @@ function isTypeOnlyExport(node: ts.ExportDeclaration): boolean {
     node.exportClause.elements.every((element) => element.isTypeOnly);
 }
 
-function refFor(node: ts.StringLiteral, sf: ts.SourceFile, typeOnly: boolean, mocked: boolean): SpecifierRef {
+function refFor(
+  node: ts.StringLiteral,
+  sf: ts.SourceFile,
+  typeOnly: boolean,
+  mocked: boolean,
+  dynamic: boolean,
+): SpecifierRef {
   const pos = node.getStart(sf);
   const start = sf.getLineAndCharacterOfPosition(pos).line + 1;
   const end = sf.getLineAndCharacterOfPosition(node.getEnd()).line + 1;
-  return { specifier: node.text, startLine: start, endLine: end, pos, typeOnly, mocked };
+  return { specifier: node.text, startLine: start, endLine: end, pos, typeOnly, mocked, dynamic };
 }
 
 function toPosix(p: string): string {
