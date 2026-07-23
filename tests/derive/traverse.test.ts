@@ -1260,6 +1260,49 @@ describe('traverseTest — wildcard bridge', () => {
     expect(r.edges[0]?.evidence.map((e) => e.kind)).toEqual(['rest-mediated-partial']);
   });
 
+  it('prefers the most specific REST wildcard route for a literal call', () => {
+    const testDef: FactRow = {
+      id: 400, fileId: 1, kind: 'test-def', resolved: true,
+      startLine: 1, endLine: 10, payload: { kind: 'test-def', framework: 'phpunit', testId: 't1' },
+    };
+    const restCall: FactRow = {
+      id: 401, fileId: 1, kind: 'rest-call-js', resolved: true,
+      startLine: 5, endLine: 5,
+      payload: { kind: 'rest-call-js', method: 'GET', route: '/wp-abilities/v1/abilities/test/example/run' },
+    };
+    const listEndpoint: FactRow = {
+      id: 402, fileId: 2, kind: 'rest-endpoint', resolved: true,
+      startLine: 1, endLine: 1,
+      payload: { kind: 'rest-endpoint', method: 'GET', route: '/abilities/{*}' },
+    };
+    const runEndpoint: FactRow = {
+      id: 403, fileId: 3, kind: 'rest-endpoint', resolved: true,
+      startLine: 1, endLine: 1,
+      payload: { kind: 'rest-endpoint', method: 'GET', route: '/abilities/{*}/run' },
+    };
+    const graph: Graph = {
+      files: new Map([
+        [1, { id: 1, path: 'tests/run.php', language: 'php', vendor: false, framework: 'phpunit', frameworkClass: 'unit' }],
+        [2, { id: 2, path: 'src/list.php', language: 'php', vendor: false, framework: null, frameworkClass: null }],
+        [3, { id: 3, path: 'src/run.php', language: 'php', vendor: false, framework: null, frameworkClass: null }],
+      ]),
+      facts: new Map([[400, testDef], [401, restCall], [402, listEndpoint], [403, runEndpoint]]),
+      factsByFile: new Map([[1, [testDef, restCall]], [2, [listEndpoint]], [3, [runEndpoint]]]),
+      anchorLinks: [
+        { factId: 401, anchorKey: k('rest:GET /wp-abilities/v1/abilities/test/example/run'), role: 'target' },
+        { factId: 402, anchorKey: k('rest:GET /wp-abilities/v1/abilities/{*}'), role: 'subject' },
+        { factId: 403, anchorKey: k('rest:GET /wp-abilities/v1/abilities/{*}/run'), role: 'subject' },
+      ],
+      tests: [],
+    };
+    const r = traverseTest(graph, buildAnchorIndex(graph), 400, 't1', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    expect(r.edges.map((e) => e.source)).toEqual(['src/run.php']);
+  });
+
   it('caps wildcard matches at maxWildcardMatchesPerAnchor', () => {
     const tFile: FileRow = { id: 1, path: 'tests/x.php', language: 'php', vendor: false, framework: 'phpunit', frameworkClass: 'unit' };
     const wildFire: FactRow = {

@@ -749,17 +749,30 @@ function complementaryFactsForRole(
     // Literal incoming key: exact lookup (precision exact) + wildcard scan
     // (precision from the matched wildcard entry's precomputed breadth).
     const out: MatchedPartner[] = [];
-    for (const f of exactMap.get(key) ?? []) {
+    const exact = exactMap.get(key) ?? [];
+    for (const f of exact) {
       out.push({ fact: f, precision: 'exact' });
     }
     if (wildList.length > 0) {
+      const isRest = key.startsWith('rest:');
+      let matchingWildcards = wildList;
+      if (isRest) {
+        matchingWildcards = wildList.filter((entry) => entry.regex.test(key));
+      }
+      if (matchingWildcards.length > 1 && isRest) {
+        const mostLiteral = Math.max(
+          ...matchingWildcards.map((entry) => entry.originalKey.replaceAll('{*}', '').length),
+        );
+        matchingWildcards = matchingWildcards.filter(
+          (entry) => entry.originalKey.replaceAll('{*}', '').length === mostLiteral,
+        );
+      }
       let wildCount = 0;
-      outer: for (const entry of wildList) {
-        if (entry.regex.test(key)) {
-          for (const f of entry.facts) {
-            out.push({ fact: f, precision: entry.breadth });
-            if (++wildCount >= cap) break outer;
-          }
+      outer: for (const entry of matchingWildcards) {
+        if (!isRest && !entry.regex.test(key)) continue;
+        for (const f of entry.facts) {
+          out.push({ fact: f, precision: entry.breadth });
+          if (++wildCount >= cap) break outer;
         }
       }
     }
