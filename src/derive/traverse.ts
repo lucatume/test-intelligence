@@ -722,6 +722,36 @@ function complementaryFactsForRole(
   role: AnchorRole,
   cap: number,
 ): readonly MatchedPartner[] {
+  const direct = complementaryFactsForRoleAndMethod(idx, key, role, cap);
+  if (direct.length > 0 || !key.startsWith('rest:')) return direct;
+
+  const space = key.indexOf(' ');
+  if (space < 0) return direct;
+  const method = key.slice('rest:'.length, space);
+  const route = key.slice(space);
+  const fallbacks =
+    method === 'HEAD' ? ['GET'] :
+    method === 'OPTIONS' ? ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] :
+    [];
+
+  for (const fallback of fallbacks) {
+    const partners = complementaryFactsForRoleAndMethod(
+      idx,
+      `rest:${fallback}${route}` as AnchorKey,
+      role,
+      cap,
+    );
+    if (partners.length > 0) return partners;
+  }
+  return direct;
+}
+
+function complementaryFactsForRoleAndMethod(
+  idx: AnchorIndex,
+  key: AnchorKey,
+  role: AnchorRole,
+  cap: number,
+): readonly MatchedPartner[] {
   const isWild = key.includes('{*}');
   // Pick the complementary side's exact map and wildcard list.
   let exactMap: ReadonlyMap<AnchorKey, readonly FactRow[]>;
@@ -785,9 +815,37 @@ function complementaryFactsForRole(
     if (exactWildcard) {
       return exactWildcard.facts.map((fact) => ({ fact, precision: 'exact' }));
     }
+    // Constructor-derived REST endpoints can preserve the route suffix while
+    // losing a multi-segment namespace or base into a different wildcard
+    // shape. Match compatible wildcard languages before falling back to
+    // literal keys. Keep this REST-only: compatible dynamic hooks or AJAX
+    // actions would otherwise recreate broad cross-product fan-out.
+    const regex = wildcardKeyToRegex(key);
+    if (key.startsWith('rest:')) {
+      let compatibleWildcards = wildList.filter(
+        (entry) => entry.regex.test(key) || regex.test(entry.originalKey),
+      );
+      if (compatibleWildcards.length > 1) {
+        const mostLiteral = Math.max(
+          ...compatibleWildcards.map((entry) => entry.originalKey.replaceAll('{*}', '').length),
+        );
+        compatibleWildcards = compatibleWildcards.filter(
+          (entry) => entry.originalKey.replaceAll('{*}', '').length === mostLiteral,
+        );
+      }
+      if (compatibleWildcards.length > 0) {
+        const out: MatchedPartner[] = [];
+        outer: for (const entry of compatibleWildcards) {
+          for (const fact of entry.facts) {
+            out.push({ fact, precision: entry.breadth });
+            if (out.length >= cap) break outer;
+          }
+        }
+        return out;
+      }
+    }
     // Otherwise scan literal keys as a lower-confidence wildcard fallback.
     const incomingBreadth = wildcardBreadth(key);
-    const regex = wildcardKeyToRegex(key);
     const out: MatchedPartner[] = [];
     outer: for (const [candidateKey, facts] of exactMap) {
       if (!regex.test(candidateKey)) continue;

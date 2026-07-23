@@ -1260,6 +1260,104 @@ describe('traverseTest — wildcard bridge', () => {
     expect(r.edges[0]?.evidence.map((e) => e.kind)).toEqual(['rest-mediated-partial']);
   });
 
+  it('matches compatible REST wildcard shapes when no identical shape exists', () => {
+    const testDef: FactRow = {
+      id: 350, fileId: 1, kind: 'test-def', resolved: true,
+      startLine: 1, endLine: 10,
+      payload: { kind: 'test-def', framework: 'phpunit', testId: 't1' },
+    };
+    const restCall: FactRow = {
+      id: 351, fileId: 1, kind: 'rest-call-js', resolved: false,
+      startLine: 5, endLine: 5,
+      payload: {
+        kind: 'rest-call-js',
+        method: 'GET',
+        route: '/wp/v2/posts/{*}/autosaves',
+      },
+    };
+    const autosavesEndpoint: FactRow = {
+      id: 352, fileId: 2, kind: 'rest-endpoint', resolved: false,
+      startLine: 1, endLine: 1,
+      payload: {
+        kind: 'rest-endpoint',
+        method: 'GET',
+        namespace: '{*}',
+        route: '/{*}/{*}/autosaves',
+      },
+    };
+    const graph: Graph = {
+      files: new Map([
+        [1, { id: 1, path: 'tests/autosaves.php', language: 'php', vendor: false, framework: 'phpunit', frameworkClass: 'unit' }],
+        [2, { id: 2, path: 'src/autosaves.php', language: 'php', vendor: false, framework: null, frameworkClass: null }],
+      ]),
+      facts: new Map([[350, testDef], [351, restCall], [352, autosavesEndpoint]]),
+      factsByFile: new Map([[1, [testDef, restCall]], [2, [autosavesEndpoint]]]),
+      anchorLinks: [
+        { factId: 351, anchorKey: k('rest:GET /wp/v2/posts/{*}/autosaves'), role: 'target' },
+        { factId: 352, anchorKey: k('rest:GET /{*}/{*}/{*}/autosaves'), role: 'subject' },
+      ],
+      tests: [],
+    };
+    const r = traverseTest(graph, buildAnchorIndex(graph), 350, 't1', {
+      maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+      hookStopList: new Set(), now: () => 0,
+      maxWildcardMatchesPerAnchor: 32,
+    });
+    expect(r.edges.map((e) => e.source)).toEqual(['src/autosaves.php']);
+    expect(r.edges[0]?.partial).toBe(true);
+    expect(r.edges[0]?.evidence.map((e) => e.kind)).toEqual(['rest-mediated-partial']);
+  });
+
+  it.each(['HEAD', 'OPTIONS'] as const)(
+    'matches implicit WordPress REST %s requests to a readable endpoint',
+    (method) => {
+      const testDef: FactRow = {
+        id: 360, fileId: 1, kind: 'test-def', resolved: true,
+        startLine: 1, endLine: 10,
+        payload: { kind: 'test-def', framework: 'phpunit', testId: 't1' },
+      };
+      const restCall: FactRow = {
+        id: 361, fileId: 1, kind: 'rest-call-js', resolved: false,
+        startLine: 5, endLine: 5,
+        payload: {
+          kind: 'rest-call-js',
+          method,
+          route: '/wp/v2/posts/{*}/autosaves',
+        },
+      };
+      const autosavesEndpoint: FactRow = {
+        id: 362, fileId: 2, kind: 'rest-endpoint', resolved: false,
+        startLine: 1, endLine: 1,
+        payload: {
+          kind: 'rest-endpoint',
+          method: 'GET',
+          namespace: '{*}',
+          route: '/{*}/{*}/autosaves',
+        },
+      };
+      const graph: Graph = {
+        files: new Map([
+          [1, { id: 1, path: 'tests/autosaves.php', language: 'php', vendor: false, framework: 'phpunit', frameworkClass: 'unit' }],
+          [2, { id: 2, path: 'src/autosaves.php', language: 'php', vendor: false, framework: null, frameworkClass: null }],
+        ]),
+        facts: new Map([[360, testDef], [361, restCall], [362, autosavesEndpoint]]),
+        factsByFile: new Map([[1, [testDef, restCall]], [2, [autosavesEndpoint]]]),
+        anchorLinks: [
+          { factId: 361, anchorKey: k(`rest:${method} /wp/v2/posts/{*}/autosaves`), role: 'target' },
+          { factId: 362, anchorKey: k('rest:GET /{*}/{*}/{*}/autosaves'), role: 'subject' },
+        ],
+        tests: [],
+      };
+      const r = traverseTest(graph, buildAnchorIndex(graph), 360, 't1', {
+        maxDepth: 25, maxMillisPerTest: 5000, threshold: 0,
+        hookStopList: new Set(), now: () => 0,
+        maxWildcardMatchesPerAnchor: 32,
+      });
+      expect(r.edges.map((e) => e.source)).toEqual(['src/autosaves.php']);
+      expect(r.edges[0]?.partial).toBe(true);
+    },
+  );
+
   it('prefers the most specific REST wildcard route for a literal call', () => {
     const testDef: FactRow = {
       id: 400, fileId: 1, kind: 'test-def', resolved: true,

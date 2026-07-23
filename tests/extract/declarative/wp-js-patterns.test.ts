@@ -16,6 +16,18 @@ describe('WP_JS_PATTERNS', () => {
     expect(rest?.anchors[0]?.key).toBe('rest:GET /myplugin/v1/items');
   });
 
+  it('uses the literal method from an apiFetch config with a wildcard path', () => {
+    const sf = parse(
+      'src/a.ts',
+      "apiFetch({ path: `/wc-analytics/admin/notes/experimental-activate-promo/${id}`, method: 'POST' });",
+    );
+    const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);
+    const rest = facts.find((f) => f.kind === 'rest-call-js');
+    expect(rest?.anchors[0]?.key).toBe(
+      'rest:POST /wc-analytics/admin/notes/experimental-activate-promo/{*}',
+    );
+  });
+
   it('matches fetch(/wp-json/...)', () => {
     const sf = parse('src/a.ts', "fetch('/wp-json/myplugin/v1/items');");
     const facts = runDeclarativePatterns(sf, 'src/a.ts', WP_JS_PATTERNS);

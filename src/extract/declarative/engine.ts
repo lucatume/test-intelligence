@@ -386,7 +386,11 @@ function applyPattern(
 
   const anchors: FactAnchorRef[] = [];
   if (p.anchor !== undefined) {
-    const key = renderTemplate(p.anchor.template, fields);
+    let key = renderTemplate(p.anchor.template, fields);
+    if (key !== null && p.emit === 'rest-call-js' && key.startsWith('rest:GET ')) {
+      const method = literalRestMethod(fields);
+      if (method !== null) key = `rest:${method} ${key.slice('rest:GET '.length)}`;
+    }
     if (key !== null) anchors.push({ key: key as AnchorKey, role: p.anchor.role });
     else resolved = false;
   }
@@ -439,6 +443,16 @@ function containsWildcard(v: unknown): boolean {
     }
   }
   return false;
+}
+
+function literalRestMethod(fields: Record<string, unknown>): string | null {
+  for (const field of ['config', 'init']) {
+    const value = fields[field];
+    if (value === null || typeof value !== 'object') continue;
+    const method = (value as Record<string, unknown>)['method'];
+    if (typeof method === 'string' && method.length > 0) return method.toUpperCase();
+  }
+  return null;
 }
 
 // Folds a `+` chain over string operands into a {*}-skeleton, preserving the
